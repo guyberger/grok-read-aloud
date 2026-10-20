@@ -47,6 +47,13 @@
           // Ignore seeks on an unloaded element.
         }
       },
+      seek(time) {
+        try {
+          audio.currentTime = Math.max(0, time);
+        } catch {
+          // Nothing loaded to seek within.
+        }
+      },
       getTime: () => audio.currentTime,
       getDuration: () => (Number.isFinite(audio.duration) ? audio.duration : 0),
       setRate(rate) {
@@ -89,6 +96,24 @@
       if (!silent) playing = false;
     }
 
+    async function startPlayback() {
+      if (!buffer || playing) return;
+      if (context.state === "suspended") await context.resume();
+      source = context.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = rate;
+      source.connect(context.destination);
+      source.onended = () => {
+        if (!playing) return;
+        playing = false;
+        offset = buffer.duration;
+        endedHandler();
+      };
+      startedAt = context.currentTime;
+      source.start(0, Math.min(offset, buffer.duration));
+      playing = true;
+    }
+
     return {
       name: "webaudio",
       async load(bytes) {
@@ -97,22 +122,15 @@
         offset = 0;
         buffer = await context.decodeAudioData(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
       },
-      async play() {
-        if (!buffer || playing) return;
-        if (context.state === "suspended") await context.resume();
-        source = context.createBufferSource();
-        source.buffer = buffer;
-        source.playbackRate.value = rate;
-        source.connect(context.destination);
-        source.onended = () => {
-          if (!playing) return;
-          playing = false;
-          offset = buffer.duration;
-          endedHandler();
-        };
-        startedAt = context.currentTime;
-        source.start(0, Math.min(offset, buffer.duration));
-        playing = true;
+      play: () => startPlayback(),
+      // A buffer source cannot move, so seeking means replacing it.
+      seek(time) {
+        const target = Math.max(0, Math.min(time, buffer?.duration ?? 0));
+        const wasPlaying = playing;
+        teardown(true);
+        playing = false;
+        offset = target;
+        if (wasPlaying) startPlayback().catch(() => {});
       },
       pause() {
         if (!playing) return;
@@ -212,6 +230,7 @@
       play: () => playWithGestureFallback(),
       pause: () => engine?.pause(),
       stop: () => engine?.stop(),
+      seek: (time) => engine?.seek(time),
       getTime: () => engine?.getTime() ?? 0,
       getDuration: () => engine?.getDuration() ?? 0,
       setRate(next) {

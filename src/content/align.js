@@ -4,23 +4,16 @@
   const isSpace = ns.util.isWhitespace;
   const SENTENCE_ENDERS = new Set([".", "!", "?", "…", "。", "！", "？"]);
 
-  /**
-   * Split text into request-sized pieces, preferring paragraph breaks, then
-   * sentence ends, then any word boundary.
-   *
-   * @returns {{start:number,end:number}[]} global character ranges
-   */
-  function chunkRanges(text, maxChars) {
-    const limit = Math.max(200, maxChars | 0);
-    const ranges = [];
-    let start = 0;
+  /** Cut [from, to) into request-sized pieces, appending them to `ranges`. */
+  function chunkSegment(text, from, to, limit, ranges) {
+    let start = from;
 
-    while (start < text.length) {
-      while (start < text.length && isSpace(text[start])) start += 1;
-      if (start >= text.length) break;
+    while (start < to) {
+      while (start < to && isSpace(text[start])) start += 1;
+      if (start >= to) break;
 
-      if (text.length - start <= limit) {
-        ranges.push({ start, end: text.length });
+      if (to - start <= limit) {
+        ranges.push({ start, end: to });
         break;
       }
 
@@ -49,8 +42,70 @@
       ranges.push({ start, end });
       start = end;
     }
+  }
+
+  /**
+   * Split text into request-sized pieces, preferring paragraph breaks, then
+   * sentence ends, then any word boundary.
+   *
+   * `boundaries` forces a chunk to begin at each of those character indices.
+   * Jumping into text no audio has been fetched for uses it to make the
+   * request start at the word the reader is about to speak.
+   *
+   * @returns {{start:number,end:number}[]} global character ranges
+   */
+  function chunkRanges(text, maxChars, boundaries = []) {
+    const limit = Math.max(200, maxChars | 0);
+    const cuts = [...new Set(boundaries)]
+      .filter((cut) => cut > 0 && cut < text.length)
+      .sort((a, b) => a - b);
+
+    const ranges = [];
+    let from = 0;
+    for (const cut of [...cuts, text.length]) {
+      chunkSegment(text, from, cut, limit, ranges);
+      from = cut;
+    }
 
     return ranges.filter((range) => text.slice(range.start, range.end).trim().length > 0);
+  }
+
+  /**
+   * First character of the word covering `index`, so a click lands on a whole
+   * word rather than halfway through one. A click in the gap between words
+   * takes the word that follows, and one past the last word takes the last.
+   */
+  function wordStartAt(text, index) {
+    if (!text.length) return 0;
+    let i = Math.min(Math.max(index, 0), text.length - 1);
+
+    if (isSpace(text[i])) {
+      let forward = i;
+      while (forward < text.length && isSpace(text[forward])) forward += 1;
+      if (forward < text.length) return forward;
+      while (i >= 0 && isSpace(text[i])) i -= 1;
+      if (i < 0) return 0;
+    }
+
+    while (i > 0 && !isSpace(text[i - 1])) i -= 1;
+    return i;
+  }
+
+  /** Index of the chunk holding `charIndex`. */
+  function chunkIndexFor(chunks, charIndex) {
+    if (!chunks?.length) return -1;
+    for (let i = 0; i < chunks.length; i += 1) {
+      if (charIndex < chunks[i].end) return i;
+    }
+    return chunks.length - 1;
+  }
+
+  /** Media time at which a chunk's timeline starts speaking `charIndex`. */
+  function timeForCharIndex(timeline, charIndex) {
+    const spans = timeline?.words;
+    if (!spans?.length) return 0;
+    const index = ns.util.lastAtOrBefore(spans, charIndex, "start");
+    return index < 0 ? 0 : spans[index].t0;
   }
 
   /**
@@ -183,5 +238,14 @@
     };
   }
 
-  ns.align = { chunkRanges, characterTimes, words, sentences, buildChunkTimeline };
+  ns.align = {
+    chunkRanges,
+    characterTimes,
+    words,
+    sentences,
+    buildChunkTimeline,
+    wordStartAt,
+    chunkIndexFor,
+    timeForCharIndex,
+  };
 })(globalThis.__readAloud);

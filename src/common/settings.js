@@ -8,6 +8,8 @@ export const DEFAULT_SETTINGS = {
   // they are expressed in media time, which `currentTime` already reports.
   rate: 1,
   chunkChars: 1200,
+  // Clicking a word in the text being read moves playback to it.
+  clickToJump: true,
   autoScroll: true,
   highlightColor: "#ffd34d",
   sentenceTint: true,

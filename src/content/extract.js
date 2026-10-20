@@ -298,6 +298,91 @@
     return built ? { ...built, scope: "page" } : null;
   }
 
+  /**
+   * The per-character map read backwards: which characters of `doc.text` came
+   * out of each slice. Built on first use, since only click-to-jump needs it.
+   *
+   * `charNodes` cannot simply be searched, because the synthetic paragraph
+   * breaks carry -1 and the trailing-whitespace trim can shorten a slice's
+   * run after the fact. One pass over the finished arrays settles both.
+   */
+  function reverseIndex(doc) {
+    if (doc.reverse) return doc.reverse;
+    const spans = new Map();
+    for (let i = 0; i < doc.charNodes.length; i += 1) {
+      const slice = doc.charNodes[i];
+      if (slice < 0) continue;
+      const span = spans.get(slice);
+      if (span) span[1] = i;
+      else spans.set(slice, [i, i]);
+    }
+    const byNode = new Map();
+    for (let i = 0; i < doc.slices.length; i += 1) {
+      const node = doc.slices[i].node;
+      const list = byNode.get(node);
+      if (list) list.push(i);
+      else byNode.set(node, [i]);
+    }
+    doc.reverse = { spans, byNode };
+    return doc.reverse;
+  }
+
+  /**
+   * Index into `doc.text` for a (text node, offset) pair, or -1 when that
+   * node is not part of what is being read.
+   */
+  function charIndexAt(doc, node, offset) {
+    if (!doc || !node) return -1;
+    const { spans, byNode } = reverseIndex(doc);
+    for (const sliceIndex of byNode.get(node) ?? []) {
+      const span = spans.get(sliceIndex);
+      if (!span) continue;
+      const slice = doc.slices[sliceIndex];
+      const wanted = Math.min(Math.max(offset, slice.start), slice.end - 1);
+
+      // Offsets rise across a slice's characters, with the separating space
+      // sharing the offset of the character it precedes — so the last entry at
+      // or before `wanted` is the character itself rather than that space.
+      let low = span[0];
+      let high = span[1];
+      let found = -1;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (doc.charOffsets[mid] <= wanted) {
+          found = mid;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      // Before the first character this slice kept — leading whitespace, say —
+      // the nearest thing the reader can speak is that first character.
+      return found >= 0 ? found : span[0];
+    }
+    return -1;
+  }
+
+  /** The text node and offset under a viewport point, across both APIs. */
+  function caretAt(x, y) {
+    if (typeof document.caretPositionFromPoint === "function") {
+      const position = document.caretPositionFromPoint(x, y);
+      if (position?.offsetNode) return { node: position.offsetNode, offset: position.offset };
+    }
+    // WebKit, and Chrome before 128, only have the older spelling.
+    if (typeof document.caretRangeFromPoint === "function") {
+      const range = document.caretRangeFromPoint(x, y);
+      if (range) return { node: range.startContainer, offset: range.startOffset };
+    }
+    return null;
+  }
+
+  /** Index into `doc.text` under a viewport point, or -1 if it is not read. */
+  function charIndexFromPoint(doc, x, y) {
+    const caret = caretAt(x, y);
+    if (!caret || caret.node.nodeType !== Node.TEXT_NODE) return -1;
+    return charIndexAt(doc, caret.node, caret.offset);
+  }
+
   /** DOM Range covering global character indices [start, end). */
   function rangeFor(doc, start, end) {
     const { charNodes, charOffsets, slices } = doc;
@@ -317,5 +402,5 @@
     return range;
   }
 
-  ns.extract = { extract, rangeFor, findMainContent };
+  ns.extract = { extract, rangeFor, findMainContent, charIndexAt, charIndexFromPoint };
 })(globalThis.__readAloud);
