@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Read Aloud — Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page__head">
+        <h1>Read Aloud</h1>
+        <p class="subtitle">Page narration powered by your own xAI Grok text-to-speech key.</p>
+      </header>
+
+      <section class="card">
+        <h2>xAI API key</h2>
+        <p class="help">
+          Create a key at
+          <a href="https://console.x.ai" target="_blank" rel="noreferrer noopener">console.x.ai</a>. It is stored
+          only in this browser profile's extension storage, is sent only to <code>api.x.ai</code>, and is never
+          written to logs.
+        </p>
+        <div class="row">
+          <input
+            id="api-key"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="xai-…"
+            aria-label="xAI API key"
+          />
+          <button id="reveal" class="btn btn--ghost" type="button" aria-label="Show or hide the key">Show</button>
+        </div>
+        <div class="row row--actions">
+          <button id="save-key" class="btn btn--primary" type="button">Save key</button>
+          <button id="test-key" class="btn" type="button">Test &amp; load voices</button>
+          <button id="clear-key" class="btn btn--ghost" type="button">Remove key</button>
+        </div>
+        <p id="key-status" class="status" hidden></p>
+      </section>
+
+      <section class="card">
+        <h2>Voice</h2>
+        <div class="grid">
+          <label class="control">
+            <span>Voice</span>
+            <select id="voice"></select>
+          </label>
+          <label class="control">
+            <span>Language</span>
+            <select id="language"></select>
+          </label>
+        </div>
+        <div class="row row--actions">
+          <button id="preview" class="btn" type="button">Preview voice</button>
+          <span id="preview-status" class="status status--inline" hidden></span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Playback</h2>
+        <div class="grid">
+          <label class="control">
+            <span>Default speed <output id="rate-value">1.0&times;</output></span>
+            <input id="rate" type="range" min="0.5" max="3" step="0.1" />
+          </label>
+          <label class="control">
+            <span>Characters per request <output id="chunk-value"></output></span>
+            <input id="chunk-chars" type="range" min="400" max="4000" step="100" />
+            <small>Smaller starts sooner; larger sounds smoother across sentence joins.</small>
+          </label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Highlighting</h2>
+        <div class="grid">
+          <label class="control control--inline">
+            <input id="auto-scroll" type="checkbox" />
+            <span>Scroll to follow the spoken word</span>
+          </label>
+          <label class="control control--inline">
+            <input id="sentence-tint" type="checkbox" />
+            <span>Tint the current sentence</span>
+          </label>
+          <label class="control">
+            <span>Highlight colour</span>
+            <input id="highlight-color" type="color" />
+          </label>
+        </div>
+      </section>
+
+      <section class="card" id="permission-card" hidden>
+        <h2>Site access</h2>
+        <p class="help">
+          This browser has not granted the extension access to <code>api.x.ai</code> yet. Requests may still work,
+          but granting access is the reliable path.
+        </p>
+        <button id="grant" class="btn" type="button">Grant access to api.x.ai</button>
+      </section>
+
+      <p id="saved" class="saved" hidden>Saved</p>
+    </main>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>
