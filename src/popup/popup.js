@@ -54,9 +54,10 @@ function render(state) {
 
   const problem = current.status === "error" ? current.error : "";
   const missingKey = current.hasApiKey === false ? "Add your xAI API key in Settings to start." : "";
-  const text = problem || missingKey;
+  const text = problem || current.notice || missingKey;
   el.message.textContent = text;
   el.message.hidden = !text;
+  el.message.classList.toggle("message--notice", !problem && Boolean(current.notice));
 }
 
 function setScope(next) {

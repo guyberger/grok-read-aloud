@@ -239,6 +239,12 @@ select {
   border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
 }
 
+.message--notice {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
 .panel__foot {
   display: flex;
   align-items: center;

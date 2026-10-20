@@ -26,14 +26,23 @@ class Session {
 
   /**
    * Content scripts run in an isolated world, so their globals are invisible
-   * to a default-world evaluate. Wait for that world to show up and target it.
+   * to a default-world evaluate. Reloading the extension leaves several
+   * same-named isolated worlds behind, so pick the one that actually holds a
+   * live reader rather than guessing by name or order.
    */
   async isolatedContextId({ timeoutMs = 15000 } = {}) {
     const deadline = Date.now() + timeoutMs;
+    const probe = `typeof globalThis.__readAloud?.reader?.snapshot === "function"`;
     while (Date.now() < deadline) {
-      const context = this.contexts.find((entry) => entry.auxData?.type === "isolated");
-      if (context) return context.id;
-      await sleep(200);
+      for (const context of this.contexts) {
+        if (context.auxData?.type !== "isolated") continue;
+        try {
+          if (await this.evaluate(probe, context.id)) return context.id;
+        } catch {
+          // A detached world; try the next one.
+        }
+      }
+      await sleep(250);
     }
     throw new Error("content script execution context never appeared");
   }
@@ -137,7 +146,13 @@ async function main() {
 
   const command = (payload) =>
     ui.evaluate(`new Promise((res) => chrome.runtime.sendMessage(${JSON.stringify(payload)}, res))`);
-  const control = (action, args_ = {}) => command({ type: "control", action, args: args_ });
+
+  // Commands without an explicit tab id go to the active tab, so make sure the
+  // article is the active tab every time rather than racing the options tab.
+  const control = async (action, args_ = {}) => {
+    await browser.send("Target.activateTarget", { targetId: articleTarget.id });
+    return command({ type: "control", action, args: args_ });
+  };
 
   // 1. Settings, the way the options page saves them.
   await ui.evaluate(`
@@ -160,7 +175,12 @@ async function main() {
     voices?.ok ? `${voices.voices.length} voices` : voices?.error,
   );
 
+  // A fresh document each run: a content script left over from a previous run
+  // belongs to the previous extension instance and can no longer reach it.
   const page = await new Session(articleTarget.webSocketDebuggerUrl).open();
+  await page.send("Page.enable");
+  await page.send("Page.navigate", { url: PAGE_URL });
+  await sleep(1500);
   await page.send("Runtime.enable");
 
   // 3. Start reading the page.

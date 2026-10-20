@@ -16,9 +16,12 @@
     chunkIndex: 0,
     chunkCount: 0,
     error: "",
+    notice: "",
     engine: "none",
     aligned: true,
   };
+
+  const BLOCKED_NOTICE = "Audio is blocked until you interact with this page — click anywhere to start.";
 
   let settings = {
     voiceId: "eve",
@@ -81,8 +84,11 @@
     if (player) return player;
     player = playerFactory.createPlayer({
       onEnded: () => advance(),
-      onBlocked: () =>
-        highlight.notify("Audio is blocked until you interact with this page — click anywhere to start."),
+      onBlocked: () => {
+        state.notice = BLOCKED_NOTICE;
+        highlight.notify(BLOCKED_NOTICE);
+        emit();
+      },
     });
     player.setRate(settings.rate);
     return player;
@@ -149,6 +155,10 @@
     prefetch(index);
     await audio.play();
     if (session !== sessionId) return;
+    if (state.notice === BLOCKED_NOTICE) {
+      state.notice = "";
+      emit();
+    }
     startLoop();
   }
 
@@ -248,6 +258,7 @@
     state.scope = doc.scope;
     state.chunkCount = chunks.length;
     state.error = "";
+    state.notice = "";
     playChunk(0).catch(reportError);
     return snapshot();
   }
@@ -279,6 +290,7 @@
     cache = new Map();
     lastWord = -1;
     lastSentence = -1;
+    state.notice = "";
     if (state.status !== "idle") {
       state.status = "idle";
       state.chunkIndex = 0;
@@ -302,7 +314,12 @@
 
   const handlers = {
     ping: () => ({ ok: true }),
-    getState: () => snapshot(),
+    // Refreshed first so an opening popup never reports a key that has since
+    // been saved, or a voice that has since changed.
+    getState: async () => {
+      await refreshSettings();
+      return snapshot();
+    },
     start,
     toggle,
     pause,
@@ -322,6 +339,10 @@
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;
+  });
+
+  ext.storage.onChanged.addListener((changes, area) => {
+    if (area === "local") refreshSettings();
   });
 
   window.addEventListener("pagehide", () => {
