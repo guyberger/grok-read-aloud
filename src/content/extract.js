@@ -21,9 +21,19 @@
     "PRE",
   ]);
 
-  // Dropped only when reading a whole page. An explicit selection inside a
-  // sidebar is still something the user asked to hear.
-  const CHROME_TAGS = new Set(["NAV", "HEADER", "FOOTER", "ASIDE", "FORM", "DIALOG"]);
+  // Page furniture, dropped when reading a whole page without a trustworthy
+  // content container. An explicit selection inside a sidebar is still
+  // something the user asked to hear, so selections drop nothing.
+  const PAGE_CHROME_TAGS = new Set(["NAV", "HEADER", "FOOTER", "ASIDE", "FORM", "DIALOG"]);
+
+  // Inside a container we already believe is the article, a <header> is the
+  // article's own masthead and holds its title, so it is worth reading. A
+  // sidebar or a footer in there is still a sidebar or a footer.
+  const CONTENT_CHROME_TAGS = new Set(["NAV", "FOOTER", "ASIDE", "FORM", "DIALOG"]);
+
+  // Below this, a whole-page read is treated as a failed guess rather than a
+  // short page, and the body is read instead.
+  const MIN_PAGE_CHARS = 200;
 
   const BLOCK_TAGS = new Set([
     "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "BR", "DD", "DIV", "DL", "DT",
@@ -43,38 +53,76 @@
     "#content",
   ];
 
+  /**
+   * Whether the element renders, ignoring its ancestors.
+   *
+   * `Element.checkVisibility` is deliberately not used. It reports any element
+   * without a layout box as invisible, which includes `display: contents`
+   * wrappers — whose children render perfectly well, and which component
+   * frameworks emit freely. Treating one as hidden silently drops everything
+   * underneath it.
+   */
+  function selfRendered(element) {
+    if (element.hasAttribute("hidden") || element.getAttribute("aria-hidden") === "true") return false;
+    const style = getComputedStyle(element);
+    if (style.display === "none") return false;
+    if (style.visibility === "hidden" || style.visibility === "collapse") return false;
+    // `content-visibility: auto` only skips painting what is offscreen; that
+    // text is still part of the page. Only `hidden` takes it out.
+    return style.contentVisibility !== "hidden";
+  }
+
+  /** Whether the element renders, ancestors included. Memoised per walk. */
   function visible(element, cache) {
-    if (cache.has(element)) return cache.get(element);
+    const pending = [];
+    let current = element;
     let result = true;
-    if (element.hasAttribute("hidden") || element.getAttribute("aria-hidden") === "true") {
-      result = false;
-    } else if (typeof element.checkVisibility === "function") {
-      result = element.checkVisibility({ checkVisibilityCSS: true });
-    } else {
-      const style = getComputedStyle(element);
-      result = style.display !== "none" && style.visibility !== "hidden";
+    while (current) {
+      const cached = cache.get(current);
+      if (cached !== undefined) {
+        result = cached;
+        break;
+      }
+      pending.push(current);
+      if (!selfRendered(current)) {
+        result = false;
+        break;
+      }
+      current = current.parentElement;
     }
-    cache.set(element, result);
+    for (const node of pending) cache.set(node, result);
     return result;
   }
 
-  function textWeight(element) {
+  function textWeight(element, cache) {
     let total = 0;
     let linked = 0;
     for (const node of element.querySelectorAll("p, li, h1, h2, h3, h4, blockquote")) {
-      total += node.textContent.length;
+      if (visible(node, cache)) total += node.textContent.length;
     }
-    for (const node of element.querySelectorAll("a")) linked += node.textContent.length;
+    for (const node of element.querySelectorAll("a")) {
+      if (visible(node, cache)) linked += node.textContent.length;
+    }
     return total - linked * 1.5;
   }
 
-  /** Best guess at the article body, falling back to <body>. */
-  function findMainContent() {
+  /**
+   * Best guess at the article body, falling back to <body>.
+   *
+   * Only rendered candidates are scored. A single-page app routinely leaves
+   * the previous route's markup in the document with `display: none`, and that
+   * copy often holds more text than the page actually on screen — an index of
+   * every post beats one post. Scoring it would hand back a container whose
+   * every text node is then correctly rejected as hidden, which reads as "no
+   * text on this page".
+   */
+  function findMainContent(cache = new Map()) {
     let best = null;
     let bestScore = 0;
     for (const selector of MAIN_SELECTORS) {
       for (const element of document.querySelectorAll(selector)) {
-        const score = textWeight(element);
+        if (!visible(element, cache)) continue;
+        const score = textWeight(element, cache);
         if (score > bestScore) {
           best = element;
           bestScore = score;
@@ -85,7 +133,8 @@
 
     for (const element of document.body?.querySelectorAll("div, section, td") ?? []) {
       if (element.querySelectorAll("p").length < 3) continue;
-      const score = textWeight(element);
+      if (!visible(element, cache)) continue;
+      const score = textWeight(element, cache);
       if (score > bestScore) {
         best = element;
         bestScore = score;
@@ -111,15 +160,17 @@
     return end > start ? [start, end] : null;
   }
 
-  function collectTextNodes(root, range, dropChrome) {
-    const cache = new Map();
+  function collectTextNodes(root, range, chromeTags, cache = new Map()) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
         if (!node.data || !node.data.trim()) return NodeFilter.FILTER_REJECT;
-        for (let el = node.parentElement; el && el !== root.parentElement; el = el.parentElement) {
+        const parent = node.parentElement;
+        // `visible` walks past the root as well, so a root that sits inside a
+        // hidden container yields nothing rather than hidden text.
+        if (!parent || !visible(parent, cache)) return NodeFilter.FILTER_REJECT;
+        for (let el = parent; el && el !== root.parentElement; el = el.parentElement) {
           if (SKIP_TAGS.has(el.tagName)) return NodeFilter.FILTER_REJECT;
-          if (dropChrome && CHROME_TAGS.has(el.tagName) && el !== root) return NodeFilter.FILTER_REJECT;
-          if (!visible(el, cache)) return NodeFilter.FILTER_REJECT;
+          if (chromeTags?.has(el.tagName) && el !== root) return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;
       },
@@ -206,6 +257,14 @@
     return range.toString().trim() ? range : null;
   }
 
+  function buildFrom(root, range, chromeTags, cache) {
+    const slices = collectTextNodes(root, range, chromeTags, cache);
+    if (!slices.length) return null;
+    const built = buildText(slices);
+    if (!built.text.trim()) return null;
+    return { ...built, slices };
+  }
+
   /**
    * @param {"page"|"selection"} scope
    * @returns {{text, charNodes, charOffsets, slices, scope}|null}
@@ -214,21 +273,29 @@
     const range = scope === "selection" ? activeSelectionRange() : null;
     if (scope === "selection" && !range) return null;
 
-    let root;
     if (range) {
-      root = range.commonAncestorContainer;
+      let root = range.commonAncestorContainer;
       if (root.nodeType !== Node.ELEMENT_NODE) root = root.parentElement;
-    } else {
-      root = findMainContent();
+      const built = root && buildFrom(root, range, null);
+      return built ? { ...built, scope: "selection" } : null;
     }
-    if (!root) return null;
 
-    const slices = collectTextNodes(root, range, !range);
-    if (!slices.length) return null;
+    const body = document.body;
+    if (!body) return null;
 
-    const built = buildText(slices);
-    if (!built.text.trim()) return null;
-    return { ...built, slices, scope: range ? "selection" : "page" };
+    const cache = new Map();
+    const root = findMainContent(cache);
+    let built = root && root !== body ? buildFrom(root, null, CONTENT_CHROME_TAGS, cache) : null;
+
+    // Picking the article body is a guess, and a guess that comes back nearly
+    // empty is worth abandoning. Every visible word in the body minus the page
+    // furniture reads worse than a clean article, and far better than silence.
+    if (!built || built.text.trim().length < MIN_PAGE_CHARS) {
+      const fallback = buildFrom(body, null, PAGE_CHROME_TAGS, cache);
+      if (fallback && fallback.text.trim().length > (built?.text.trim().length ?? 0)) built = fallback;
+    }
+
+    return built ? { ...built, scope: "page" } : null;
   }
 
   /** DOM Range covering global character indices [start, end). */

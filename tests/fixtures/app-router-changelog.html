@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shipping Rollouts and Review — Test Changelog Entry</title>
+    <!--
+      Mirrors a changelog entry on an app-router site reached by clicking a
+      link on the index rather than loading the URL directly.
+
+      Three things about this shape used to defeat whole-page extraction:
+
+      1. The router leaves the previous route mounted and hidden. That copy is
+         an index of every entry, so it holds far more text than the single
+         entry on screen and wins any scoring that ignores visibility.
+      2. A `display: contents` wrapper sits between the article and its prose.
+         It has no layout box, so `Element.checkVisibility()` calls it hidden.
+      3. The entry's own <h1> lives in an <article>-scoped <header>, which is
+         indistinguishable from site furniture to a tag-name check.
+    -->
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.7 ui-serif, Georgia, serif;
+        color: #1d1d1f;
+        background: #fbfbf9;
+      }
+      nav,
+      footer {
+        background: #e8e8e4;
+        padding: 14px 20px;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+      aside {
+        background: #efeee8;
+        padding: 12px 16px;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+      main {
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 120px;
+      }
+      /* The router's own way of keeping a route mounted but off screen. */
+      main[data-route="stale"] {
+        display: none;
+      }
+      /* A layout wrapper that participates in the grid without a box. */
+      .layout-passthrough {
+        display: contents;
+      }
+      .visually-gone {
+        display: none;
+      }
+      pre {
+        background: #f0efe9;
+        padding: 12px;
+        overflow-x: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation: Product · Pricing · Changelog · Docs · Careers</nav>
+    <header class="site-header">Site header: Everything new, every week.</header>
+
+    <!--
+      Route left behind by the client-side navigation. It is hidden, but it
+      holds more prose than the entry the reader is looking at.
+    -->
+    <main id="main" data-route="stale" aria-hidden="false">
+      <section class="container">
+        <article>
+          <header><h2>Stale index entry: Workspaces land on desktop</h2></header>
+          <div class="prose">
+            <p>
+              Stale index text about workspaces that the reader navigated away from. Workspaces group the
+              projects you keep returning to, and remember the layout you left them in. This copy is still
+              mounted because the router keeps the previous route around, and it must never be read aloud.
+            </p>
+            <p>
+              More stale index text, this time about syncing. Every workspace now syncs in the background,
+              which means the version you open on a second machine is the version you left behind on the
+              first one, down to the scroll position of each open file.
+            </p>
+          </div>
+        </article>
+        <article>
+          <header><h2>Stale index entry: Search gets a query language</h2></header>
+          <div class="prose">
+            <p>
+              Stale index text about search. The new query language understands fields, ranges and negation,
+              so a search can be narrowed to one author, one directory and one week without leaving the
+              search box or learning a second tool.
+            </p>
+            <p>
+              Stale index text about indexing. Results now stream in as the index is walked, so the first
+              matches appear immediately instead of after the whole repository has been scanned.
+            </p>
+          </div>
+        </article>
+        <article>
+          <header><h2>Stale index entry: Review comments become threads</h2></header>
+          <div class="prose">
+            <p>
+              Stale index text about review threads. A comment on a line now opens a thread that travels with
+              the line as the file is edited, so a question asked on Monday still points at the right code on
+              Thursday.
+            </p>
+            <p>
+              Stale index text about notifications. Replies arrive as one digest per thread rather than one
+              message per reply, which keeps a long argument from filling an inbox.
+            </p>
+          </div>
+        </article>
+        <article>
+          <header><h2>Stale index entry: Terminals remember their working directory</h2></header>
+          <div class="prose">
+            <p>
+              Stale index text about terminals. A terminal reopened in a project now starts where it left
+              off, in the directory you were last working in, with the scrollback from the previous session
+              still available above the prompt.
+            </p>
+            <p>
+              Stale index text about shells. The shell integration no longer depends on editing a profile
+              script, which means a terminal behaves the same on a fresh machine as it does on one that has
+              been configured for years.
+            </p>
+          </div>
+        </article>
+        <article>
+          <header><h2>Stale index entry: Settings move into the project</h2></header>
+          <div class="prose">
+            <p>
+              Stale index text about settings. Anything that affects how a project builds or runs can now be
+              committed alongside it, so a new contributor inherits a working configuration instead of a
+              paragraph in a readme describing one.
+            </p>
+            <p>
+              Stale index text about precedence. Personal preferences still win over project settings for
+              anything cosmetic, and lose for anything that would change the output of a build.
+            </p>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <!-- The entry actually on screen. -->
+    <main id="main" data-route="active">
+      <section class="container">
+        <article>
+          <div class="grid">
+            <div class="meta">
+              <p><time datetime="2026-09-23">Sep 23, 2026</time> · <a href="/changelog">Changelog</a></p>
+            </div>
+
+            <div class="layout-passthrough">
+              <header class="entry-header">
+                <h1>Shipping rollouts and review</h1>
+              </header>
+
+              <div class="prose">
+                <p>
+                  Today we are launching two assistants for the last mile of shipping code. The first watches
+                  every change as it deploys and reports its health per environment. The second reports
+                  exploitable bugs on every pull request, before a human reviewer has to find them.
+                </p>
+                <p>Both are available today on team and enterprise plans.</p>
+
+                <h2>Rollouts</h2>
+                <p>
+                  Rollouts attaches a monitor to every pull request and watches the change as it deploys,
+                  reporting change health per environment: verified healthy, regression detected, or
+                  inconclusive. Enable it from the dashboard and connect source control, your deploy system
+                  and your telemetry provider.
+                </p>
+
+                <h4>Monitoring plans</h4>
+                <p>
+                  When a pull request opens, the monitor reads the diff and the systems it touches, then
+                  writes a monitoring plan as a comment. The plan lists the risks it identified, the effect
+                  the change is meant to have, the signals it will check, and any gaps in instrumentation
+                  that would make the change hard to verify. Edit the plan and the monitor uses your version.
+                </p>
+
+                <h4>Deploy tracking</h4>
+                <p>
+                  Each deployment is tracked from the moment it starts rolling until the signals settle, so a
+                  regression that only appears under production load is still attributed to the change that
+                  caused it rather than to whatever happened to deploy next.
+                </p>
+
+                <h2>Security review</h2>
+                <p>
+                  Security review reads a pull request the way an attacker would, looking for the bugs that
+                  can actually be reached from outside: injection through an unvalidated parameter, a missing
+                  authorization check on a new route, a secret that escapes into a log line.
+                </p>
+                <p>
+                  It reports only what it can argue is exploitable, with the path from the entry point to the
+                  vulnerable line, so a reviewer can judge the finding instead of triaging a list.
+                </p>
+
+                <figure>
+                  <figcaption>A monitoring plan posted as a pull request comment.</figcaption>
+                </figure>
+
+                <p>Configuration lives next to the rest of your automation:</p>
+                <pre><code>rollouts:
+  environments: [staging, production]
+  telemetry: provider-of-choice</code></pre>
+
+                <p class="visually-gone">
+                  Hidden paragraph that is present in the markup but not rendered, and must never be read.
+                </p>
+
+                <p>
+                  Both assistants are off by default. Turn them on per repository, and turn them off again
+                  from the same screen if they are not pulling their weight.
+                </p>
+              </div>
+            </div>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <aside>Sidebar: Subscribe to the changelog digest.</aside>
+    <footer>Footer: Status · Security · Terms · Privacy</footer>
+  </body>
+</html>

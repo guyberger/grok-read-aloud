@@ -210,6 +210,17 @@ npm run verify    # all three
 npm run icons     # regenerate the PNG icons from tools/make-icons.js
 ```
 
+`npm test` covers chunking, timestamp alignment, the API client's error
+handling, and content extraction. The extraction tests drive a headless Chrome,
+because what counts as rendered is the browser's answer and testing it against
+a DOM stub would only test the stub. They skip themselves where there is no
+Chrome; set `CHROME_PATH` to point at one.
+
+```bash
+node tools/popup-paint.js --runs 20           # popup paint and load timings
+node tools/popup-paint.js --runs 10 --cold 1  # with the worker stopped first
+```
+
 ### Layout
 
 ```
@@ -227,6 +238,29 @@ tests/                    Unit tests and a fixture article
 The background worker is the only place the API key exists. Content scripts are
 injected on demand rather than declared for every URL, so the extension never
 runs on a page you did not point it at.
+
+### Picking the text to read
+
+Only candidates the browser is actually rendering are scored. That matters on
+sites that route in the client: those leave the previous page mounted and
+hidden, and an index of every post holds more text than the one post on screen,
+so an unfiltered score picks the stale copy and then finds nothing in it but
+hidden nodes.
+
+"Rendered" is decided by walking the ancestors and reading computed styles
+rather than by `Element.checkVisibility`, which reports anything without a
+layout box as invisible — including `display: contents` wrappers, whose
+children render perfectly well and which component frameworks emit freely.
+
+### Why the popup paints before it knows anything
+
+`popup.html` carries a complete default state, so the panel is whole on the
+first paint without running a line of script. Stored settings, the cached voice
+list and the reader's state are fetched afterwards and written into the panel
+as each arrives. Reaching the reader is the slow part — it can mean starting
+the background worker, injecting the content scripts, and waiting for a page
+whose main thread is busy — and none of that is allowed between the click and
+the panel. `tools/popup-paint.js` measures it.
 
 ### Highlighting without touching the page
 
@@ -286,9 +320,11 @@ the driver loads the extension over the protocol instead.
   Chrome offscreen document would remove the click on Chrome, but Firefox has no
   equivalent, so v1 keeps one shared path.
 - **Readable-content detection is heuristic.** It looks for `<article>`,
-  `[role=main]` and `<main>` first, then falls back to scoring text density. On
-  an unusual layout it may read too much or too little; selecting the text you
-  want and reading the selection always works.
+  `[role=main]` and `<main>` first, then falls back to scoring text density,
+  and if the winner yields almost nothing it reads the visible body instead,
+  minus navigation, headers, sidebars and footers. On an unusual layout it may
+  read too much or too little; selecting the text you want and reading the
+  selection always works.
 - **Code blocks are skipped** (`<pre>` and `<code>`), on the grounds that they
   rarely read well aloud. There is no setting for this yet.
 - **No streaming.** Each chunk is one request that must finish before it can

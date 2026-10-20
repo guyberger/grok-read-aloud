@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Notes on Rope Ferries — Test Page With a Decoy Container</title>
+    <!--
+      The page's prose is in plain <div>s that no heuristic recognises, while
+      the <main> landmark wraps a signup form whose copy is long enough to win
+      the text-density scoring. The winner is therefore a container that scores
+      well and yields nothing once forms are dropped, so the read has to fall
+      back to the visible body minus the page furniture.
+    -->
+    <style>
+      body { margin: 0; font: 17px/1.7 Georgia, serif; }
+      nav, header, footer, aside { font-family: system-ui, sans-serif; font-size: 14px; }
+      .hidden-block { display: none; }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation: Home · Notes · Index</nav>
+    <header>Site header: A notebook about river crossings.</header>
+
+    <main>
+      <form class="signup">
+        <p>
+          Get the notebook by email. One note a week about rivers, crossings and the machinery people
+          built to get over water before bridges were affordable, with photographs where any survive.
+        </p>
+        <p>
+          Nothing else is ever sent to this address, and every issue carries an unsubscribe link in the
+          first line rather than buried at the bottom of the footer in six point type.
+        </p>
+        <p>
+          Back issues are available in the archive, and the whole thing can be read as a feed instead if
+          an inbox is the last place you want more reading to arrive.
+        </p>
+        <label for="email">Email address</label>
+        <input id="email" type="email" name="email" />
+        <button type="submit">Subscribe</button>
+      </form>
+    </main>
+
+    <div class="body-copy">
+      <div class="line">
+        A rope ferry crosses a river without an engine, using the current itself. The boat hangs from a
+        cable strung bank to bank, and the ferryman sets its angle against the flow. The water pushes on
+        the angled hull, the cable stops it from being swept downstream, and what is left of the force
+        carries the boat sideways until it touches the far bank.
+      </div>
+      <div class="line">
+        The crossing takes longer at low water, when the current has less to give, and the ferryman
+        compensates by increasing the angle. On a slack river the boat has to be pulled across hand over
+        hand, which is why rope ferries survived longest on fast, narrow water.
+      </div>
+      <div class="line">
+        The cable is the whole machine. It is slack enough to sag out of the way of anything coming
+        downstream and taut enough to hold a loaded boat against the current, and the tension is adjusted
+        every season as the banks move.
+      </div>
+      <div class="line hidden-block">
+        Hidden note that is present in the markup but never rendered, and must never be read aloud.
+      </div>
+    </div>
+
+    <aside>Sidebar: Related notes on chain ferries and cable cars.</aside>
+    <footer>Footer: Sources and corrections.</footer>
+  </body>
+</html>
