@@ -20,11 +20,32 @@ function authHeaders(apiKey) {
   return { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
 }
 
+/**
+ * A 429 is normally worth retrying, but the API also uses it to say the
+ * account has nothing left to spend. Retrying that is pointless: it cannot
+ * succeed until someone adds credit, and three attempts only delay telling
+ * the user why nothing is happening.
+ */
+const EXHAUSTED = /\b(credit|credits|quota|balance|billing|spend|spending limit|payment|insufficient)\b/i;
+
+/** The message text out of any of the shapes the API uses for errors. */
+function errorDetail(body) {
+  if (!body) return "";
+  if (typeof body === "string") return body.trim();
+  for (const value of [body.error, body.message, body.detail, body.code]) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (value && typeof value === "object") {
+      const nested = errorDetail(value);
+      if (nested) return nested;
+    }
+  }
+  return "";
+}
+
 async function readError(response) {
   let detail = "";
   try {
-    const body = await response.json();
-    detail = body?.error || body?.message || body?.code || "";
+    detail = errorDetail(await response.json());
   } catch {
     detail = "";
   }
@@ -37,9 +58,11 @@ async function readError(response) {
     return new TtsError("API key was rejected. Check it in the extension options.", { status: 400 });
   }
   if (response.status === 429) {
-    return new TtsError("Rate limited by the API. Slowing down and retrying.", {
+    // The API explains itself better than a generic label can — it names the
+    // limit that was hit, and whether it resets on its own.
+    return new TtsError(detail || "Rate limited by the API. Slowing down and retrying.", {
       status: 429,
-      retryable: true,
+      retryable: !EXHAUSTED.test(detail),
     });
   }
   if (response.status >= 500) {
