@@ -479,6 +479,6 @@
     player = null;
   });
 
-  ns.reader = { refreshSettings, snapshot, jumpToCharIndex };
+  ns.reader = { refreshSettings, snapshot };
   refreshSettings();
 })(globalThis.__readAloud);

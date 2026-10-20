@@ -17,6 +17,7 @@ dependencies — just the files in `src/` and a ~40-line copy script.
 - Reads just the current selection instead, when you ask it to.
 - Highlights the spoken word, tints the sentence around it, and scrolls to keep
   up — driven by the per-character timestamps the API returns, not by guesswork.
+- Jumps to any word you click while it is reading, and carries on from there.
 - Play, pause, resume and stop from the popup or a keyboard shortcut.
 - Speed control from 0.5× to 3×, applied instantly without re-synthesising.
 - Splits long pages into chunks at paragraph and sentence boundaries, and
@@ -136,6 +137,8 @@ anything that looks like one is ever committed.
 - **Alt+Shift+R** — start reading, or pause/resume if already reading. With text
   selected it reads the selection; otherwise it reads the page.
 - **Alt+Shift+S** — stop.
+- **Click any word** while it is reading to carry on from that word. It works
+  while paused too, and starts playing again from there.
 
 Rebind either shortcut at `chrome://extensions/shortcuts`, or in Firefox under
 `about:addons` → the gear menu → **Manage Extension Shortcuts**.
@@ -154,6 +157,7 @@ that requests the broader permission; **Revoke** takes it back.
 | Language | `en` | 20 languages plus `auto` detection |
 | Default speed | 1.0× | Applied to the audio element, so pitch is preserved |
 | Characters per request | 1200 | Lower starts sooner, higher sounds smoother across joins |
+| Click a word to read from there | on | Only plain clicks on the text being read |
 | Follow the spoken word | on | Scrolls only when the word leaves a comfortable band |
 | Tint the current sentence | on | |
 | Highlight colour | amber | Text colour adapts for contrast automatically |
@@ -191,6 +195,20 @@ article you like):
 - [ ] Select two sentences, choose **Selection**, read: only the selected text is
       spoken and highlighted.
 - [ ] Reading stops at the end of the selection instead of running on.
+- [ ] While a selection is being read, clicking outside it does nothing.
+
+**Clicking to jump**
+- [ ] While reading, click a word further down the same paragraph: playback
+      continues from that word, with no pause.
+- [ ] Click a word near the end of a long article: it starts there within a
+      second or two and carries on.
+- [ ] Click a word behind the playhead: it goes back to it.
+- [ ] Pause, then click a word: it jumps there and starts playing again.
+- [ ] Click a link in the article: the link opens, and playback does not move.
+- [ ] Select some text by dragging: playback does not move.
+- [ ] Clicking navigation, the sidebar or the footer does nothing.
+- [ ] With nothing being read, clicking the page does nothing.
+- [ ] Turn **Click a word to read from there** off: clicks stop moving playback.
 
 **Failure handling**
 - [ ] With no key saved, the popup says to add one rather than failing silently.
@@ -211,10 +229,11 @@ npm run icons     # regenerate the PNG icons from tools/make-icons.js
 ```
 
 `npm test` covers chunking, timestamp alignment, the API client's error
-handling, and content extraction. The extraction tests drive a headless Chrome,
-because what counts as rendered is the browser's answer and testing it against
-a DOM stub would only test the stub. They skip themselves where there is no
-Chrome; set `CHROME_PATH` to point at one.
+handling, content extraction, and the mapping from a click to a word, a chunk
+and a time. The extraction and click tests drive a headless Chrome, because
+what counts as rendered — and what is under a given pixel — is the browser's
+answer, and testing it against a DOM stub would only test the stub. They skip
+themselves where there is no Chrome; set `CHROME_PATH` to point at one.
 
 ```bash
 node tools/popup-paint.js --runs 20           # popup paint and load timings
@@ -229,7 +248,7 @@ src/
   manifest.firefox.json   Firefox MV3: background.scripts + gecko id
   common/                 Settings and the API client (ES modules)
   background/             Holds the key, makes every network call, injects content scripts
-  content/                Injected on demand; extraction, alignment, playback, highlighting
+  content/                Injected on demand; extraction, alignment, clicks, playback, highlighting
   popup/  options/        Extension UI
 tools/                    Build, icons, static checks, mock API, end-to-end driver
 tests/                    Unit tests and a fixture article
@@ -271,13 +290,63 @@ Content-Security-Policy cannot suppress them. Where the Highlight API is
 unavailable, the extension falls back to absolutely positioned overlay boxes
 derived from the range's client rects — still without mutating the article.
 
+### Jumping to a clicked word
+
+A click is a pixel; playback is a time offset into one request's audio. Getting
+from one to the other reuses the map extraction already built: the point becomes
+a text node and offset (`caretPositionFromPoint`, falling back to
+`caretRangeFromPoint`), the node and offset become an index into the extracted
+string, the index snaps back to the start of its word, and the word's character
+index finds the chunk holding it and, through that chunk's timestamps, the
+moment it starts being spoken.
+
+What happens next depends on what audio is already in hand.
+
+| Where the word is | What it costs |
+| --- | --- |
+| In the chunk playing now | A seek. No request, no wait. |
+| In a chunk already fetched — the one just left, or the one prefetched ahead | Load it and start at that word's own timestamp. No request. |
+| Anywhere else | One request, for a chunk that *begins* at the clicked word. |
+
+That last row is the interesting one, because the obvious alternative is to
+fetch the chunk the word happens to fall inside and then seek within it. That
+costs more on both counts that matter: the request carries the text before the
+clicked word, which is billed and then skipped, and the audio takes longer to
+synthesise and transfer for the same reason. So the chunk list is re-cut with a
+forced boundary at the clicked word first. Cutting is greedy from the start of
+each piece, so everything more than one chunk ahead of the click comes out
+exactly as it would have anyway — including the chunk being played, whose audio
+survives the re-cut because the cache is keyed by character range rather than by
+chunk number. Jumping into the end of a 1200-character chunk therefore asks for
+the tail it is about to speak, not the 1100 characters it would have thrown
+away.
+
+Requests the jump has made pointless are cancelled rather than left to land.
+The page can only ask: the worker holds the key and therefore the `fetch`, so it
+holds the `AbortController` too, and the page names the request it no longer
+wants.
+
+Only plain clicks on read text count. Clicks on links, buttons, inputs,
+editable regions, anything with an interactive ARIA role, clicks carrying a
+modifier, the second click of a double, right clicks, the click that ends a drag
+and the click that leaves a selection behind are all left entirely alone — and
+nothing in that path ever calls `preventDefault`, so a page that wants a click
+keeps it. A click outside the text being read resolves to no character at all,
+which is also what makes a selection read click only within its selection.
+
 ### Running the end-to-end check
 
 `tools/e2e.js` drives a real Chrome over the DevTools Protocol and asserts that
-the highlight walks the article in order, in time with the audio. It uses
-`tools/mock-api.js`, a stand-in for the xAI API that mirrors the real endpoints,
-CORS headers and response envelope but synthesises a placeholder tone — so the
-whole pipeline can be exercised without spending a key.
+the highlight walks the article in order, in time with the audio, and that
+clicking a word moves playback to it — with the clicks dispatched through the
+input pipeline, so the reader resolves real coordinates against real layout
+rather than being handed an answer. It uses `tools/mock-api.js`, a stand-in for
+the xAI API that mirrors the real endpoints, CORS headers and response envelope
+but synthesises a placeholder tone — so the whole pipeline can be exercised
+without spending a key. The mock also keeps a log of what it was asked to
+synthesise, at `GET /debug/requests`, which is how the jump checks assert that a
+jump cost one request starting on the clicked word rather than several, or one
+beginning earlier.
 
 ```bash
 # 1. a certificate the mock can serve as api.x.ai
@@ -290,8 +359,9 @@ SPKI=$(openssl x509 -in /tmp/cert.pem -pubkey -noout \
 node tools/mock-api.js --port 8443 --cert /tmp/cert.pem --key /tmp/key.pem &
 (cd tests/fixtures && python3 -m http.server 8777 --bind 127.0.0.1) &
 
-# 3. Chrome, with api.x.ai pointed at the mock
-google-chrome --user-data-dir=/tmp/ra-profile --enable-unsafe-extension-debugging \
+# 3. Chrome, with api.x.ai pointed at the mock. Drop --headless=new to watch.
+google-chrome --headless=new --window-size=1000,800 \
+  --user-data-dir=/tmp/ra-profile --enable-unsafe-extension-debugging \
   --host-resolver-rules="MAP api.x.ai 127.0.0.1:8443" \
   --ignore-certificate-errors-spki-list="$SPKI" \
   --remote-debugging-port=9333 --autoplay-policy=no-user-gesture-required \
@@ -331,6 +401,10 @@ the driver loads the extension over the protocol instead.
   play, so the first chunk has a few seconds of latency. The API also offers a
   WebSocket endpoint that streams audio as it is generated; that would cut the
   initial wait and is the obvious next step.
+- **Jumping far ahead can need a new request.** Clicking a word inside the audio
+  already fetched is instant. Clicking well beyond it costs one synthesis
+  request — the same few seconds the first chunk costs — and re-cuts the chunks
+  from that word, so the "Part *n* of *m*" label in the popup renumbers.
 - **Speed above 1.5× is a playback-rate change**, not a re-synthesis. The API's
   own `speed` parameter tops out at 1.5× and would require re-fetching on every
   change, so the extension uses the audio element's rate, which preserves pitch.

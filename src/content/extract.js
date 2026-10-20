@@ -316,12 +316,10 @@
       if (span) span[1] = i;
       else spans.set(slice, [i, i]);
     }
+    // The walk visits each text node once, so a node belongs to one slice.
     const byNode = new Map();
     for (let i = 0; i < doc.slices.length; i += 1) {
-      const node = doc.slices[i].node;
-      const list = byNode.get(node);
-      if (list) list.push(i);
-      else byNode.set(node, [i]);
+      if (!byNode.has(doc.slices[i].node)) byNode.set(doc.slices[i].node, i);
     }
     doc.reverse = { spans, byNode };
     return doc.reverse;
@@ -334,32 +332,31 @@
   function charIndexAt(doc, node, offset) {
     if (!doc || !node) return -1;
     const { spans, byNode } = reverseIndex(doc);
-    for (const sliceIndex of byNode.get(node) ?? []) {
-      const span = spans.get(sliceIndex);
-      if (!span) continue;
-      const slice = doc.slices[sliceIndex];
-      const wanted = Math.min(Math.max(offset, slice.start), slice.end - 1);
+    const sliceIndex = byNode.get(node);
+    const span = sliceIndex === undefined ? null : spans.get(sliceIndex);
+    if (!span) return -1;
 
-      // Offsets rise across a slice's characters, with the separating space
-      // sharing the offset of the character it precedes — so the last entry at
-      // or before `wanted` is the character itself rather than that space.
-      let low = span[0];
-      let high = span[1];
-      let found = -1;
-      while (low <= high) {
-        const mid = (low + high) >> 1;
-        if (doc.charOffsets[mid] <= wanted) {
-          found = mid;
-          low = mid + 1;
-        } else {
-          high = mid - 1;
-        }
+    const slice = doc.slices[sliceIndex];
+    const wanted = Math.min(Math.max(offset, slice.start), slice.end - 1);
+
+    // Offsets rise across a slice's characters, with the separating space
+    // sharing the offset of the character it precedes — so the last entry at
+    // or before `wanted` is the character itself rather than that space.
+    let low = span[0];
+    let high = span[1];
+    let found = -1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (doc.charOffsets[mid] <= wanted) {
+        found = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
       }
-      // Before the first character this slice kept — leading whitespace, say —
-      // the nearest thing the reader can speak is that first character.
-      return found >= 0 ? found : span[0];
     }
-    return -1;
+    // Before the first character this slice kept — leading whitespace, say —
+    // the nearest thing the reader can speak is that first character.
+    return found >= 0 ? found : span[0];
   }
 
   /** The text node and offset under a viewport point, across both APIs. */

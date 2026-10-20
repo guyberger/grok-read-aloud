@@ -14,18 +14,12 @@
 
   const INTERACTIVE = [
     "a[href]",
-    "area[href]",
     "button",
     "input",
     "select",
     "textarea",
     "label",
     "summary",
-    "option",
-    "audio",
-    "video",
-    "embed",
-    "object",
     "[contenteditable]",
     "[role='button']",
     "[role='link']",
@@ -69,8 +63,6 @@
     if (!element) return false;
     if (element.isContentEditable) return false;
     if (element.closest(INTERACTIVE)) return false;
-    // The reader's own toast is a message about the page, not part of it.
-    if (element.closest(".read-aloud-toast, .read-aloud-overlay-root")) return false;
 
     const selection = element.ownerDocument?.defaultView?.getSelection?.();
     if (selection && !selection.isCollapsed && selection.toString().trim()) return false;
