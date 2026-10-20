@@ -6,6 +6,7 @@
   "minimum_chrome_version": "116",
   "permissions": ["storage", "scripting", "activeTab"],
   "host_permissions": ["https://api.x.ai/*"],
+  "optional_host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background/background.js",
     "type": "module"

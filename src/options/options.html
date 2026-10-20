@@ -91,13 +91,25 @@
         </div>
       </section>
 
-      <section class="card" id="permission-card" hidden>
+      <section class="card">
         <h2>Site access</h2>
+        <div id="api-permission" hidden>
+          <p class="help">
+            This browser has not granted access to <code>api.x.ai</code> yet. Requests may still work, but
+            granting access is the reliable path.
+          </p>
+          <button id="grant-api" class="btn" type="button">Grant access to api.x.ai</button>
+        </div>
         <p class="help">
-          This browser has not granted the extension access to <code>api.x.ai</code> yet. Requests may still work,
-          but granting access is the reliable path.
+          By default the extension reads a page only after you open this popup or press the shortcut, and it
+          asks for access to that one tab at that moment. Granting access to every site lets the keyboard
+          shortcut work immediately on any page, at the cost of a broader permission.
         </p>
-        <button id="grant" class="btn" type="button">Grant access to api.x.ai</button>
+        <div class="row row--actions">
+          <button id="grant-all" class="btn" type="button">Allow on all sites</button>
+          <button id="revoke-all" class="btn btn--ghost" type="button">Revoke</button>
+          <span id="all-status" class="status status--inline"></span>
+        </div>
       </section>
 
       <p id="saved" class="saved" hidden>Saved</p>

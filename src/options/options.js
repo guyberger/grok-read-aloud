@@ -22,10 +22,16 @@ const el = {
   autoScroll: document.getElementById("auto-scroll"),
   sentenceTint: document.getElementById("sentence-tint"),
   highlightColor: document.getElementById("highlight-color"),
-  permissionCard: document.getElementById("permission-card"),
-  grant: document.getElementById("grant"),
+  apiPermission: document.getElementById("api-permission"),
+  grantApi: document.getElementById("grant-api"),
+  grantAll: document.getElementById("grant-all"),
+  revokeAll: document.getElementById("revoke-all"),
+  allStatus: document.getElementById("all-status"),
   saved: document.getElementById("saved"),
 };
+
+const ALL_URLS = { origins: ["<all_urls>"] };
+const API_ORIGIN = { origins: ["https://api.x.ai/*"] };
 
 let savedTimer = 0;
 let previewAudio = null;
@@ -94,12 +100,20 @@ async function refreshVoiceList({ announce }) {
   }
 }
 
-async function checkHostPermission() {
+async function checkHostPermissions() {
   try {
-    const granted = await ext.permissions.contains({ origins: ["https://api.x.ai/*"] });
-    el.permissionCard.hidden = granted;
+    el.apiPermission.hidden = await ext.permissions.contains(API_ORIGIN);
   } catch {
-    el.permissionCard.hidden = true;
+    el.apiPermission.hidden = true;
+  }
+  try {
+    const all = await ext.permissions.contains(ALL_URLS);
+    setStatus(el.allStatus, all ? "Allowed on all sites." : "Per-tab access only.", all ? "ok" : undefined);
+    el.grantAll.hidden = all;
+    el.revokeAll.hidden = !all;
+  } catch {
+    el.grantAll.hidden = true;
+    el.revokeAll.hidden = true;
   }
 }
 
@@ -148,14 +162,21 @@ el.autoScroll.addEventListener("change", () => persist({ autoScroll: el.autoScro
 el.sentenceTint.addEventListener("change", () => persist({ sentenceTint: el.sentenceTint.checked }));
 el.highlightColor.addEventListener("change", () => persist({ highlightColor: el.highlightColor.value }));
 
-el.grant.addEventListener("click", async () => {
-  try {
-    await ext.permissions.request({ origins: ["https://api.x.ai/*"] });
-  } catch {
-    // The user dismissed the prompt.
-  }
-  await checkHostPermission();
-});
+for (const [button, permission, request] of [
+  [el.grantApi, API_ORIGIN, true],
+  [el.grantAll, ALL_URLS, true],
+  [el.revokeAll, ALL_URLS, false],
+]) {
+  button.addEventListener("click", async () => {
+    try {
+      if (request) await ext.permissions.request(permission);
+      else await ext.permissions.remove(permission);
+    } catch {
+      // The user dismissed the prompt.
+    }
+    await checkHostPermissions();
+  });
+}
 
 el.preview.addEventListener("click", async () => {
   el.preview.disabled = true;
@@ -195,7 +216,7 @@ el.preview.addEventListener("click", async () => {
   const { cachedVoices } = await ext.storage.local.get("cachedVoices");
   fillVoices(Array.isArray(cachedVoices) && cachedVoices.length ? cachedVoices : FALLBACK_VOICES, settings.voiceId);
 
-  await checkHostPermission();
+  await checkHostPermissions();
   if (settings.apiKey) await refreshVoiceList({ announce: false });
   else setStatus(el.keyStatus, "Paste your xAI API key to get started.");
 })();
