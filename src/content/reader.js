@@ -247,6 +247,11 @@
       return snapshot();
     }
 
+    // The browser paints its own selection above custom highlights, so the
+    // spoken word would be invisible underneath it. The slices already hold
+    // direct node references, so dropping the selection costs nothing.
+    if (doc.scope === "selection") window.getSelection()?.removeAllRanges();
+
     chunks = align.chunkRanges(doc.text, settings.chunkChars);
     if (!chunks.length) {
       reportError("Could not find readable text on this page.");
