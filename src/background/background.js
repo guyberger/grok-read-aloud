@@ -1,6 +1,6 @@
 import { ext } from "../common/browser.js";
 import { getPublicSettings, getSettings } from "../common/settings.js";
-import { listVoices, synthesizeWithRetry } from "../common/tts-client.js";
+import { API_BASE, listVoices, synthesizeWithRetry } from "../common/tts-client.js";
 
 const CONTENT_FILES = [
   "content/util.js",
@@ -20,6 +20,32 @@ const CONTENT_FILES = [
 const pendingSynthesis = new Map();
 
 const synthesisKey = (tabId, requestId) => `${tabId ?? "none"}:${requestId}`;
+
+/**
+ * Settings, held for as long as the worker lives. Reading them is a trip to
+ * extension storage, and the first synthesis of a read waits on it; the
+ * listener below drops the copy the moment anything is written.
+ */
+let cachedSettings = null;
+
+async function settings() {
+  cachedSettings ??= await getSettings();
+  return cachedSettings;
+}
+
+/**
+ * Work the extension can do before the user presses read rather than after.
+ *
+ * Opening the popup is the signal: by the time the panel is on screen the
+ * worker is awake, the settings are in memory, and a connection to the API is
+ * open — so the first request is a request rather than a handshake. The
+ * OPTIONS call carries no key and no text; the API answers preflights from any
+ * origin, and all this needs from it is the socket.
+ */
+function warmUp() {
+  settings().catch(() => {});
+  fetch(`${API_BASE}/tts`, { method: "OPTIONS" }).catch(() => {});
+}
 
 /**
  * Injection is on demand rather than declared for `<all_urls>`: the extension
@@ -57,16 +83,16 @@ async function sendToTab(tabId, message) {
 }
 
 async function handleSynthesize(payload, sender) {
-  const settings = await getSettings();
+  const current = await settings();
   const key = payload.requestId ? synthesisKey(sender?.tab?.id, payload.requestId) : "";
   const controller = key ? new AbortController() : null;
   if (controller) pendingSynthesis.set(key, controller);
   try {
     const result = await synthesizeWithRetry({
-      apiKey: settings.apiKey,
+      apiKey: current.apiKey,
       text: payload.text,
-      voiceId: payload.voiceId || settings.voiceId,
-      language: payload.language || settings.language,
+      voiceId: payload.voiceId || current.voiceId,
+      language: payload.language || current.language,
       signal: controller?.signal,
     });
     return { ok: true, ...result };
@@ -92,12 +118,15 @@ async function handleMessage(message, sender) {
       return { ok: true, settings: await getPublicSettings() };
 
     case "listVoices": {
-      const { apiKey } = await getSettings();
+      const { apiKey } = await settings();
       if (!apiKey) throw new Error("No API key set.");
       return { ok: true, voices: await listVoices(apiKey) };
     }
 
+    // Only the popup asks, and only as it opens — which is as good a warning
+    // as the extension gets that a read is about to start.
     case "getTabState": {
+      warmUp();
       const tabId = message.tabId ?? (await activeTabId());
       const state = await sendToTab(tabId, { type: "getState" });
       return { ok: true, tabId, state };
@@ -126,6 +155,10 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
     .then(sendResponse)
     .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
   return true;
+});
+
+ext.storage.onChanged.addListener((_changes, area) => {
+  if (area === "local") cachedSettings = null;
 });
 
 ext.commands.onCommand.addListener(async (command) => {

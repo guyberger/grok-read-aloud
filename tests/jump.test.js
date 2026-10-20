@@ -116,7 +116,7 @@ test("a clicked character maps through to a chunk and a time within it", () => {
 test("chunkRanges starts a chunk exactly at a forced boundary", () => {
   const text = `${PARAGRAPH}\n`.repeat(6);
   const at = text.indexOf("holding", 500);
-  const ranges = chunkRanges(text, 400, [at]);
+  const ranges = chunkRanges(text, 400, { boundaries: [at] });
 
   assert.ok(
     Array.from(ranges).some((range) => range.start === at),
@@ -130,7 +130,7 @@ test("chunkRanges starts a chunk exactly at a forced boundary", () => {
 test("a forced boundary keeps every word, in order", () => {
   const text = `${PARAGRAPH}\n`.repeat(4);
   const at = text.indexOf("wheel", 300);
-  const rejoined = Array.from(chunkRanges(text, 350, [at]))
+  const rejoined = Array.from(chunkRanges(text, 350, { boundaries: [at] }))
     .map((range) => text.slice(range.start, range.end))
     .join(" ")
     .split(/\s+/)
@@ -145,12 +145,15 @@ test("boundaries outside the text, or duplicated, change nothing", () => {
 
   for (const boundaries of [[], [0], [-10], [text.length], [text.length + 50]]) {
     assert.deepEqual(
-      shape(chunkRanges(text, 400, boundaries)),
+      shape(chunkRanges(text, 400, { boundaries })),
       plain,
       `boundaries ${JSON.stringify(boundaries)} should be ignored`,
     );
   }
-  assert.deepEqual(shape(chunkRanges(text, 400, [120, 120])), shape(chunkRanges(text, 400, [120])));
+  assert.deepEqual(
+    shape(chunkRanges(text, 400, { boundaries: [120, 120] })),
+    shape(chunkRanges(text, 400, { boundaries: [120] })),
+  );
 });
 
 test("a forced boundary only disturbs the chunking around itself", () => {
@@ -161,7 +164,7 @@ test("a forced boundary only disturbs the chunking around itself", () => {
   const text = `${PARAGRAPH}\n`.repeat(8);
   const plain = Array.from(chunkRanges(text, 400));
   const at = wordStartAt(text, plain[5].start + 120);
-  const recut = Array.from(chunkRanges(text, 400, [at]));
+  const recut = Array.from(chunkRanges(text, 400, { boundaries: [at] }));
 
   const settled = plain.filter((range) => range.end <= at - 400);
   assert.ok(settled.length > 1, "fixture should have chunks well ahead of the boundary");

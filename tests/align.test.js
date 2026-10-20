@@ -53,6 +53,50 @@ test("chunkRanges never emits a whitespace-only chunk", () => {
   assert.equal("   \n\n  Hello there, world.  \n\n   ".slice(ranges[0].start, ranges[0].end).trim(), "Hello there, world.");
 });
 
+test("firstChars makes the opening chunk small and grows from there", () => {
+  const text = `${ARTICLE}\n`.repeat(20);
+  const sizes = own(chunkRanges(text, 1200, { firstChars: 240 })).map((range) => range.end - range.start);
+
+  assert.ok(sizes[0] <= 240, `opening chunk of ${sizes[0]} characters is not small`);
+  assert.ok(sizes[1] > sizes[0], "the second chunk should be bigger than the first");
+  assert.ok(
+    sizes.slice(0, 4).every((size, index) => size <= 240 * 2 ** index),
+    `sizes ${sizes.slice(0, 4).join(", ")} grew faster than doubling`,
+  );
+  assert.ok(sizes.some((size) => size > 900), `nothing reached full size: ${sizes.join(", ")}`);
+  for (const size of sizes) assert.ok(size <= 1200, `chunk of ${size} exceeds the limit`);
+});
+
+test("a small opening chunk still ends on a sentence boundary", () => {
+  const text = `${ARTICLE}\n`.repeat(20);
+  const ranges = own(chunkRanges(text, 1200, { firstChars: 240 }));
+  for (const range of ranges.slice(0, -1)) {
+    const tail = text.slice(range.start, range.end).trimEnd().slice(-1);
+    assert.ok(".!?\n".includes(tail), `chunk ended mid-sentence on ${JSON.stringify(tail)}`);
+  }
+});
+
+test("firstChars loses no text and stays within the limit it is given", () => {
+  const text = `${ARTICLE}\n`.repeat(9);
+  const rejoined = own(chunkRanges(text, 1200, { firstChars: 240 }))
+    .map((range) => text.slice(range.start, range.end))
+    .join(" ")
+    .split(/\s+/)
+    .filter(Boolean);
+  assert.deepEqual(rejoined, text.split(/\s+/).filter(Boolean));
+
+  // A first chunk is never asked to be bigger than the steady-state size.
+  const small = own(chunkRanges(text, 300, { firstChars: 900 }));
+  for (const range of small) assert.ok(range.end - range.start <= 300);
+});
+
+test("without firstChars the chunking is unchanged", () => {
+  const text = `${ARTICLE}\n`.repeat(9);
+  const shape = (ranges) => own(ranges).map((range) => `${range.start}:${range.end}`);
+  assert.deepEqual(shape(chunkRanges(text, 600, {})), shape(chunkRanges(text, 600)));
+  assert.deepEqual(shape(chunkRanges(text, 600, { firstChars: 0 })), shape(chunkRanges(text, 600)));
+});
+
 test("characterTimes maps one-for-one when the API echoes the text", () => {
   const text = "Hello world.";
   const { graphChars, graphTimes } = fakeTimestamps(text, 0.1);

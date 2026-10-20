@@ -8,6 +8,17 @@
  *
  * Point a browser at it by mapping the hostname, for example:
  *   --host-resolver-rules="MAP api.x.ai 127.0.0.1:8443"
+ *
+ * A synthesis request can be made to take as long as a real one would, so
+ * time-to-first-audio means something:
+ *
+ *   --latency-base 400 --latency-per-char 1.5 --latency-timestamps 150
+ *
+ * The real API publishes no latency figures. What it does say is that
+ * synthesis is per-character work and that `with_timestamps` "adds latency for
+ * the post-synthesis alignment pass", so the model here is a fixed cost, a
+ * per-character cost, and a surcharge for timestamps. The per-character rate is
+ * the one to argue about; the shape is not.
  */
 import { createServer } from "node:https";
 import { createServer as createHttpServer } from "node:http";
@@ -21,6 +32,20 @@ for (let i = 2; i < process.argv.length; i += 2) {
 const PORT = Number(args.get("port") ?? 8443);
 const SAMPLE_RATE = 24000;
 const SECONDS_PER_CHAR = 0.055;
+
+const LATENCY = {
+  base: Number(args.get("latency-base") ?? 0),
+  perChar: Number(args.get("latency-per-char") ?? 0),
+  timestamps: Number(args.get("latency-timestamps") ?? 0),
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function synthesisDelay(text, withTimestamps) {
+  return (
+    LATENCY.base + text.length * LATENCY.perChar + (withTimestamps ? LATENCY.timestamps : 0)
+  );
+}
 
 const VOICES = [
   "eve", "ara", "rex", "carina", "orion", "luna", "iris", "altair",
@@ -87,8 +112,9 @@ function timestampsFor(text) {
 
 /**
  * Every synthesis request this process has served, so a test can assert what
- * was actually asked for — how many requests a jump cost, and which word the
- * audio starts on. Not something the real API offers.
+ * was actually asked for — how many requests a jump cost, which word the audio
+ * starts on, and when each request arrived and was answered. Not something the
+ * real API offers.
  */
 const served = [];
 
@@ -140,8 +166,22 @@ async function handle(request, response) {
     }
     const text = String(body.text ?? "");
     const duration = Number((text.length * SECONDS_PER_CHAR).toFixed(3));
-    served.push({ chars: text.length, head: text.slice(0, 60) });
-    console.log(`tts: voice=${body.voice_id} lang=${body.language} chars=${text.length} ${duration}s`);
+    const entry = {
+      chars: text.length,
+      head: text.slice(0, 60),
+      tail: text.slice(-30),
+      receivedAt: Date.now(),
+    };
+    served.push(entry);
+
+    const delay = synthesisDelay(text, body.with_timestamps);
+    if (delay > 0) await sleep(delay);
+    entry.respondedAt = Date.now();
+
+    console.log(
+      `tts: voice=${body.voice_id} lang=${body.language} chars=${text.length} ${duration}s` +
+        (delay > 0 ? ` after ${Math.round(delay)}ms` : ""),
+    );
     send(response, 200, {
       audio: renderWav(text, duration).toString("base64"),
       content_type: "audio/wav",
