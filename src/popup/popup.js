@@ -1,5 +1,28 @@
-import { ext } from "../common/browser.js";
-import { FALLBACK_VOICES, getSettings, setSettings } from "../common/settings.js";
+/**
+ * The popup paints before it knows anything.
+ *
+ * Everything this panel needs — stored settings, the cached voice list, the
+ * reader's state — costs at least one round trip, and reaching the reader can
+ * cost much more: the background worker may have to start, then inject the
+ * content scripts, then wait for a page whose main thread is busy. None of
+ * that may stand between the user clicking the toolbar icon and seeing a
+ * panel, so `popup.html` ships a complete default state that needs no script
+ * at all, nothing here is awaited before that state is on screen, and the
+ * settings module is pulled in dynamically rather than widening the module
+ * graph the browser must finish before the document loads.
+ *
+ * `tools/popup-paint.js` measures what this is worth.
+ */
+const ext = globalThis.browser ?? globalThis.chrome;
+
+/**
+ * The settings module, fetched on first use rather than imported at the top.
+ * A static import would put it, and everything it imports, in the graph the
+ * browser has to finish before the document loads — which is the moment the
+ * popup window is put on screen.
+ */
+let settingsModule = null;
+const settingsApi = () => (settingsModule ??= import("../common/settings.js"));
 
 const el = {
   status: document.getElementById("status"),
@@ -19,9 +42,12 @@ const el = {
 };
 
 let scope = "page";
-let current = { status: "idle" };
+// Matches what the markup already shows, so the first render is a no-op
+// rather than a flash of different text.
+let current = { status: "pending" };
 
 const LABELS = {
+  pending: { status: "Checking…", action: "Read" },
   idle: { status: "Ready", action: "Read" },
   loading: { status: "Loading", action: "Loading…" },
   playing: { status: "Playing", action: "Pause" },
@@ -36,12 +62,13 @@ function render(state) {
   el.status.textContent = label.status;
   el.status.dataset.state = current.status;
   el.toggleLabel.textContent =
-    current.status === "idle" || current.status === "error"
+    current.status === "idle" || current.status === "error" || current.status === "pending"
       ? `${label.action} ${scope === "selection" ? "selection" : "page"}`
       : label.action;
 
   el.toggle.disabled = current.status === "loading";
-  el.stop.disabled = current.status === "idle" || current.status === "error";
+  el.stop.disabled =
+    current.status === "idle" || current.status === "error" || current.status === "pending";
   el.pageTitle.textContent = current.title ?? "";
   el.progressBar.style.width = `${Math.round((current.progress ?? 0) * 100)}%`;
 
@@ -88,10 +115,18 @@ async function control(action, args = {}) {
   }
 }
 
+async function saveSettings(patch) {
+  const { setSettings } = await settingsApi();
+  await setSettings(patch);
+}
+
 async function loadVoices(selected) {
-  let voices = FALLBACK_VOICES;
-  const { cachedVoices } = await ext.storage.local.get("cachedVoices");
-  if (Array.isArray(cachedVoices) && cachedVoices.length) voices = cachedVoices;
+  const [{ FALLBACK_VOICES }, { cachedVoices }] = await Promise.all([
+    settingsApi(),
+    ext.storage.local.get("cachedVoices"),
+  ]);
+
+  let voices = Array.isArray(cachedVoices) && cachedVoices.length ? cachedVoices : FALLBACK_VOICES;
   if (!voices.some((voice) => voice.voice_id === selected)) {
     voices = [{ voice_id: selected, name: selected }, ...voices];
   }
@@ -116,7 +151,7 @@ for (const button of el.scopeButtons) {
 el.rate.addEventListener("input", () => setRateUi(el.rate.value));
 el.rate.addEventListener("change", async () => {
   const rate = Number(el.rate.value);
-  await setSettings({ rate });
+  await saveSettings({ rate });
   await control("setRate", { rate });
 });
 
@@ -124,13 +159,14 @@ for (const chip of el.presets) {
   chip.addEventListener("click", async () => {
     const rate = Number(chip.dataset.rate);
     setRateUi(rate);
-    await setSettings({ rate });
+    await saveSettings({ rate });
     await control("setRate", { rate });
   });
 }
 
 el.voice.addEventListener("change", async () => {
-  await setSettings({ voiceId: el.voice.value });
+  if (!el.voice.value) return;
+  await saveSettings({ voiceId: el.voice.value });
   await ext.runtime.sendMessage({ type: "control", action: "settingsChanged" }).catch(() => {});
 });
 
@@ -143,19 +179,54 @@ ext.runtime.onMessage.addListener((message) => {
   if (message?.type === "tabStateChanged") render(message.state);
 });
 
-(async function init() {
-  const settings = await getSettings();
-  setRateUi(settings.rate);
-  await loadVoices(settings.voiceId);
-  try {
-    const response = await ext.runtime.sendMessage({ type: "getTabState" });
-    if (response?.ok) {
+/**
+ * Reader state and stored settings are fetched side by side, and each is
+ * rendered as it lands rather than waiting for the other. The reader is the
+ * slow half, since reaching it can mean starting the worker and injecting the
+ * content scripts.
+ *
+ * Nothing here is awaited before the panel exists: the document is already
+ * parsed and painted from its own markup, and every call below only replaces
+ * text in place when it answers.
+ */
+function load() {
+  // Pure message passing, so starting it now costs the renderer nothing, and
+  // it is much the slowest answer to come back.
+  const reader = ext.runtime
+    .sendMessage({ type: "getTabState" })
+    .then((response) => {
+      if (!response?.ok) throw new Error(response?.error || "Something went wrong.");
       render(response.state);
       if (response.state?.scope) setScope(response.state.scope);
-      return;
-    }
-    render({ status: "error", error: response?.error, hasApiKey: Boolean(settings.apiKey) });
-  } catch (error) {
-    render({ status: "error", error: error.message });
-  }
-})();
+      return response.state;
+    })
+    .catch((error) => {
+      render({ status: "error", error: error.message });
+      return null;
+    });
+
+  // Fetching and compiling the settings module is work for this thread, so it
+  // waits until a frame has been handed over. The speed and voice controls
+  // show their defaults in the meantime.
+  requestAnimationFrame(() =>
+    setTimeout(async () => {
+      let stored = null;
+      try {
+        const { getSettings } = await settingsApi();
+        stored = await getSettings();
+        setRateUi(stored.rate);
+        await loadVoices(stored.voiceId);
+      } catch {
+        // Leave the controls on their defaults.
+      }
+      // A reader we could not reach says nothing about the key, so say it here.
+      if ((await reader) === null && stored) {
+        render({ ...current, hasApiKey: Boolean(stored.apiKey) });
+      }
+    }, 0),
+  );
+}
+
+// Safe to start straight away: the panel is already on screen from its own
+// markup, and nothing above occupies this thread long enough to hold a frame.
+load();

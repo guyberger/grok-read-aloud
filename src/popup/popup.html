@@ -9,7 +9,13 @@
     <main class="panel">
       <header class="panel__head">
         <h1>Read Aloud</h1>
-        <span id="status" class="status">Ready</span>
+        <!--
+          Everything below is the state the popup shows before it has asked
+          anyone anything, so the panel is complete on the first paint and the
+          script only has to correct it. Nothing here claims to know what the
+          reader is doing.
+        -->
+        <span id="status" class="status">Checking…</span>
       </header>
 
       <p id="page-title" class="page-title"></p>
@@ -54,7 +60,9 @@
 
       <fieldset class="field">
         <legend><label for="voice">Voice</label></legend>
-        <select id="voice"></select>
+        <select id="voice">
+          <option value="">Loading voices…</option>
+        </select>
       </fieldset>
 
       <p id="message" class="message" hidden></p>
