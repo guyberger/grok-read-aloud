@@ -1,6 +1,8 @@
 import { ext } from "../common/browser.js";
+import { withCredential } from "../common/credentials.js";
 import { getPublicSettings, getSettings } from "../common/settings.js";
 import { API_BASE, listVoices, synthesizeWithRetry } from "../common/tts-client.js";
+import * as xaiAuth from "../common/xai-auth.js";
 
 const CONTENT_FILES = [
   "content/util.js",
@@ -99,17 +101,112 @@ async function handleSynthesize(payload, sender) {
   const controller = key ? new AbortController() : null;
   if (controller) pendingSynthesis.set(key, controller);
   try {
-    const result = await synthesizeWithRetry({
-      apiKey: current.apiKey,
-      text: payload.text,
-      voiceId: payload.voiceId || current.voiceId,
-      language: payload.language || current.language,
-      signal: controller?.signal,
-    });
-    return { ok: true, ...result };
+    const { result, notice } = await withCredential(
+      (token) =>
+        synthesizeWithRetry({
+          apiKey: token,
+          text: payload.text,
+          voiceId: payload.voiceId || current.voiceId,
+          language: payload.language || current.language,
+          signal: controller?.signal,
+        }),
+      { settings: current },
+    );
+    // `notice` says the sign-in was skipped and the key used instead. The
+    // reader shows it rather than dropping it: the read worked, but not the
+    // way the user asked for.
+    return { ok: true, ...result, ...(notice ? { notice } : {}) };
   } finally {
     if (key) pendingSynthesis.delete(key);
   }
+}
+
+/**
+ * A sign-in, driven from here rather than from the page that asked for it.
+ *
+ * Approval happens in another tab and takes as long as it takes, so whoever
+ * started the flow is usually gone by the time it finishes — a popup closes the
+ * moment the verification tab takes focus. The worker owns the polling, writes
+ * the prompt to storage so the next UI to open can show it, and announces the
+ * result to anything still listening.
+ */
+let signInFlow = null;
+
+function announce(message) {
+  ext.runtime.sendMessage(message).catch(() => {});
+}
+
+async function startSignIn({ openTab = true } = {}) {
+  // A second click while one is in flight shows the prompt it already has
+  // rather than stranding the first device code.
+  if (signInFlow) {
+    const pending = await xaiAuth.readPendingFlow();
+    if (pending) {
+      if (openTab) ext.tabs.create({ url: pending.verificationUrlComplete, active: true }).catch(() => {});
+      return { ok: true, flow: pending, alreadyRunning: true };
+    }
+  }
+
+  const controller = new AbortController();
+  let prompt = null;
+  const ready = new Promise((resolve, reject) => {
+    const run = xaiAuth.signIn({
+      signal: controller.signal,
+      onPrompt: (details) => {
+        prompt = { ...details, startedAt: Date.now() };
+        resolve(prompt);
+      },
+    });
+    signInFlow = { controller, run };
+    run.catch(reject);
+  });
+
+  const flow = await ready;
+  await xaiAuth.savePendingFlow(flow);
+  announce({ type: "xaiAuthChanged", state: "pending", flow });
+
+  if (openTab) {
+    ext.tabs.create({ url: flow.verificationUrlComplete, active: true }).catch(() => {});
+  }
+
+  signInFlow.run
+    .then(async (status) => {
+      await xaiAuth.clearPendingFlow();
+      announce({ type: "xaiAuthChanged", state: "signedIn", status });
+    })
+    .catch(async (error) => {
+      await xaiAuth.clearPendingFlow();
+      announce({ type: "xaiAuthChanged", state: "failed", error: error?.message || String(error) });
+    })
+    .finally(() => {
+      signInFlow = null;
+      cachedSettings = null;
+    });
+
+  return { ok: true, flow };
+}
+
+async function cancelSignIn() {
+  signInFlow?.controller.abort();
+  signInFlow = null;
+  await xaiAuth.clearPendingFlow();
+  announce({ type: "xaiAuthChanged", state: "cancelled" });
+  return { ok: true };
+}
+
+/**
+ * Polling runs in the worker, and Chrome stops an idle worker. Each poll is a
+ * `fetch`, which keeps it awake for as long as the flow lasts — but a browser
+ * restart in the middle leaves a prompt in storage that nothing is waiting on.
+ * So a stored flow with no poll behind it is cleared rather than shown.
+ */
+async function authState() {
+  const [status, stored] = await Promise.all([xaiAuth.getStatus(), xaiAuth.readPendingFlow()]);
+  if (stored && !signInFlow) {
+    await xaiAuth.clearPendingFlow();
+    return { ok: true, status, flow: null, pending: false, abandoned: true };
+  }
+  return { ok: true, status, flow: stored, pending: Boolean(stored) };
 }
 
 async function handleMessage(message, sender) {
@@ -129,9 +226,27 @@ async function handleMessage(message, sender) {
       return { ok: true, settings: await getPublicSettings() };
 
     case "listVoices": {
-      const { apiKey } = await settings();
-      if (!apiKey) throw new Error("No API key set.");
-      return { ok: true, voices: await listVoices(apiKey) };
+      const { result, source, notice } = await withCredential((token) => listVoices(token), {
+        settings: await settings(),
+      });
+      return { ok: true, voices: result, source, notice };
+    }
+
+    case "xaiAuthState":
+      return authState();
+
+    case "xaiSignIn":
+      return startSignIn({ openTab: message.openTab !== false });
+
+    case "xaiCancelSignIn":
+      return cancelSignIn();
+
+    case "xaiSignOut": {
+      await cancelSignIn();
+      await xaiAuth.signOut();
+      cachedSettings = null;
+      announce({ type: "xaiAuthChanged", state: "signedOut" });
+      return { ok: true, status: await xaiAuth.getStatus() };
     }
 
     // Only the popup asks, and only as it opens — which is as good a warning
@@ -185,5 +300,6 @@ ext.commands.onCommand.addListener(async (command) => {
 ext.runtime.onInstalled.addListener(async (details) => {
   if (details.reason !== "install") return;
   const { apiKey } = await getSettings();
-  if (!apiKey) ext.runtime.openOptionsPage();
+  if (!apiKey && !(await xaiAuth.hasUsableSession())) ext.runtime.openOptionsPage();
 });
+

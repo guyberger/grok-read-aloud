@@ -225,6 +225,30 @@ input[type="checkbox"] {
   color: var(--danger);
 }
 
+.auth-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/**
+ * The user code, big enough to read off the screen and type somewhere else,
+ * and spaced so a run of characters can be read back without losing its place.
+ */
+.auth-code {
+  margin: 0;
+  align-self: flex-start;
+  padding: 10px 16px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 10px;
+  background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: 0.22em;
+  user-select: all;
+}
+
 .saved {
   position: sticky;
   bottom: 12px;
