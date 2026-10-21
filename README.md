@@ -228,6 +228,10 @@ npm run verify    # all three
 npm run icons     # regenerate the PNG icons from tools/make-icons.js
 ```
 
+There is nothing to install: the committed `package-lock.json` describes an
+empty dependency tree, and exists only so that `npm ci` succeeds as a no-op
+instead of failing for want of a lockfile.
+
 `npm test` covers chunking, timestamp alignment, the API client's error
 handling, content extraction, and the mapping from a click to a word, a chunk
 and a time. The extraction and click tests drive a headless Chrome, because
