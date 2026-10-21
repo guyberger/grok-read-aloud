@@ -291,13 +291,32 @@ test("a refresh that returns no new refresh token keeps the old one", async () =
   assert.equal(store.get("xaiOAuth").refreshToken, "refresh-1");
 });
 
-test("a short-lived token gets a short refresh lead, so it is not refreshed on every call", () => {
+test("the refresh lead is shorter than the shortest token xAI issues", () => {
   const now = Date.now();
-  // Six hours out: refresh an hour before, as usual.
-  assert.equal(auth.refreshSkewMs(now + 6 * 60 * 60 * 1000, now), 60 * 60 * 1000);
-  // Fifteen minutes out: an hour of lead would mean refreshing on every single
-  // call, burning a single-use refresh token each time.
-  assert.equal(auth.refreshSkewMs(now + 15 * 60 * 1000, now), 2 * 60 * 1000);
+  // A fifteen-minute token — the short end of what a device-code login returns
+  // — must still have most of its life used before anything is refreshed. A
+  // longer lead than the token itself would refresh on every single call, and
+  // each one spends a single-use refresh token.
+  assert.equal(auth.needsRefresh(now + 15 * 60 * 1000, now), false);
+  assert.equal(auth.needsRefresh(now + 6 * 60 * 60 * 1000, now), false);
+  assert.equal(auth.needsRefresh(now + 4 * 60 * 1000, now), true);
+  assert.equal(auth.needsRefresh(now - 1000, now), true);
+  assert.ok(auth.REFRESH_LEAD_MS < 15 * 60 * 1000);
+});
+
+test("two callers wanting a token at once share one refresh", async () => {
+  store.set("xaiOAuth", { accessToken: "access-1", refreshToken: "refresh-1", expiresAt: Date.now() + 1000 });
+  const calls = stubFetch([
+    { status: 200, body: { access_token: "access-2", refresh_token: "refresh-2", expires_in: 3600 } },
+    // A second exchange of the same single-use refresh token would land here.
+    { status: 400, body: { error: "invalid_grant", error_description: "Refresh token already used." } },
+  ]);
+
+  const [first, second] = await Promise.all([auth.getAccessToken(), auth.getAccessToken()]);
+
+  assert.equal(first, "access-2");
+  assert.equal(second, "access-2");
+  assert.equal(calls.length, 1, "a single-use refresh token must only be spent once");
 });
 
 test("expiry falls back to the JWT's own exp when the response omits expires_in", async () => {

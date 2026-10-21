@@ -27,6 +27,11 @@
   box-sizing: border-box;
 }
 
+/** `hidden` has to beat the author rules below that also set `display`. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   width: 310px;

@@ -29,6 +29,16 @@
   box-sizing: border-box;
 }
 
+/**
+ * `hidden` has to win. The UA stylesheet gives it `display: none`, but any
+ * author rule that sets `display` on the same element beats it — and several
+ * below do, on elements this page hides and shows. Without this the sign-in
+ * card shows all three of its states at once.
+ */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);

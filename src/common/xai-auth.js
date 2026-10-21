@@ -55,21 +55,22 @@ const FORM_HEADERS = {
 };
 
 /**
- * Refresh this far before `exp` rather than on the 401.
+ * Refresh this far before expiry rather than waiting for the 401.
  *
- * A device-code login can hand back a token good for hours or for a quarter of
- * an hour, and an hour of lead time on a fifteen-minute token means refreshing
- * on every single call — which burns a single-use refresh token each time and
- * races concurrent callers into `invalid_grant`. So the lead time shrinks to
- * two minutes once a token is nearly spent. Same shape as Hermes.
+ * Five minutes, flat. A device-code login can hand back a token good for six
+ * hours or for a quarter of an hour, and the lead time has to leave both alone
+ * until they are nearly spent: anything longer than the shortest token xAI
+ * issues would refresh on every single call, and since a refresh token is
+ * single use, that spends one each time. Five minutes is comfortably more than
+ * a synthesis request takes and comfortably less than the shortest token lives.
+ *
+ * It does not have to be generous, because a token that dies early is caught
+ * on the way back — see the 401 retry in `common/credentials.js`.
  */
-const MAX_REFRESH_SKEW_MS = 60 * 60 * 1000;
-const SHORT_REFRESH_SKEW_MS = 2 * 60 * 1000;
-const SHORT_TOKEN_MS = 45 * 60 * 1000;
+export const REFRESH_LEAD_MS = 5 * 60 * 1000;
 
-export function refreshSkewMs(expiresAt, now = Date.now()) {
-  const remaining = expiresAt - now;
-  return remaining > 0 && remaining <= SHORT_TOKEN_MS ? SHORT_REFRESH_SKEW_MS : MAX_REFRESH_SKEW_MS;
+export function needsRefresh(expiresAt, now = Date.now()) {
+  return expiresAt - REFRESH_LEAD_MS <= now;
 }
 
 export class AuthError extends Error {
@@ -407,6 +408,29 @@ export async function signOut() {
 }
 
 /**
+ * One refresh at a time.
+ *
+ * A read fetches the opening chunk and the one after it together, so two
+ * callers routinely want a token in the same millisecond. The refresh token is
+ * single use: let both exchange it and the second is told `invalid_grant`, and
+ * a working sign-in looks revoked. Sharing the one exchange is the fix, and the
+ * worker is a single module instance, so one variable is enough to do it.
+ */
+let refreshInFlight = null;
+
+function refreshOnce(record) {
+  refreshInFlight ??= (async () => {
+    const payload = await refreshTokens(record.refreshToken);
+    const refreshed = recordFrom(payload, record);
+    await writeStore(refreshed);
+    return refreshed.accessToken;
+  })().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
+}
+
+/**
  * The access token to use right now, refreshed first if it is close enough to
  * expiry to be worth not finding out the hard way.
  */
@@ -415,21 +439,15 @@ export async function getAccessToken({ forceRefresh = false } = {}) {
   if (!record?.accessToken) {
     throw new AuthError("Not signed in to xAI.", { code: "signed_out", reauth: true });
   }
-
-  const now = Date.now();
-  const expiring = record.expiresAt - refreshSkewMs(record.expiresAt, now) <= now;
-  if (!forceRefresh && !expiring) return record.accessToken;
+  if (!forceRefresh && !needsRefresh(record.expiresAt)) return record.accessToken;
 
   try {
-    const payload = await refreshTokens(record.refreshToken);
-    const refreshed = recordFrom(payload, record);
-    await writeStore(refreshed);
-    return refreshed.accessToken;
+    return await refreshOnce(record);
   } catch (error) {
     if (error.code === "tier_denied") await markTierDenied();
     // A refresh that failed on the network leaves a token that may still work;
     // a grant xAI has rejected outright does not.
-    if (error.reauth || error.code === "tier_denied" || !record.accessToken) throw error;
+    if (error.reauth || error.code === "tier_denied") throw error;
     return record.accessToken;
   }
 }

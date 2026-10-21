@@ -728,6 +728,254 @@ async function main() {
 
   await control("setRate", { rate: 1 });
   await control("stop");
+
+  // 11. Sign in with xAI.
+  //
+  // The whole flow, against the mock OAuth server: a device code, the
+  // approval page in its own tab with a real click on it, the poll that
+  // finishes once it is approved, a refresh, the 403 tier gate falling back to
+  // the key, and sign-out. The mock issues opaque tokens that mean nothing
+  // anywhere, and every assertion below is about what it was shown rather than
+  // about the tokens themselves — nothing here ever reads one.
+  const oauthDebug = async () =>
+    JSON.parse(
+      await ui.evaluate(
+        `fetch("https://auth.x.ai/debug/oauth").then((r) => r.json()).then((b) => JSON.stringify(b))`,
+      ),
+    );
+  const setGate = (on) =>
+    ui.evaluate(`fetch("https://auth.x.ai/debug/oauth/gate?on=${on ? 1 : 0}", { method: "POST" }).then(() => true)`);
+  const authState = () => command({ type: "xaiAuthState" });
+
+  /** Samples the sign-in state until `predicate` holds, or gives up. */
+  const awaitAuth = async (predicate, { timeoutMs = 20000 } = {}) => {
+    const deadline = Date.now() + timeoutMs;
+    let state = null;
+    while (Date.now() < deadline) {
+      state = await authState();
+      if (state?.ok && predicate(state)) return state;
+      await sleep(200);
+    }
+    return state;
+  };
+
+  await ui.evaluate(`chrome.storage.local.remove("xaiOAuth").then(() => true)`);
+  const signedOut = await authState();
+  check(
+    "starts signed out",
+    signedOut?.ok && signedOut.status.signedIn === false,
+    JSON.stringify(signedOut?.status),
+  );
+
+  // 11a. The device code, and the prompt it produces.
+  const signIn = await command({ type: "xaiSignIn" });
+  check(
+    "sign-in asks xAI for a device code and a user code",
+    Boolean(signIn?.ok && signIn.flow?.userCode && signIn.flow?.verificationUrl),
+    signIn?.ok ? `code ${signIn.flow.userCode} at ${signIn.flow.verificationUrl}` : signIn?.error,
+  );
+  check(
+    "the verification URL carries the user code, so approving needs no typing",
+    signIn?.flow?.verificationUrlComplete?.includes(signIn.flow.userCode),
+    signIn?.flow?.verificationUrlComplete,
+  );
+
+  const waiting = await authState();
+  check(
+    "a sign-in in progress is visible to any UI that opens",
+    Boolean(waiting?.ok && waiting.pending && waiting.flow.userCode === signIn.flow.userCode),
+    `pending: ${waiting?.pending}`,
+  );
+
+  // 11b. Approval, in the tab the worker opened, with a click on the page.
+  const approvalTarget = await findTarget((target) => target.url.includes("accounts.x.ai/oauth2/device"), {
+    label: "xAI approval page",
+  });
+  check("the approval page opens in its own tab", Boolean(approvalTarget), approvalTarget?.url);
+
+  const approval = await new Session(approvalTarget.webSocketDebuggerUrl).open();
+  await approval.send("Runtime.enable");
+  const shownCode = await approval.evaluate(`document.getElementById("code")?.textContent ?? ""`);
+  check(
+    "the approval page shows the same code the extension did",
+    shownCode === signIn.flow.userCode,
+    `${shownCode} vs ${signIn.flow.userCode}`,
+  );
+  await approval.evaluate(`document.getElementById("approve").click()`);
+
+  const approved = await awaitAuth((state) => state.status.signedIn);
+  check(
+    "approving finishes the sign-in",
+    Boolean(approved?.status?.signedIn),
+    approved?.status?.signedIn ? `expires in ${approved.status.expiresInSeconds}s` : JSON.stringify(approved?.status),
+  );
+  check("the finished sign-in can refresh itself", approved?.status?.canRefresh === true);
+  check("the sign-in prompt is cleared once it is done", approved?.pending === false);
+  check(
+    "no token is in the state the UI is handed",
+    !JSON.stringify(approved?.status ?? {}).includes("mock-oauth"),
+    JSON.stringify(approved?.status),
+  );
+  approval.close();
+
+  // 11c. From here the API is reached with the sign-in, not the key.
+  const beforeSignedInRead = (await synthesised()).length;
+  await control("start", { scope: "page" });
+  await sleep(2500);
+  const signedInRequests = (await synthesised()).slice(beforeSignedInRead);
+  check(
+    "a read while signed in goes out with the OAuth token",
+    signedInRequests.length > 0 && signedInRequests.every((entry) => entry.auth === "oauth"),
+    signedInRequests.map((entry) => entry.auth).join(", ") || "no requests",
+  );
+  await control("stop");
+
+  // 11d. Refresh before expiry: a token nearly spent is swapped for a new one
+  // on the next call, without anybody being asked to sign in again.
+  const beforeRefresh = await oauthDebug();
+  await ui.evaluate(`
+    chrome.storage.local.get("xaiOAuth")
+      .then(({ xaiOAuth }) =>
+        chrome.storage.local.set({ xaiOAuth: { ...xaiOAuth, expiresAt: Date.now() + 30000 } }))
+      .then(() => true)
+  `);
+  const afterRefreshCall = await command({ type: "listVoices" });
+  const afterRefresh = await oauthDebug();
+  check(
+    "a nearly-expired token is refreshed before it is used",
+    afterRefresh.issued > beforeRefresh.issued &&
+      afterRefresh.tokenRequests.some((entry) => entry.grantType === "refresh_token"),
+    `issued ${beforeRefresh.issued} → ${afterRefresh.issued}`,
+  );
+  check("the request after a refresh succeeds", Boolean(afterRefreshCall?.ok), afterRefreshCall?.error);
+  check(
+    "the spent refresh token is replaced rather than kept alongside",
+    afterRefresh.liveRefreshTokens === 1,
+    `${afterRefresh.liveRefreshTokens} live`,
+  );
+
+  // 11e. A token the API no longer knows: one refresh, then the same request
+  // again. A 401 is a stale token until a second attempt says otherwise.
+  await ui.evaluate(`
+    chrome.storage.local.get("xaiOAuth")
+      .then(({ xaiOAuth }) =>
+        chrome.storage.local.set({
+          xaiOAuth: { ...xaiOAuth, accessToken: "mock-oauth-access-never-issued" },
+        }))
+      .then(() => true)
+  `);
+  const beforeStale = await oauthDebug();
+  const afterStale = await command({ type: "listVoices" });
+  const staleDebug = await oauthDebug();
+  check(
+    "a 401 is retried once with a freshly refreshed token",
+    Boolean(afterStale?.ok) && afterStale.source === "oauth" && staleDebug.issued > beforeStale.issued,
+    afterStale?.ok ? `source ${afterStale.source}` : afterStale?.error,
+  );
+
+  // 11f. The tier gate. xAI answers 403 to OAuth accounts it will not let
+  // through, and the key is what catches that.
+  await setGate(true);
+  const beforeGated = (await synthesised()).length;
+  const gatedRead = await command({
+    type: "synthesize",
+    text: "Gated accounts fall back to the key.",
+    voiceId: "eve",
+    language: "en",
+  });
+  const gatedRequests = (await synthesised()).slice(beforeGated);
+  check("a gated sign-in still produces audio", Boolean(gatedRead?.ok), gatedRead?.error);
+  check(
+    "the audio came from the API key, not the gated sign-in",
+    gatedRequests.at(-1)?.auth === "apiKey",
+    gatedRequests.map((entry) => entry.auth).join(" → ") || "no requests",
+  );
+  check(
+    "the fallback says why it happened",
+    /not let the signed-in account through/i.test(gatedRead?.notice ?? ""),
+    JSON.stringify(gatedRead?.notice ?? ""),
+  );
+  const gatedState = await authState();
+  check(
+    "a gated account is recorded as signed in but gated",
+    gatedState?.status?.signedIn === true && gatedState.status.tierDenied === true,
+    JSON.stringify(gatedState?.status),
+  );
+
+  // Once gated, the sign-in is not tried again until something succeeds: the
+  // next request goes straight out with the key.
+  const beforeSecondGated = (await synthesised()).length;
+  const secondGated = await command({
+    type: "synthesize",
+    text: "The second one leads with the key.",
+    voiceId: "eve",
+    language: "en",
+  });
+  const secondGatedRequests = (await synthesised()).slice(beforeSecondGated);
+  check(
+    "a gated sign-in is not retried on every request",
+    secondGated?.ok && secondGatedRequests.length === 1 && secondGatedRequests[0].auth === "apiKey",
+    `${secondGatedRequests.length} request(s): ${secondGatedRequests.map((entry) => entry.auth).join(", ")}`,
+  );
+
+  // 11g. Gated with no key to fall back on: the one case that has to fail, and
+  // has to say why.
+  await ui.evaluate(`chrome.storage.local.set({ apiKey: "" }).then(() => true)`);
+  const strandedRead = await command({
+    type: "synthesize",
+    text: "Nothing to fall back to.",
+    voiceId: "eve",
+    language: "en",
+  });
+  check(
+    "gated with no key fails with an explanation rather than a bare 403",
+    strandedRead?.ok === false && /subscription tier/i.test(strandedRead.error ?? ""),
+    strandedRead?.error,
+  );
+  await ui.evaluate(`chrome.storage.local.set({ apiKey: "test-key-for-local-mock" }).then(() => true)`);
+  await setGate(false);
+
+  // 11h. Sign out: the tokens go, the grant is revoked, and the key takes over.
+  const beforeSignOut = await oauthDebug();
+  const signedOutAgain = await command({ type: "xaiSignOut" });
+  const afterSignOut = await oauthDebug();
+  check("signing out reports no session", signedOutAgain?.status?.signedIn === false, signedOutAgain?.error);
+  check(
+    "signing out revokes the grant at xAI",
+    beforeSignOut.liveRefreshTokens > 0 && afterSignOut.liveRefreshTokens === 0,
+    `${beforeSignOut.liveRefreshTokens} → ${afterSignOut.liveRefreshTokens} live refresh tokens`,
+  );
+  const storedAfterSignOut = await ui.evaluate(
+    `chrome.storage.local.get("xaiOAuth").then((v) => JSON.stringify(v))`,
+  );
+  check("signing out leaves nothing in storage", storedAfterSignOut === "{}", storedAfterSignOut);
+
+  const beforeKeyOnly = (await synthesised()).length;
+  const keyOnlyRead = await command({
+    type: "synthesize",
+    text: "Back to the key alone.",
+    voiceId: "eve",
+    language: "en",
+  });
+  const keyOnlyRequests = (await synthesised()).slice(beforeKeyOnly);
+  check(
+    "after signing out the key is used again, with nothing to explain",
+    Boolean(keyOnlyRead?.ok) && !keyOnlyRead.notice && keyOnlyRequests.at(-1)?.auth === "apiKey",
+    `${keyOnlyRequests.at(-1)?.auth}${keyOnlyRead?.notice ? `, notice: ${keyOnlyRead.notice}` : ""}`,
+  );
+
+  // 11i. Neither credential: the popup and the page have to say so, not hang.
+  await ui.evaluate(`chrome.storage.local.set({ apiKey: "" }).then(() => true)`);
+  await sleep(400);
+  const noCredentials = await control("start", { scope: "page" });
+  check(
+    "with no credentials at all, the reader says what is missing",
+    /sign in with xai/i.test(noCredentials?.state?.error ?? ""),
+    noCredentials?.state?.error,
+  );
+  await ui.evaluate(`chrome.storage.local.set({ apiKey: "test-key-for-local-mock" }).then(() => true)`);
+  await control("stop");
+
   ui.close();
   page.close();
   browser.close();
