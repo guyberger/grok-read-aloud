@@ -6,7 +6,7 @@
     return;
   }
 
-  const { ext, util, extract, align, highlight, player: playerFactory } = ns;
+  const { ext, util, extract, align, highlight, pointer, player: playerFactory } = ns;
 
   const PREFETCH_AHEAD = 1;
 
@@ -31,13 +31,19 @@
     autoScroll: true,
     highlightColor: "#ffd34d",
     sentenceTint: true,
+    clickToJump: true,
     hasApiKey: false,
   };
 
   let doc = null;
   let chunks = [];
   let timeline = null;
+  // Keyed by character range rather than chunk index, because clicking into
+  // text nothing has been fetched for re-cuts the chunks and the audio already
+  // in hand must survive that.
   let cache = new Map();
+  let inflight = new Map();
+  let nextRequestId = 1;
   let player = null;
   let frame = 0;
   let sessionId = 0;
@@ -94,41 +100,79 @@
     return player;
   }
 
-  async function requestChunk(index) {
-    if (index < 0 || index >= chunks.length || cache.has(index)) return;
-    const { start, end } = chunks[index];
-    const text = doc.text.slice(start, end);
-    const response = await ext.runtime.sendMessage({
-      type: "synthesize",
-      text,
-      voiceId: settings.voiceId,
-      language: settings.language,
-    });
-    if (!response?.ok) throw new Error(response?.error || "Synthesis failed.");
+  const cacheKey = (chunk) => `${chunk.start}:${chunk.end}`;
 
-    cache.set(index, {
-      bytes: util.base64ToBytes(response.audio),
-      contentType: response.contentType,
-      timeline: align.buildChunkTimeline({
+  function requestChunk(index) {
+    const chunk = chunks[index];
+    if (!chunk) return Promise.resolve();
+    const key = cacheKey(chunk);
+    if (cache.has(key)) return Promise.resolve();
+
+    const pending = inflight.get(key);
+    if (pending) return pending.promise;
+
+    const requestId = `${sessionId}-${nextRequestId++}`;
+    const text = doc.text.slice(chunk.start, chunk.end);
+    const promise = (async () => {
+      const response = await ext.runtime.sendMessage({
+        type: "synthesize",
+        requestId,
         text,
-        graphChars: response.graphChars,
-        graphTimes: response.graphTimes,
-        globalStart: start,
-        duration: response.duration,
-      }),
+        voiceId: settings.voiceId,
+        language: settings.language,
+      });
+      if (!response?.ok) throw new Error(response?.error || "Synthesis failed.");
+
+      cache.set(key, {
+        bytes: util.base64ToBytes(response.audio),
+        contentType: response.contentType,
+        timeline: align.buildChunkTimeline({
+          text,
+          graphChars: response.graphChars,
+          graphTimes: response.graphTimes,
+          globalStart: chunk.start,
+          duration: response.duration,
+        }),
+      });
+    })().finally(() => {
+      if (inflight.get(key)?.requestId === requestId) inflight.delete(key);
     });
+
+    inflight.set(key, { promise, requestId });
+    return promise;
+  }
+
+  /**
+   * Drop every request whose audio is no longer wanted. The worker holds the
+   * only fetch, so it is the one that can actually cancel it.
+   */
+  function abortRequests(keep = new Set()) {
+    for (const [key, entry] of [...inflight]) {
+      if (keep.has(key)) continue;
+      inflight.delete(key);
+      ext.runtime.sendMessage({ type: "abortSynthesis", requestId: entry.requestId }).catch(() => {});
+    }
+  }
+
+  function neighbourKeys(index) {
+    const keys = new Set();
+    for (let i = index - 1; i <= index + PREFETCH_AHEAD; i += 1) {
+      if (chunks[i]) keys.add(cacheKey(chunks[i]));
+    }
+    return keys;
   }
 
   function prefetch(index) {
     for (let i = index + 1; i <= index + PREFETCH_AHEAD; i += 1) {
       requestChunk(i).catch(() => {});
     }
+    const keep = neighbourKeys(index);
     for (const key of cache.keys()) {
-      if (key < index - 1) cache.delete(key);
+      if (!keep.has(key)) cache.delete(key);
     }
   }
 
-  async function playChunk(index) {
+  async function playChunk(index, startTime = 0) {
     const session = sessionId;
     state.status = "loading";
     state.chunkIndex = index;
@@ -137,7 +181,8 @@
     await requestChunk(index);
     if (session !== sessionId) return;
 
-    const entry = cache.get(index);
+    const entry = cache.get(cacheKey(chunks[index]));
+    if (!entry) return;
     timeline = entry.timeline;
     state.aligned = entry.timeline.aligned;
     lastWord = -1;
@@ -148,11 +193,13 @@
     if (session !== sessionId) return;
 
     audio.setRate(settings.rate);
+    if (startTime > 0) audio.seek(startTime);
     state.status = "playing";
     state.engine = audio.engineName;
     emit();
 
     prefetch(index);
+    update();
     await audio.play();
     if (session !== sessionId) return;
     if (state.notice === BLOCKED_NOTICE) {
@@ -259,6 +306,7 @@
     }
 
     sessionId += 1;
+    abortRequests();
     cache = new Map();
     state.scope = doc.scope;
     state.chunkCount = chunks.length;
@@ -292,6 +340,7 @@
     player?.stop();
     highlight.clear();
     timeline = null;
+    abortRequests();
     cache = new Map();
     lastWord = -1;
     lastSentence = -1;
@@ -302,6 +351,78 @@
       emit();
     }
     return snapshot();
+  }
+
+  const ACTIVE = new Set(["loading", "playing", "paused"]);
+
+  /**
+   * Move playback to the word at `charIndex` and keep reading from there.
+   *
+   * Three ways in, cheapest first. The word is in the chunk already playing:
+   * a seek, no request at all. The word is in a chunk whose audio is already
+   * in hand — the one just left, or the one prefetched ahead — so that audio
+   * plays from the word's own timestamp. Otherwise nothing has been fetched
+   * for the target yet, and a chunk boundary is forced at the clicked word
+   * before requesting it: the chunk that comes back then *starts* at that word
+   * rather than opening with text that would be synthesised only to be
+   * skipped. That is both the fastest start and the fewest characters billed,
+   * and it costs nothing, because re-cutting only moves boundaries nothing has
+   * been spent on yet.
+   */
+  async function jumpToCharIndex(charIndex) {
+    if (!doc || !chunks.length || charIndex < 0) return snapshot();
+    if (!ACTIVE.has(state.status)) return snapshot();
+
+    const wordStart = align.wordStartAt(doc.text, charIndex);
+    // While a chunk is still loading, `timeline` still describes the previous
+    // one, so a seek would land in the wrong audio. That falls through to the
+    // paths below, which re-join the load already in flight.
+    const current = state.status === "loading" ? null : chunks[state.chunkIndex];
+
+    if (current && wordStart >= current.start && wordStart < current.end && timeline) {
+      player?.seek(align.timeForCharIndex(timeline, wordStart));
+      repaint();
+      if (state.status === "paused") await resume();
+      return snapshot();
+    }
+
+    // Whatever the old position was loading or prefetching is no longer what
+    // comes next, so retire that generation before starting the new one.
+    sessionId += 1;
+    stopLoop();
+
+    let target = align.chunkIndexFor(chunks, wordStart);
+    let startTime = 0;
+    const ready = cache.get(cacheKey(chunks[target]));
+    if (ready) {
+      startTime = align.timeForCharIndex(ready.timeline, wordStart);
+    } else {
+      chunks = align.chunkRanges(doc.text, settings.chunkChars, [wordStart]);
+      target = align.chunkIndexFor(chunks, wordStart);
+      state.chunkCount = chunks.length;
+    }
+
+    abortRequests(neighbourKeys(target));
+    state.error = "";
+    await playChunk(target, startTime).catch(reportError);
+    return snapshot();
+  }
+
+  /** Repaint the highlight at the playhead without waiting for a frame. */
+  function repaint() {
+    lastWord = -1;
+    lastSentence = -1;
+    update();
+  }
+
+  function onTextClick(event) {
+    if (!settings.clickToJump) return;
+    if (!doc || !ACTIVE.has(state.status)) return;
+    const charIndex = extract.charIndexFromPoint(doc, event.clientX, event.clientY);
+    // Outside the text being read — page furniture, or anywhere at all in a
+    // selection read — and the click was never ours.
+    if (charIndex < 0) return;
+    jumpToCharIndex(charIndex).catch(reportError);
   }
 
   async function toggle(args) {
@@ -349,6 +470,8 @@
   ext.storage.onChanged.addListener((changes, area) => {
     if (area === "local") refreshSettings();
   });
+
+  pointer.watch(onTextClick);
 
   window.addEventListener("pagehide", () => {
     stop();

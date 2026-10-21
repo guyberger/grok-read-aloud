@@ -19,6 +19,7 @@ const el = {
   rateValue: document.getElementById("rate-value"),
   chunkChars: document.getElementById("chunk-chars"),
   chunkValue: document.getElementById("chunk-value"),
+  clickToJump: document.getElementById("click-to-jump"),
   autoScroll: document.getElementById("auto-scroll"),
   sentenceTint: document.getElementById("sentence-tint"),
   highlightColor: document.getElementById("highlight-color"),
@@ -158,6 +159,7 @@ el.chunkChars.addEventListener("input", () => {
 });
 el.chunkChars.addEventListener("change", () => persist({ chunkChars: Number(el.chunkChars.value) }));
 
+el.clickToJump.addEventListener("change", () => persist({ clickToJump: el.clickToJump.checked }));
 el.autoScroll.addEventListener("change", () => persist({ autoScroll: el.autoScroll.checked }));
 el.sentenceTint.addEventListener("change", () => persist({ sentenceTint: el.sentenceTint.checked }));
 el.highlightColor.addEventListener("change", () => persist({ highlightColor: el.highlightColor.value }));
@@ -209,6 +211,7 @@ el.preview.addEventListener("click", async () => {
   el.rateValue.textContent = `${Number(settings.rate).toFixed(1)}×`;
   el.chunkChars.value = String(settings.chunkChars);
   el.chunkValue.textContent = String(settings.chunkChars);
+  el.clickToJump.checked = settings.clickToJump;
   el.autoScroll.checked = settings.autoScroll;
   el.sentenceTint.checked = settings.sentenceTint;
   el.highlightColor.value = settings.highlightColor || DEFAULT_SETTINGS.highlightColor;

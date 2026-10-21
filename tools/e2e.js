@@ -128,7 +128,11 @@ async function main() {
 
   // The article tab must stay active: commands without an explicit tab id go
   // to the active tab, which is the path the popup actually uses.
-  const articleTarget = await findTarget((target) => target.url === PAGE_URL, { label: PAGE_URL });
+  // Ignoring any fragment: the click-to-jump checks click a link in the
+  // article, which leaves one behind for the next run.
+  const articleTarget = await findTarget((target) => target.url.split("#")[0] === PAGE_URL, {
+    label: PAGE_URL,
+  });
   await browser.send("Target.activateTarget", { targetId: articleTarget.id });
 
   // Extension pages can message the background worker; the worker cannot
@@ -348,6 +352,255 @@ async function main() {
   check("selection scope is honoured", selectionRun.scope === "selection", `${selectionRun.chunkCount} chunk(s)`);
   check("selection reading stays inside the selection", selectionRun.inParagraph, selectionRun.word ?? "no word");
 
+  // 9. Click to jump.
+  //
+  // Clicks go through the input pipeline rather than `dispatchEvent`, so the
+  // reader sees exactly what a user produces: a trusted pointerdown, mouseup
+  // and click at real viewport coordinates, resolved through
+  // `caretPositionFromPoint` against whatever is actually laid out there.
+  await page.evaluate(
+    `
+    (() => {
+      /**
+       * Viewport centre of one word of an element, picked by its text so the
+       * checks below can assert on a word that appears nowhere else — a jump
+       * to "the" would be indistinguishable from not jumping at all.
+       */
+      window.wordPoint = (selector, elementIndex, needle) => {
+        const element = document.querySelectorAll(selector)[elementIndex];
+        const node = [...element.childNodes].find((child) => child.nodeType === 3 && child.data.includes(needle));
+        const match = [...node.data.matchAll(/\\S+/g)].find((word) => word[0] === needle);
+        if (!match) throw new Error("no word " + needle + " in " + selector + "[" + elementIndex + "]");
+        const range = document.createRange();
+        range.setStart(node, match.index);
+        range.setEnd(node, match.index + match[0].length);
+        const rect = range.getClientRects()[0];
+        const occurrences = document.querySelector("article").innerText.split(/\\s+/)
+          .filter((word) => word === needle).length;
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, word: match[0], occurrences };
+      };
+      window.showElement = (selector, index = 0) => {
+        document.querySelectorAll(selector)[index].scrollIntoView({ block: "center" });
+        return window.scrollY;
+      };
+      return true;
+    })()
+  `,
+    world,
+  );
+
+  const wordPoint = async (selector, elementIndex, needle) => {
+    const point = JSON.parse(
+      await page.evaluate(
+        `JSON.stringify(window.wordPoint(${JSON.stringify(selector)}, ${elementIndex}, ${JSON.stringify(needle)}))`,
+        world,
+      ),
+    );
+    if (point.occurrences !== 1) throw new Error(`"${needle}" appears ${point.occurrences} times in the article`);
+    return point;
+  };
+
+  const clickAt = async ({ x, y }) => {
+    const common = { x: Math.round(x), y: Math.round(y), button: "left", clickCount: 1 };
+    await page.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...common });
+    await page.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...common });
+  };
+
+  /** Samples the highlight until `word` is the one being spoken. */
+  const awaitHighlight = async (word, { timeoutMs = 2500 } = {}) => {
+    const deadline = Date.now() + timeoutMs;
+    const seen = [];
+    let sample = null;
+    while (Date.now() < deadline) {
+      sample = await page.evaluate(probe, world);
+      const current = sample.word?.trim();
+      if (current && seen.at(-1) !== current) seen.push(current);
+      if (current === word) return { matched: true, seen, sample };
+      await sleep(60);
+    }
+    return { matched: false, seen, sample };
+  };
+
+  /**
+   * What the API was asked to synthesise, so a jump can be measured in
+   * requests and characters rather than guessed at. Fetched from the page,
+   * which is where `api.x.ai` resolves to the mock.
+   */
+  const synthesised = async () =>
+    JSON.parse(
+      await ui.evaluate(
+        `fetch("https://api.x.ai/debug/requests").then((r) => r.json()).then((b) => JSON.stringify(b.requests))`,
+      ),
+    );
+
+  /** Samples the reader until it reports `status`. */
+  const awaitStatus = async (status, { timeoutMs = 15000 } = {}) => {
+    const deadline = Date.now() + timeoutMs;
+    let sample = null;
+    while (Date.now() < deadline) {
+      sample = await page.evaluate(probe, world);
+      if (sample.status === status || sample.error) return sample;
+      await sleep(80);
+    }
+    return sample;
+  };
+
+  // A click outside the selection is outside everything a selection read knows
+  // about, so it must do nothing. Paused, because a jump would resume playing.
+  await control("pause");
+  await page.evaluate(`window.showElement("article p", 0)`, world);
+  const outsideSelection = await wordPoint("article p", 0, "dammed");
+  const beforeOutside = await page.evaluate(probe, world);
+  await clickAt(outsideSelection);
+  await sleep(700);
+  const afterOutside = await page.evaluate(probe, world);
+  check(
+    "a click outside the selection does not move a selection read",
+    afterOutside.status === "paused" &&
+      Math.abs(afterOutside.progress - beforeOutside.progress) < 1e-6,
+    `${afterOutside.status}, progress ${beforeOutside.progress.toFixed(3)} → ${afterOutside.progress.toFixed(3)}`,
+  );
+
+  await control("stop");
+  await control("start", { scope: "page" });
+  await control("setRate", { rate: 0.5 });
+  for (let i = 0; i < 80; i += 1) {
+    const sample = await page.evaluate(probe, world);
+    if (sample.status === "playing" && sample.word) break;
+    await sleep(250);
+  }
+
+  // 9a. A word in the chunk already playing: a seek, no new request.
+  const near = await wordPoint("article p", 0, "retreated.");
+  const beforeNear = await page.evaluate(probe, world);
+  const requestsBeforeNear = (await synthesised()).length;
+  await clickAt(near);
+  const nearJump = await awaitHighlight(near.word);
+  const afterNear = await page.evaluate(probe, world);
+  const requestsAfterNear = (await synthesised()).length;
+  check(
+    "clicking a word in the chunk being read jumps to it",
+    nearJump.matched,
+    `clicked "${near.word}", saw ${nearJump.seen.slice(-4).join(" ") || "nothing"}`,
+  );
+  check(
+    "a jump inside the chunk does not change chunk",
+    afterNear.chunkIndex === beforeNear.chunkIndex,
+    `chunk ${beforeNear.chunkIndex} → ${afterNear.chunkIndex}`,
+  );
+  check(
+    "a jump inside the chunk moves the playhead forward",
+    afterNear.progress > beforeNear.progress,
+    `${beforeNear.progress.toFixed(3)} → ${afterNear.progress.toFixed(3)}`,
+  );
+  check(
+    "a jump inside the chunk costs no request",
+    requestsAfterNear === requestsBeforeNear,
+    `${requestsBeforeNear} → ${requestsAfterNear} requests`,
+  );
+
+  // 9b. A word in a chunk that has not been fetched, from a paused read:
+  // the jump crosses chunks and playback resumes on its own.
+  const held = await control("pause");
+  check("paused before the cross-chunk jump", held?.state?.status === "paused", held?.state?.status);
+  await page.evaluate(`window.showElement("article p", 4)`, world);
+  const far = await wordPoint("article p", 4, "engineering");
+  const beforeFar = await page.evaluate(probe, world);
+  const requestsBeforeFar = await synthesised();
+  await clickAt(far);
+  const farJump = await awaitHighlight(far.word, { timeoutMs: 15000 });
+  const afterFar = await awaitStatus("playing", { timeoutMs: 5000 });
+  const newRequests = (await synthesised()).slice(requestsBeforeFar.length);
+  check(
+    "clicking into a chunk that was never fetched jumps to it",
+    farJump.matched,
+    `clicked "${far.word}", saw ${farJump.seen.slice(-4).join(" ") || "nothing"}`,
+  );
+  check(
+    "the jump crossed into a later chunk",
+    afterFar.chunkIndex > beforeFar.chunkIndex,
+    `chunk ${beforeFar.chunkIndex} → ${afterFar.chunkIndex} of ${afterFar.chunkCount}`,
+  );
+  check("a jump from paused resumes playing", afterFar.status === "playing", afterFar.status);
+  check(
+    "the audio fetched for the jump starts on the clicked word",
+    newRequests[0]?.head.startsWith(far.word),
+    newRequests.map((entry) => `${entry.chars} chars: ${JSON.stringify(entry.head.slice(0, 24))}`).join(", "),
+  );
+  check("the jump kept timestamp alignment", afterFar.aligned !== false);
+  check("no error during the jumps", !afterFar.error, afterFar.error);
+
+  // The highlight and the scroll follow the jump rather than the old position.
+  await sleep(1200);
+  const framed = await page.evaluate(`
+    (() => {
+      const highlight = CSS.highlights.get("read-aloud-word");
+      for (const range of highlight ?? []) {
+        const rect = range.getBoundingClientRect();
+        return { visible: rect.top >= 0 && rect.bottom <= window.innerHeight, word: range.toString() };
+      }
+      return { visible: false, word: null };
+    })()
+  `, world);
+  check("the highlight stays on screen after the jump", framed.visible, framed.word ?? "no word");
+
+  // 9c. A link inside the text keeps its own click. Paused, because a jump
+  // would resume playing — so "still paused" is the whole assertion.
+  await control("pause");
+  await page.evaluate(`window.showElement("article a")`, world);
+  const linkPoint = await page.evaluate(`
+    (() => {
+      const rect = document.querySelector("article a").getClientRects()[0];
+      return JSON.stringify({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+    })()
+  `, world).then(JSON.parse);
+  const beforeLink = await page.evaluate(probe, world);
+  await clickAt(linkPoint);
+  await sleep(700);
+  const afterLink = await page.evaluate(probe, world);
+  check(
+    "a click on a link inside the text is not a jump",
+    afterLink.status === "paused" && afterLink.chunkIndex === beforeLink.chunkIndex,
+    `${afterLink.status}, chunk ${beforeLink.chunkIndex} → ${afterLink.chunkIndex}`,
+  );
+  check(
+    "the link kept its own behaviour",
+    await page.evaluate(`location.hash === "#tide-tables"`),
+    await page.evaluate(`location.hash`),
+  );
+
+  // 9d. The setting turns it off.
+  await ui.evaluate(`chrome.storage.local.set({ clickToJump: false }).then(() => true)`);
+  await sleep(600);
+  await page.evaluate(`window.showElement("article p", 3)`, world);
+  const disabled = await wordPoint("article p", 3, "visitors");
+  const beforeDisabled = await page.evaluate(probe, world);
+  await clickAt(disabled);
+  await sleep(700);
+  const afterDisabled = await page.evaluate(probe, world);
+  check(
+    "clicking does nothing once the setting is off",
+    afterDisabled.status === "paused" &&
+      afterDisabled.chunkIndex === beforeDisabled.chunkIndex &&
+      Math.abs(afterDisabled.progress - beforeDisabled.progress) < 1e-6,
+    `${afterDisabled.status}, chunk ${beforeDisabled.chunkIndex} → ${afterDisabled.chunkIndex}`,
+  );
+  await ui.evaluate(`chrome.storage.local.set({ clickToJump: true }).then(() => true)`);
+
+  // 9e. With nothing playing, a click is just a click.
+  await control("stop");
+  await sleep(300);
+  const idlePoint = await wordPoint("article p", 3, "arrived,");
+  await clickAt(idlePoint);
+  await sleep(600);
+  const afterIdle = await page.evaluate(probe, world);
+  check(
+    "clicking text with no read in progress does nothing",
+    afterIdle.status === "idle" && !afterIdle.word,
+    `${afterIdle.status}, ${afterIdle.word ?? "no highlight"}`,
+  );
+
+  await control("setRate", { rate: 1 });
   await control("stop");
   ui.close();
   page.close();

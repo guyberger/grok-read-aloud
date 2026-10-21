@@ -85,6 +85,13 @@ function timestampsFor(text) {
   return { graph_chars: graphChars, graph_times: graphTimes };
 }
 
+/**
+ * Every synthesis request this process has served, so a test can assert what
+ * was actually asked for — how many requests a jump cost, and which word the
+ * audio starts on. Not something the real API offers.
+ */
+const served = [];
+
 function send(response, status, body) {
   const payload = JSON.stringify(body);
   response.writeHead(status, {
@@ -103,6 +110,11 @@ async function handle(request, response) {
   }
 
   const url = new URL(request.url, "https://api.x.ai");
+  if (url.pathname === "/debug/requests") {
+    send(response, 200, { requests: served });
+    return;
+  }
+
   if (!request.headers.authorization?.startsWith("Bearer ")) {
     send(response, 400, {
       code: "Client specified an invalid argument",
@@ -128,6 +140,7 @@ async function handle(request, response) {
     }
     const text = String(body.text ?? "");
     const duration = Number((text.length * SECONDS_PER_CHAR).toFixed(3));
+    served.push({ chars: text.length, head: text.slice(0, 60) });
     console.log(`tts: voice=${body.voice_id} lang=${body.language} chars=${text.length} ${duration}s`);
     send(response, 200, {
       audio: renderWav(text, duration).toString("base64"),

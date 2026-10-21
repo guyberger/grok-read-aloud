@@ -7,9 +7,19 @@ const CONTENT_FILES = [
   "content/extract.js",
   "content/align.js",
   "content/highlight.js",
+  "content/pointer.js",
   "content/player.js",
   "content/reader.js",
 ];
+
+/**
+ * Synthesis in flight, by request. A page that jumps somewhere else no longer
+ * wants the audio it asked for, and only the worker holds the fetch, so the
+ * controller to cancel it has to live here.
+ */
+const pendingSynthesis = new Map();
+
+const synthesisKey = (tabId, requestId) => `${tabId ?? "none"}:${requestId}`;
 
 /**
  * Injection is on demand rather than declared for `<all_urls>`: the extension
@@ -46,21 +56,36 @@ async function sendToTab(tabId, message) {
   return ext.tabs.sendMessage(tabId, message);
 }
 
-async function handleSynthesize(payload) {
+async function handleSynthesize(payload, sender) {
   const settings = await getSettings();
-  const result = await synthesizeWithRetry({
-    apiKey: settings.apiKey,
-    text: payload.text,
-    voiceId: payload.voiceId || settings.voiceId,
-    language: payload.language || settings.language,
-  });
-  return { ok: true, ...result };
+  const key = payload.requestId ? synthesisKey(sender?.tab?.id, payload.requestId) : "";
+  const controller = key ? new AbortController() : null;
+  if (controller) pendingSynthesis.set(key, controller);
+  try {
+    const result = await synthesizeWithRetry({
+      apiKey: settings.apiKey,
+      text: payload.text,
+      voiceId: payload.voiceId || settings.voiceId,
+      language: payload.language || settings.language,
+      signal: controller?.signal,
+    });
+    return { ok: true, ...result };
+  } finally {
+    if (key) pendingSynthesis.delete(key);
+  }
 }
 
 async function handleMessage(message, sender) {
   switch (message?.type) {
     case "synthesize":
-      return handleSynthesize(message);
+      return handleSynthesize(message, sender);
+
+    case "abortSynthesis": {
+      const key = synthesisKey(sender?.tab?.id, message.requestId);
+      pendingSynthesis.get(key)?.abort();
+      pendingSynthesis.delete(key);
+      return { ok: true };
+    }
 
     // The API key stays in the worker; page contexts only get the rest.
     case "getPublicSettings":
