@@ -89,7 +89,27 @@ for (const file of walk(resolve(SRC, "content"))) {
   if (!listed.includes(relative)) failures.push(`${relative} is never injected`);
 }
 
-// 4. No credentials committed.
+// 4. Every keyboard command a manifest declares is one the background handles.
+const commandBlock = background.slice(background.indexOf("const COMMAND_MESSAGES"));
+const commandNames = [...commandBlock.slice(0, commandBlock.indexOf("};")).matchAll(/"([\w-]+)":/g)].map(
+  (match) => match[1],
+);
+for (const name of ["manifest.chrome.json", "manifest.firefox.json"]) {
+  let commands;
+  try {
+    commands = Object.entries(JSON.parse(readFileSync(resolve(SRC, name), "utf8")).commands ?? {});
+  } catch {
+    continue;
+  }
+  for (const [command] of commands) {
+    if (!commandNames.includes(command)) failures.push(`${name} declares unhandled command ${command}`);
+  }
+  // Chrome refuses to install an extension that suggests more than four keys.
+  const suggested = commands.filter(([, command]) => command.suggested_key).length;
+  if (suggested > 4) failures.push(`${name} suggests ${suggested} shortcuts; Chrome allows 4`);
+}
+
+// 5. No credentials committed.
 const SECRET_PATTERNS = [/xai-[A-Za-z0-9]{20,}/, /sk-[A-Za-z0-9]{20,}/];
 for (const file of files) {
   if (![".js", ".json", ".md", ".html", ".css"].includes(extname(file))) continue;

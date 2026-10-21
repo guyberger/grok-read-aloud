@@ -214,8 +214,13 @@ async function main() {
       const highlight = CSS.highlights.get("read-aloud-word");
       let word = null;
       if (highlight) for (const range of highlight) { word = range.toString(); break; }
+      // The tinted sentence, which lasts seconds rather than a fraction of
+      // one, so a check can name where the playhead is without racing it.
+      const tint = CSS.highlights.get("read-aloud-sentence");
+      let sentence = null;
+      if (tint) for (const range of tint) { sentence = range.toString().trim().slice(0, 30); break; }
       const snapshot = globalThis.__readAloud?.reader?.snapshot?.() ?? {};
-      return { word, status: snapshot.status, chunkIndex: snapshot.chunkIndex,
+      return { word, sentence, status: snapshot.status, chunkIndex: snapshot.chunkIndex,
                chunkCount: snapshot.chunkCount, progress: snapshot.progress,
                engine: snapshot.engine, aligned: snapshot.aligned, error: snapshot.error,
                scrollY: Math.round(window.scrollY) };
@@ -627,6 +632,98 @@ async function main() {
     "clicking text with no read in progress does nothing",
     afterIdle.status === "idle" && !afterIdle.word,
     `${afterIdle.status}, ${afterIdle.word ?? "no highlight"}`,
+  );
+
+  // 10. Stepping a sentence at a time.
+  //
+  // The playhead is parked by clicking the first word of a paragraph, which
+  // makes the audio in hand begin exactly there — so every step below stays
+  // inside one request's audio and the assertions can name the word each one
+  // must land on.
+  await control("start", { scope: "page" });
+  await control("setRate", { rate: 0.5 });
+  for (let i = 0; i < 80; i += 1) {
+    const sample = await page.evaluate(probe, world);
+    if (sample.status === "playing" && sample.word) break;
+    await sleep(250);
+  }
+  await page.evaluate(`window.showElement("article p", 2)`, world);
+  const anchor = await wordPoint("article p", 2, "Grinding");
+  await clickAt(anchor);
+  const anchored = await awaitHighlight(anchor.word, { timeoutMs: 15000 });
+  check("parked on the first word of a paragraph", anchored.matched, anchored.seen.slice(-3).join(" "));
+
+  const requestsBeforeSteps = (await synthesised()).length;
+  const step = async (delta) => {
+    const response = await control("skipSentence", { delta });
+    const sample = await page.evaluate(probe, world);
+    return { ...sample, ok: Boolean(response?.ok), error: response?.error ?? sample.error };
+  };
+
+  const beforeForward = await page.evaluate(probe, world);
+  const forward = await step(1);
+  check(
+    "stepping forward reaches the next sentence",
+    forward.sentence?.startsWith("A mill that was busy") && forward.progress > beforeForward.progress,
+    `${JSON.stringify(forward.sentence)}, progress ${beforeForward.progress.toFixed(3)} → ${forward.progress.toFixed(3)}`,
+  );
+  check("stepping forward keeps playing", forward.status === "playing", forward.status || forward.error);
+
+  const second = await step(1);
+  check(
+    "a step lands on the first word of the sentence, not inside it",
+    second.sentence?.startsWith("Millers slept") && second.word?.trim() === "Millers",
+    `${JSON.stringify(second.word)} in ${JSON.stringify(second.sentence)}`,
+  );
+
+  // Back from the start of a sentence means the one before it, because there
+  // is nothing of this one to have missed yet.
+  const backFromStart = await step(-1);
+  check(
+    "stepping back from the start of a sentence reaches the one before it",
+    backFromStart.sentence?.startsWith("A mill that was busy") &&
+      backFromStart.progress < second.progress,
+    `${JSON.stringify(backFromStart.sentence)}, progress ${second.progress.toFixed(3)} → ${backFromStart.progress.toFixed(3)}`,
+  );
+
+  // Back from the middle of one re-reads that sentence instead.
+  await sleep(4000);
+  const settled = await page.evaluate(probe, world);
+  const replay = await step(-1);
+  check(
+    "stepping back from mid-sentence re-reads that sentence",
+    replay.sentence?.startsWith("A mill that was busy") && replay.progress < settled.progress,
+    `${JSON.stringify(replay.word)} in ${JSON.stringify(replay.sentence)}, progress ${settled.progress.toFixed(3)} → ${replay.progress.toFixed(3)}`,
+  );
+  check(
+    "the sentence it re-reads is the one it was already in",
+    settled.sentence?.startsWith("A mill that was busy"),
+    JSON.stringify(settled.sentence),
+  );
+
+  const requestsAfterSteps = (await synthesised()).length;
+  check(
+    "steps within the audio already fetched cost no requests",
+    requestsAfterSteps === requestsBeforeSteps,
+    `${requestsBeforeSteps} → ${requestsAfterSteps} requests`,
+  );
+
+  // Stepping from paused behaves like clicking a word: it moves and plays on.
+  await control("pause");
+  const resumedByStep = await step(1);
+  check(
+    "a step from paused starts playing again",
+    resumedByStep.status === "playing",
+    resumedByStep.status || resumedByStep.error,
+  );
+
+  // Off the end there is nowhere to go, and saying so must not break the read.
+  await control("stop");
+  const stepWhileIdle = await step(1);
+  check(
+    "stepping with nothing being read does nothing",
+    stepWhileIdle.ok && stepWhileIdle.status === "idle" && !stepWhileIdle.word,
+    `${stepWhileIdle.status}, ${stepWhileIdle.word ?? "no highlight"}`,
   );
 
   await control("setRate", { rate: 1 });

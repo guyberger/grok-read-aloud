@@ -31,6 +31,8 @@ const el = {
   chunkLabel: document.getElementById("chunk-label"),
   toggle: document.getElementById("toggle"),
   toggleLabel: document.getElementById("toggle-label"),
+  previous: document.getElementById("previous"),
+  next: document.getElementById("next"),
   stop: document.getElementById("stop"),
   rate: document.getElementById("rate"),
   rateValue: document.getElementById("rate-value"),
@@ -55,6 +57,9 @@ const LABELS = {
   error: { status: "Error", action: "Try again" },
 };
 
+/** Statuses with something to stop, step through or resume. */
+const ACTIVE = new Set(["loading", "playing", "paused"]);
+
 function render(state) {
   current = state ?? { status: "idle" };
   const label = LABELS[current.status] ?? LABELS.idle;
@@ -66,9 +71,11 @@ function render(state) {
       ? `${label.action} ${scope === "selection" ? "selection" : "page"}`
       : label.action;
 
+  const active = ACTIVE.has(current.status);
   el.toggle.disabled = current.status === "loading";
-  el.stop.disabled =
-    current.status === "idle" || current.status === "error" || current.status === "pending";
+  el.previous.disabled = !active;
+  el.next.disabled = !active;
+  el.stop.disabled = !active;
   el.pageTitle.textContent = current.title ?? "";
   el.progressBar.style.width = `${Math.round((current.progress ?? 0) * 100)}%`;
 
@@ -142,6 +149,8 @@ async function loadVoices(selected) {
 }
 
 el.toggle.addEventListener("click", () => control("toggle", { scope }));
+el.previous.addEventListener("click", () => control("skipSentence", { delta: -1 }));
+el.next.addEventListener("click", () => control("skipSentence", { delta: 1 }));
 el.stop.addEventListener("click", () => control("stop"));
 
 for (const button of el.scopeButtons) {
