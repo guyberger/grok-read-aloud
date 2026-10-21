@@ -128,9 +128,11 @@ async function main() {
 
   // The article tab must stay active: commands without an explicit tab id go
   // to the active tab, which is the path the popup actually uses.
-  // Ignoring any fragment: the click-to-jump checks click a link in the
-  // article, which leaves one behind for the next run.
-  const articleTarget = await findTarget((target) => target.url.split("#")[0] === PAGE_URL, {
+  // Any tab on the fixture server will do — the driver navigates it to the
+  // article itself below, and the click-to-jump checks click a link that
+  // leaves a fragment behind for the next run.
+  const origin = new URL(PAGE_URL).origin;
+  const articleTarget = await findTarget((target) => target.url.startsWith(origin), {
     label: PAGE_URL,
   });
   await browser.send("Target.activateTarget", { targetId: articleTarget.id });
@@ -157,6 +159,18 @@ async function main() {
     await browser.send("Target.activateTarget", { targetId: articleTarget.id });
     return command({ type: "control", action, args: args_ });
   };
+
+  /**
+   * What the API was asked to synthesise, so the checks can be about requests
+   * and characters rather than guesses. Fetched from the page, which is where
+   * `api.x.ai` resolves to the mock.
+   */
+  const synthesised = async () =>
+    JSON.parse(
+      await ui.evaluate(
+        `fetch("https://api.x.ai/debug/requests").then((r) => r.json()).then((b) => JSON.stringify(b.requests))`,
+      ),
+    );
 
   // 1. Settings, the way the options page saves them.
   await ui.evaluate(`
@@ -188,6 +202,7 @@ async function main() {
   await page.send("Runtime.enable");
 
   // 3. Start reading the page.
+  const beforeFirstRead = (await synthesised()).length;
   const started = await control("start", { scope: "page" });
   check("start command reaches the page", Boolean(started?.ok), started?.error);
 
@@ -231,6 +246,30 @@ async function main() {
   check("playback reached the playing state", sawPlaying, `engine: ${engine}`);
   check("article was split into chunks", chunkCount > 1, `${chunkCount} chunks`);
   check("words were highlighted", observed.length > 5, `${observed.length} distinct words`);
+
+  // The wait before the first sound is the first request's size, so the shape
+  // of the opening requests is worth asserting rather than just measuring.
+  const opening = (await synthesised()).slice(beforeFirstRead);
+  check(
+    "the read opens with a short request",
+    opening[0]?.chars > 0 && opening[0].chars <= 240,
+    `${opening[0]?.chars} characters`,
+  );
+  check(
+    "the opening request ends on a sentence boundary",
+    /[.!?…。！？]["')\]]?$/.test(opening[0]?.tail.trimEnd() ?? ""),
+    JSON.stringify(opening[0]?.tail.slice(-24)),
+  );
+  check(
+    "later requests are bigger than the first",
+    opening[1]?.chars > opening[0]?.chars,
+    `${opening.slice(0, 4).map((entry) => entry.chars).join(" → ")} characters`,
+  );
+  // Whether the next request is issued alongside the first or only once the
+  // first is playing is a question about timing, which this mock answers in
+  // tens of milliseconds either way. tools/first-audio.js is where that is
+  // measured; all that belongs here is that the request was made at all.
+  check("the chunk after the first is fetched before it is needed", opening.length > 1, `${opening.length} requests`);
 
   // 5. The highlighted words must come from the article, in document order.
   const articleText = await page.evaluate(`document.querySelector("article").innerText.replace(/\\s+/g, " ")`);
@@ -421,18 +460,6 @@ async function main() {
     return { matched: false, seen, sample };
   };
 
-  /**
-   * What the API was asked to synthesise, so a jump can be measured in
-   * requests and characters rather than guessed at. Fetched from the page,
-   * which is where `api.x.ai` resolves to the mock.
-   */
-  const synthesised = async () =>
-    JSON.parse(
-      await ui.evaluate(
-        `fetch("https://api.x.ai/debug/requests").then((r) => r.json()).then((b) => JSON.stringify(b.requests))`,
-      ),
-    );
-
   /** Samples the reader until it reports `status`. */
   const awaitStatus = async (status, { timeoutMs = 15000 } = {}) => {
     const deadline = Date.now() + timeoutMs;
@@ -470,8 +497,10 @@ async function main() {
     await sleep(250);
   }
 
-  // 9a. A word in the chunk already playing: a seek, no new request.
-  const near = await wordPoint("article p", 0, "retreated.");
+  // 9a. A word in the chunk already playing: a seek, no new request. The
+  // opening chunk is deliberately short, so this is a word inside the first
+  // sentence rather than at the end of the paragraph.
+  const near = await wordPoint("article p", 0, "river.");
   const beforeNear = await page.evaluate(probe, world);
   const requestsBeforeNear = (await synthesised()).length;
   await clickAt(near);

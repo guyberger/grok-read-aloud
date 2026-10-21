@@ -4,11 +4,19 @@
   const isSpace = ns.util.isWhitespace;
   const SENTENCE_ENDERS = new Set([".", "!", "?", "…", "。", "！", "？"]);
 
-  /** Cut [from, to) into request-sized pieces, appending them to `ranges`. */
-  function chunkSegment(text, from, to, limit, ranges) {
+  /**
+   * Cut [from, to) into request-sized pieces, appending them to `ranges`.
+   *
+   * `limitAt` gives the size allowed for the nth piece of this segment, which
+   * is how the first request can be small and the rest full-sized.
+   */
+  function chunkSegment(text, from, to, limitAt, ranges) {
     let start = from;
+    let index = 0;
 
     while (start < to) {
+      const limit = limitAt(index);
+      index += 1;
       while (start < to && isSpace(text[start])) start += 1;
       if (start >= to) break;
 
@@ -52,10 +60,21 @@
    * Jumping into text no audio has been fetched for uses it to make the
    * request start at the word the reader is about to speak.
    *
+   * `firstChars` caps the first piece of each segment and doubles from there
+   * until it reaches `maxChars`. Synthesis is per-character work, so the wait
+   * before the first sound is set by how much text the first request carries —
+   * a small opening chunk is heard sooner, and by the time it has been spoken
+   * there has been ample time to fetch a full-sized one. The ramp restarts at
+   * every forced boundary, because jumping somewhere new has exactly the same
+   * problem as starting does.
+   *
    * @returns {{start:number,end:number}[]} global character ranges
    */
-  function chunkRanges(text, maxChars, boundaries = []) {
+  function chunkRanges(text, maxChars, { boundaries = [], firstChars = 0 } = {}) {
     const limit = Math.max(200, maxChars | 0);
+    const first = firstChars ? Math.min(Math.max(80, firstChars | 0), limit) : limit;
+    const limitAt = (index) => Math.min(limit, first * 2 ** index);
+
     const cuts = [...new Set(boundaries)]
       .filter((cut) => cut > 0 && cut < text.length)
       .sort((a, b) => a - b);
@@ -63,7 +82,7 @@
     const ranges = [];
     let from = 0;
     for (const cut of [...cuts, text.length]) {
-      chunkSegment(text, from, cut, limit, ranges);
+      chunkSegment(text, from, cut, limitAt, ranges);
       from = cut;
     }
 

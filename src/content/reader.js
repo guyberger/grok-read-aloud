@@ -10,6 +10,15 @@
 
   const PREFETCH_AHEAD = 1;
 
+  /**
+   * Cap on the first request of a read, and of a jump. The API charges by the
+   * character and synthesises at roughly a fixed rate, so the wait before the
+   * first sound is set by this number rather than by anything the extension
+   * does locally. Around one or two sentences: short enough to start quickly,
+   * long enough to land on a sentence boundary rather than mid-clause.
+   */
+  const FIRST_CHUNK_CHARS = 240;
+
   const state = {
     status: "idle", // idle | loading | playing | paused | error
     scope: "page",
@@ -178,7 +187,15 @@
     state.chunkIndex = index;
     emit();
 
-    await requestChunk(index);
+    // Both requests go out before either answer is waited on. The one after
+    // this chunk is wanted either way, and issuing it now rather than once
+    // this chunk is playing gives it the whole of this chunk's synthesis time
+    // to arrive in — which is what keeps a small opening chunk from simply
+    // moving the wait to the first join.
+    const wanted = requestChunk(index);
+    prefetch(index);
+
+    await wanted;
     if (session !== sessionId) return;
 
     const entry = cache.get(cacheKey(chunks[index]));
@@ -198,7 +215,6 @@
     state.engine = audio.engineName;
     emit();
 
-    prefetch(index);
     update();
     await audio.play();
     if (session !== sessionId) return;
@@ -281,14 +297,19 @@
 
   async function start({ scope = "auto" } = {}) {
     stop();
-    await refreshSettings();
+
+    // Reading the settings is a round trip to the worker and extraction is a
+    // walk of the document; neither needs the other, so they overlap.
+    const settingsReady = refreshSettings();
+
+    const wanted = scope === "auto" ? (window.getSelection()?.isCollapsed === false ? "selection" : "page") : scope;
+    doc = extract.extract(wanted) || (wanted === "selection" ? extract.extract("page") : null);
+
+    await settingsReady;
     if (!settings.hasApiKey) {
       reportError("No API key set. Open the extension options and paste your xAI key.");
       return snapshot();
     }
-
-    const wanted = scope === "auto" ? (window.getSelection()?.isCollapsed === false ? "selection" : "page") : scope;
-    doc = extract.extract(wanted) || (wanted === "selection" ? extract.extract("page") : null);
     if (!doc) {
       reportError("Could not find readable text on this page.");
       return snapshot();
@@ -299,7 +320,7 @@
     // direct node references, so dropping the selection costs nothing.
     if (doc.scope === "selection") window.getSelection()?.removeAllRanges();
 
-    chunks = align.chunkRanges(doc.text, settings.chunkChars);
+    chunks = align.chunkRanges(doc.text, settings.chunkChars, { firstChars: FIRST_CHUNK_CHARS });
     if (!chunks.length) {
       reportError("Could not find readable text on this page.");
       return snapshot();
@@ -397,7 +418,10 @@
     if (ready) {
       startTime = align.timeForCharIndex(ready.timeline, wordStart);
     } else {
-      chunks = align.chunkRanges(doc.text, settings.chunkChars, [wordStart]);
+      chunks = align.chunkRanges(doc.text, settings.chunkChars, {
+        boundaries: [wordStart],
+        firstChars: FIRST_CHUNK_CHARS,
+      });
       target = align.chunkIndexFor(chunks, wordStart);
       state.chunkCount = chunks.length;
     }

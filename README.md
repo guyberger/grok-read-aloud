@@ -23,6 +23,8 @@ dependencies — just the files in `src/` and a ~40-line copy script.
 - Splits long pages into chunks at paragraph and sentence boundaries, and
   fetches the next chunk while the current one plays, so playback does not stall
   between parts.
+- Opens with one short request — a sentence or two — so it starts speaking in
+  about a second, and grows the chunks from there.
 
 ## How it talks to the API
 
@@ -156,7 +158,7 @@ that requests the broader permission; **Revoke** takes it back.
 | Voice | `eve` | Live list from the API, with a built-in fallback list |
 | Language | `en` | 20 languages plus `auto` detection |
 | Default speed | 1.0× | Applied to the audio element, so pitch is preserved |
-| Characters per request | 1200 | Lower starts sooner, higher sounds smoother across joins |
+| Characters per request | 1200 | The size chunks settle at; the first one or two are smaller regardless, so a read starts quickly |
 | Click a word to read from there | on | Only plain clicks on the text being read |
 | Follow the spoken word | on | Scrolls only when the word leaves a comfortable band |
 | Tint the current sentence | on | |
@@ -174,7 +176,8 @@ article you like):
 - [ ] Changing the voice and reloading the options page keeps the new choice.
 
 **Reading a page**
-- [ ] Clicking **Read page** starts audio within a few seconds.
+- [ ] Clicking **Read page** starts audio in about a second.
+- [ ] The first sentence or two run into the rest without a gap.
 - [ ] Exactly one word is highlighted at a time, and it matches what you hear.
 - [ ] The sentence around the spoken word carries a lighter tint.
 - [ ] The page scrolls to follow the highlight, without fighting you when you
@@ -244,6 +247,18 @@ node tools/popup-paint.js --runs 20           # popup paint and load timings
 node tools/popup-paint.js --runs 10 --cold 1  # with the worker stopped first
 ```
 
+`tools/first-audio.js` measures the wait between pressing read and hearing
+something. It needs the same Chrome and mock API as the end-to-end driver — see
+[Running the end-to-end check](#running-the-end-to-end-check) — with the mock
+started so that a request takes as long as a real one would:
+
+```bash
+node tools/mock-api.js --port 8443 --cert /tmp/cert.pem --key /tmp/key.pem \
+  --latency-base 400 --latency-per-char 1.5 --latency-timestamps 150 &
+
+node tools/first-audio.js --extension "$PWD/dist/chrome-test" --runs 5
+```
+
 ### Layout
 
 ```
@@ -254,7 +269,7 @@ src/
   background/             Holds the key, makes every network call, injects content scripts
   content/                Injected on demand; extraction, alignment, clicks, playback, highlighting
   popup/  options/        Extension UI
-tools/                    Build, icons, static checks, mock API, end-to-end driver
+tools/                    Build, icons, static checks, mock API, end-to-end and timing drivers
 tests/                    Unit tests and a fixture article
 ```
 
@@ -293,6 +308,66 @@ inserting a single node into the page. The rules come from
 Content-Security-Policy cannot suppress them. Where the Highlight API is
 unavailable, the extension falls back to absolutely positioned overlay boxes
 derived from the range's client rects — still without mutating the article.
+
+### Time to first audio
+
+Synthesis is per-character work, so the wait between pressing read and hearing
+anything is set almost entirely by how much text the first request carries.
+Everything the extension does locally — waking the worker, injecting the content
+scripts, reading settings, extracting the article, cutting it into chunks —
+measures **8–11 ms** together, on a page the content scripts have not been
+injected into yet. There was never anything to win there.
+
+So the first request is small: at most `FIRST_CHUNK_CHARS` (240) characters,
+cut at a sentence boundary like any other chunk, which on real prose lands on
+one or two sentences. From there each chunk doubles until it reaches the
+**Characters per request** setting — 240, 480, 960, 1200 — so the opening is
+quick and the body of the read still arrives in the large, smooth-sounding
+pieces that setting asks for. The ramp restarts at every forced chunk boundary,
+which means [jumping to a clicked word](#jumping-to-a-clicked-word) into text
+that has not been fetched starts quickly for the same reason.
+
+Two other things keep that opening from simply moving the wait to the first
+join:
+
+- The request for the chunk *after* the one being started goes out alongside
+  it, rather than once it is playing. It then has the whole of the first
+  chunk's synthesis time to arrive in.
+- Opening the popup tells the worker a read is probably coming: it wakes, puts
+  the settings in memory so the first synthesis does not wait on extension
+  storage, and sends a keyless `OPTIONS` to `api.x.ai` so the first real
+  request is a request rather than a TLS handshake.
+
+`tools/first-audio.js` measures the result against the same Chrome and mock API
+that the end-to-end driver uses, splitting the wait into the part before the API
+sees anything, the API itself, and the part after. The API's real latency is not
+published, so the mock models it as a fixed cost plus a per-character cost plus
+a surcharge for `with_timestamps` — which the API documents as "adds latency for
+the post-synthesis alignment pass". Measured over 4–5 runs per cell, median:
+
+| First request | API model | Before | After |
+| --- | --- | ---: | ---: |
+| 1045 → 135 chars (`article.html`) | 400 ms + 1.5 ms/char + 150 ms | 2326 ms | **796 ms** |
+| 1060 → 213 chars (`app-router-changelog.html`) | 400 ms + 1.5 ms/char + 150 ms | 2364 ms | **929 ms** |
+| 1045 → 135 chars (`article.html`) | 400 ms + 4 ms/char + 150 ms | 4937 ms | **1132 ms** |
+| 1060 → 213 chars (`app-router-changelog.html`) | 400 ms + 4 ms/char + 150 ms | 5002 ms | **1458 ms** |
+| 1045 → 135 chars (`article.html`) | instant | 208 ms | 209 ms |
+
+The last row is the point: with an API that answers instantly nothing changes,
+because nothing was ever slow on this side. The win is whatever the API charges
+per character, and it scales with that rate — which is why the per-character
+figure is a parameter of the measurement rather than a number baked into it.
+
+One caveat on the local half: the mock serves 24 kHz 16-bit WAV, about 48 KB per
+second of speech, where the extension asks the real API for 64 kbps MP3, about
+8 KB. The "response → audible" phase — moving the audio from the worker into the
+page and decoding it — is therefore roughly six times pessimistic here. It fell
+from 197 ms to 35 ms on the article anyway, since it scales with the same
+number.
+
+`optimize_streaming_latency` is deliberately not sent. It shrinks the first
+*streamed* audio chunk at some cost to quality at chunk boundaries, and a unary
+request is waited on whole, so it would buy nothing here.
 
 ### Jumping to a clicked word
 
@@ -402,9 +477,29 @@ the driver loads the extension over the protocol instead.
 - **Code blocks are skipped** (`<pre>` and `<code>`), on the grounds that they
   rarely read well aloud. There is no setting for this yet.
 - **No streaming.** Each chunk is one request that must finish before it can
-  play, so the first chunk has a few seconds of latency. The API also offers a
-  WebSocket endpoint that streams audio as it is generated; that would cut the
-  initial wait and is the obvious next step.
+  play. A short opening chunk cuts that wait to about a second (see
+  [Time to first audio](#time-to-first-audio)), but it is still a wait, and it
+  is still the largest thing between pressing read and hearing something.
+
+  The API's bidirectional WebSocket endpoint (`wss://api.x.ai/v1/tts`) would
+  remove it: audio comes back as `audio.delta` frames while the text is still
+  being read, and — the part that decides whether it is usable here — each
+  frame carries its own `audio_timestamps` and `audio_duration` when the
+  connection is opened with `with_timestamps=true`. So the highlight could stay
+  exactly as accurate as it is now, which is the one thing that cannot be
+  traded away. It would also end chunk joins and the 60,000-character cap
+  altogether.
+
+  It is not implemented because it cannot be tested here. The protocol is
+  documented precisely, but a client written to a document and checked only
+  against a mock of that same document proves nothing about the real endpoint,
+  and this repository has no key to check it against. Two further questions
+  need answering first: whether `audio/mpeg` in MediaSource is dependable in
+  both Chrome and Firefox, since a single shared playback path is the point of
+  the current design, and whether WebSocket activity keeps a Firefox MV3
+  background script alive the way it keeps a Chrome service worker alive. With a
+  key and answers to those, this is the next change to make, and the transport
+  is already behind one message in the worker.
 - **Jumping far ahead can need a new request.** Clicking a word inside the audio
   already fetched is instant. Clicking well beyond it costs one synthesis
   request — the same few seconds the first chunk costs — and re-cuts the chunks
