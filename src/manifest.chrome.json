@@ -39,6 +39,14 @@
     "stop-read": {
       "suggested_key": { "default": "Alt+Shift+S" },
       "description": "Stop reading"
+    },
+    "previous-sentence": {
+      "suggested_key": { "default": "Alt+Shift+Left" },
+      "description": "Go back a sentence"
+    },
+    "next-sentence": {
+      "suggested_key": { "default": "Alt+Shift+Right" },
+      "description": "Skip ahead a sentence"
     }
   }
 }

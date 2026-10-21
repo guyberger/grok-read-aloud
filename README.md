@@ -18,6 +18,8 @@ dependencies — just the files in `src/` and a ~40-line copy script.
 - Highlights the spoken word, tints the sentence around it, and scrolls to keep
   up — driven by the per-character timestamps the API returns, not by guesswork.
 - Jumps to any word you click while it is reading, and carries on from there.
+- Steps back and forward a sentence at a time, so a few words you missed take
+  one key press to hear again.
 - Play, pause, resume and stop from the popup or a keyboard shortcut.
 - Speed control from 0.5× to 3×, applied instantly without re-synthesising.
 - Splits long pages into chunks at paragraph and sentence boundaries, and
@@ -139,10 +141,17 @@ anything that looks like one is ever committed.
 - **Alt+Shift+R** — start reading, or pause/resume if already reading. With text
   selected it reads the selection; otherwise it reads the page.
 - **Alt+Shift+S** — stop.
+- **Alt+Shift+←** / **Alt+Shift+→** — back a sentence, or on to the next one.
+  The same two steps are the ◀ and ▶ buttons either side of the read button in
+  the popup.
 - **Click any word** while it is reading to carry on from that word. It works
   while paused too, and starts playing again from there.
 
-Rebind either shortcut at `chrome://extensions/shortcuts`, or in Firefox under
+Pressing back part-way through a sentence reads *that* sentence again, since
+that is where the words you missed are. Press it again at the start of one and
+it goes to the sentence before it.
+
+Rebind any of these at `chrome://extensions/shortcuts`, or in Firefox under
 `about:addons` → the gear menu → **Manage Extension Shortcuts**.
 
 By default the extension can only touch a page at the moment you invoke it, via
@@ -193,6 +202,15 @@ article you like):
 - [ ] **Stop** clears the highlight completely and resets the popup to Ready.
 - [ ] Moving the speed slider changes the pace immediately, mid-sentence.
 - [ ] `Alt+Shift+R` and `Alt+Shift+S` do the same as the popup buttons.
+
+**Stepping a sentence**
+- [ ] ▶ moves to the first word of the next sentence without a gap.
+- [ ] ◀ part-way through a sentence starts that sentence again.
+- [ ] ◀ at the start of a sentence goes back to the one before it.
+- [ ] Both work while paused, and start playing again from the new position.
+- [ ] Both buttons are greyed out with nothing being read.
+- [ ] ▶ on the last sentence of the page does nothing rather than erroring.
+- [ ] `Alt+Shift+←` and `Alt+Shift+→` do the same as the two buttons.
 
 **Selection**
 - [ ] Select two sentences, choose **Selection**, read: only the selected text is
@@ -413,6 +431,36 @@ nothing in that path ever calls `preventDefault`, so a page that wants a click
 keeps it. A click outside the text being read resolves to no character at all,
 which is also what makes a selection read click only within its selection.
 
+### Stepping a sentence at a time
+
+Stepping is the same move as clicking a word, aimed by the text instead of by
+the pointer: the step resolves to a character index, and from there it is a seek
+when the sentence is inside the audio already in hand, and a chunk that *begins*
+at that sentence when it is not. So everything the jump path already does —
+cancelling requests the step made pointless, re-cutting so the new request
+starts on the first word rather than opening with text it would skip, resuming a
+paused read — applies unchanged.
+
+Two details are worth stating:
+
+- **The sentences come from the whole extracted text, not from the chunk being
+  played.** A chunk's timeline only knows the sentences inside it, and a
+  sentence that straddles a chunk join is cut in two there. Stepping over
+  document-wide sentence ranges means a join is invisible to it, which is the
+  point: the chunk boundaries are a billing and latency decision, and the
+  listener should never meet them.
+- **Back from the middle of a sentence re-reads that sentence.** Pressing back
+  is how someone recovers a few words they missed, and those words are almost
+  always in the sentence still being spoken — so only a sentence that has barely
+  begun (under 1.5 s of audio, which is playback position rather than wall
+  clock, so it holds at any speed) steps to the one before it. Pressing back
+  twice therefore always reaches the previous sentence.
+
+Stepping back over a chunk join can cost one request, for the same reason
+clicking far ahead can: the audio for the text behind the playhead may already
+have been dropped. Stepping within a chunk — which is most steps, since a chunk
+is several sentences — costs nothing at all.
+
 ### Running the end-to-end check
 
 `tools/e2e.js` drives a real Chrome over the DevTools Protocol and asserts that
@@ -503,7 +551,9 @@ the driver loads the extension over the protocol instead.
 - **Jumping far ahead can need a new request.** Clicking a word inside the audio
   already fetched is instant. Clicking well beyond it costs one synthesis
   request — the same few seconds the first chunk costs — and re-cuts the chunks
-  from that word, so the "Part *n* of *m*" label in the popup renumbers.
+  from that word, so the "Part *n* of *m*" label in the popup renumbers. The
+  same is true of stepping back over a chunk join, though a step within the
+  chunk being read — most of them — costs nothing.
 - **Speed above 1.5× is a playback-rate change**, not a re-synthesis. The API's
   own `speed` parameter tops out at 1.5× and would require re-fetching on every
   change, so the extension uses the audio element's rate, which preserves pitch.

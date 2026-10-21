@@ -19,6 +19,14 @@
    */
   const FIRST_CHUNK_CHARS = 240;
 
+  /**
+   * How far into a sentence the playhead has to be for stepping back to mean
+   * "read that sentence again" rather than "read the one before it". Pressing
+   * back is how a listener recovers a few words they missed, and those words
+   * are almost always in the sentence still being spoken.
+   */
+  const REPLAY_AFTER_SECONDS = 1.5;
+
   const state = {
     status: "idle", // idle | loading | playing | paused | error
     scope: "page",
@@ -46,6 +54,11 @@
 
   let doc = null;
   let chunks = [];
+  // Sentence ranges over the whole extracted text, built on first use. A
+  // chunk's own timeline only knows the sentences inside that chunk, and
+  // stepping between sentences has to cross both chunk boundaries and the
+  // joins where a sentence was cut in two.
+  let sentences = null;
   let timeline = null;
   // Keyed by character range rather than chunk index, because clicking into
   // text nothing has been fetched for re-cuts the chunks and the audio already
@@ -304,6 +317,7 @@
 
     const wanted = scope === "auto" ? (window.getSelection()?.isCollapsed === false ? "selection" : "page") : scope;
     doc = extract.extract(wanted) || (wanted === "selection" ? extract.extract("page") : null);
+    sentences = null;
 
     await settingsReady;
     if (!settings.hasApiKey) {
@@ -432,6 +446,52 @@
     return snapshot();
   }
 
+  /** Character index of the word being spoken, or the top of the chunk. */
+  function playheadCharIndex() {
+    if (timeline && player && state.status !== "loading") {
+      const index = util.lastAtOrBefore(timeline.words, player.getTime());
+      if (index >= 0) return timeline.words[index].start;
+    }
+    return chunks[state.chunkIndex]?.start ?? 0;
+  }
+
+  /**
+   * Whether stepping back should re-read the sentence being spoken instead of
+   * the one before it. A sentence that began in an earlier chunk has no start
+   * time in this chunk's timeline, which reads as zero — correctly, since the
+   * playhead is by definition well past it.
+   */
+  function wellIntoSentence(from) {
+    if (!timeline || !player) return false;
+    const start = align.sentenceStartFrom(sentences, from, 0);
+    if (start < 0) return false;
+    return player.getTime() - align.timeForCharIndex(timeline, start) > REPLAY_AFTER_SECONDS;
+  }
+
+  /**
+   * Step a sentence back (`delta` < 0) or forward, and keep reading.
+   *
+   * The destination is a character index, so this is the same move as clicking
+   * a word: a seek when the sentence is in the audio already in hand, and a
+   * chunk that begins at the sentence when it is not. Stepping forward off the
+   * end of the text does nothing; stepping back from the first sentence
+   * restarts it.
+   */
+  async function skipSentence(delta) {
+    if (!doc || !chunks.length) return snapshot();
+    if (!ACTIVE.has(state.status)) return snapshot();
+
+    sentences ??= align.sentences(doc.text);
+    const from = playheadCharIndex();
+    const offset = delta < 0 ? (wellIntoSentence(from) ? 0 : -1) : 1;
+
+    let target = align.sentenceStartFrom(sentences, from, offset);
+    if (target < 0 && offset < 0) target = align.sentenceStartFrom(sentences, from, 0);
+    if (target < 0) return snapshot();
+
+    return jumpToCharIndex(target);
+  }
+
   /** Repaint the highlight at the playhead without waiting for a frame. */
   function repaint() {
     lastWord = -1;
@@ -475,6 +535,7 @@
     pause,
     resume,
     stop,
+    skipSentence: (message) => skipSentence(message.delta),
     setRate: (message) => setRate(message.rate),
     settingsChanged: async () => {
       await refreshSettings();

@@ -110,13 +110,38 @@
     return i;
   }
 
+  /**
+   * Index of the span holding `charIndex`, in a list of ranges that covers the
+   * text in order. A character in the gap between two spans belongs to the one
+   * that follows it, and anything past the end belongs to the last.
+   */
+  function spanIndexFor(spans, charIndex) {
+    if (!spans?.length) return -1;
+    for (let i = 0; i < spans.length; i += 1) {
+      if (charIndex < spans[i].end) return i;
+    }
+    return spans.length - 1;
+  }
+
   /** Index of the chunk holding `charIndex`. */
   function chunkIndexFor(chunks, charIndex) {
-    if (!chunks?.length) return -1;
-    for (let i = 0; i < chunks.length; i += 1) {
-      if (charIndex < chunks[i].end) return i;
-    }
-    return chunks.length - 1;
+    return spanIndexFor(chunks, charIndex);
+  }
+
+  /**
+   * First character of the sentence `offset` sentences from the one covering
+   * `charIndex`, or -1 when there is no such sentence.
+   *
+   * An `offset` of 0 is the start of the sentence being read, which is what
+   * stepping back from the middle of one resolves to: a listener who missed a
+   * few words wants that sentence again, not the one before it.
+   */
+  function sentenceStartFrom(spans, charIndex, offset = 0) {
+    const index = spanIndexFor(spans, charIndex);
+    if (index < 0) return -1;
+    const target = index + offset;
+    if (target < 0 || target >= spans.length) return -1;
+    return spans[target].start;
   }
 
   /** Media time at which a chunk's timeline starts speaking `charIndex`. */
@@ -264,7 +289,9 @@
     sentences,
     buildChunkTimeline,
     wordStartAt,
+    spanIndexFor,
     chunkIndexFor,
+    sentenceStartFrom,
     timeForCharIndex,
   };
 })(globalThis.__readAloud);
