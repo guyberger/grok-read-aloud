@@ -10,7 +10,7 @@
     }
   },
   "permissions": ["storage", "scripting", "activeTab"],
-  "host_permissions": ["https://api.x.ai/*"],
+  "host_permissions": ["https://api.x.ai/*", "https://auth.x.ai/*"],
   "optional_host_permissions": ["<all_urls>"],
   "background": {
     "scripts": ["background/background.js"],

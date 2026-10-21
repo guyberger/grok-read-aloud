@@ -68,9 +68,17 @@ for (const name of ["manifest.chrome.json", "manifest.firefox.json"]) {
   }
 
   if (manifest.manifest_version !== 3) failures.push(`${name} is not manifest v3`);
-  if (!manifest.host_permissions?.includes("https://api.x.ai/*")) {
-    failures.push(`${name} is missing the api.x.ai host permission`);
+  // Two hosts and no more: the API, and the OAuth server a sign-in talks to.
+  // `accounts.x.ai` is only ever opened in a tab, which needs no permission.
+  for (const origin of ["https://api.x.ai/*", "https://auth.x.ai/*"]) {
+    if (!manifest.host_permissions?.includes(origin)) {
+      failures.push(`${name} is missing the ${new URL(origin).host} host permission`);
+    }
   }
+  const extra = (manifest.host_permissions ?? []).filter(
+    (origin) => !["https://api.x.ai/*", "https://auth.x.ai/*"].includes(origin),
+  );
+  if (extra.length) failures.push(`${name} declares unexpected host permissions: ${extra.join(", ")}`);
 }
 
 // 3. The content script list in the background matches what is on disk.
@@ -109,14 +117,28 @@ for (const name of ["manifest.chrome.json", "manifest.firefox.json"]) {
   if (suggested > 4) failures.push(`${name} suggests ${suggested} shortcuts; Chrome allows 4`);
 }
 
-// 5. No credentials committed.
-const SECRET_PATTERNS = [/xai-[A-Za-z0-9]{20,}/, /sk-[A-Za-z0-9]{20,}/];
+// 5. No credentials committed. A signed-in session is a pair of JWTs, so the
+// signed-three-part shape counts as one too.
+const SECRET_PATTERNS = [
+  /xai-[A-Za-z0-9]{20,}/,
+  /sk-[A-Za-z0-9]{20,}/,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/,
+];
 for (const file of files) {
   if (![".js", ".json", ".md", ".html", ".css"].includes(extname(file))) continue;
   const source = readFileSync(file, "utf8");
   for (const pattern of SECRET_PATTERNS) {
     if (pattern.test(source)) failures.push(`possible credential in ${file.slice(ROOT.length)}`);
   }
+}
+
+// 6. The modules that hold credentials must not log. A token in a console line
+// is a token in the devtools of whoever opens the worker, and the only reliable
+// way to keep it out of there is to have nothing in these files that writes.
+for (const relative of ["common/xai-auth.js", "common/credentials.js"]) {
+  const source = readFileSync(resolve(SRC, relative), "utf8");
+  const calls = [...source.matchAll(/\bconsole\.\w+\s*\(/g)].map((match) => match[0]);
+  if (calls.length) failures.push(`${relative} logs (${calls.join(", ")}); credentials pass through it`);
 }
 
 if (failures.length) {

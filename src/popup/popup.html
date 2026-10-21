@@ -91,6 +91,16 @@
         </select>
       </fieldset>
 
+      <!--
+        Hidden until the popup knows which credentials exist, because guessing
+        either way would flash the wrong thing: the button when already signed
+        in, or nothing when there is no way to read at all.
+      -->
+      <div id="auth" class="auth" hidden>
+        <span id="auth-label" class="auth__label"></span>
+        <button id="sign-in" class="link" type="button" hidden>Sign in with xAI</button>
+      </div>
+
       <p id="message" class="message" hidden></p>
 
       <footer class="panel__foot">

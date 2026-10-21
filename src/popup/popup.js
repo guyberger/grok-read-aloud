@@ -38,6 +38,9 @@ const el = {
   rateValue: document.getElementById("rate-value"),
   voice: document.getElementById("voice"),
   message: document.getElementById("message"),
+  auth: document.getElementById("auth"),
+  authLabel: document.getElementById("auth-label"),
+  signIn: document.getElementById("sign-in"),
   openOptions: document.getElementById("open-options"),
   scopeButtons: [...document.querySelectorAll("[data-scope]")],
   presets: [...document.querySelectorAll("[data-rate]")],
@@ -87,12 +90,82 @@ function render(state) {
   }
 
   const problem = current.status === "error" ? current.error : "";
-  const missingKey = current.hasApiKey === false ? "Add your xAI API key in Settings to start." : "";
-  const text = problem || current.notice || missingKey;
+  const missingCredential =
+    current.hasCredential === false ? "Sign in with xAI, or add an API key in Settings, to start." : "";
+  const text = problem || current.notice || missingCredential;
   el.message.textContent = text;
   el.message.hidden = !text;
   el.message.classList.toggle("message--notice", !problem && Boolean(current.notice));
 }
+
+/**
+ * The credential row: which of the two the extension would use for the next
+ * read, and a way to sign in when there is no sign-in yet.
+ *
+ * The flow itself belongs to the worker. This panel closes the moment the
+ * approval tab takes focus, and the sign-in has to survive that.
+ */
+function renderAuth({ signedIn, tierDenied, hasApiKey, pending }) {
+  el.auth.hidden = false;
+  if (pending) {
+    el.auth.dataset.state = "pending";
+    el.authLabel.textContent = "Waiting for xAI approval — see Settings";
+    el.signIn.hidden = true;
+    return;
+  }
+  if (signedIn && tierDenied) {
+    el.auth.dataset.state = "tierDenied";
+    el.authLabel.textContent = hasApiKey
+      ? "xAI sign-in gated — using the API key"
+      : "xAI sign-in gated — add an API key";
+    el.signIn.hidden = true;
+    return;
+  }
+  if (signedIn) {
+    el.auth.dataset.state = "signedIn";
+    el.authLabel.textContent = "Signed in with xAI";
+    el.signIn.hidden = true;
+    return;
+  }
+  el.auth.dataset.state = hasApiKey ? "apiKey" : "none";
+  el.authLabel.textContent = hasApiKey ? "Using your xAI API key" : "No xAI credentials";
+  el.signIn.hidden = false;
+}
+
+async function loadAuth() {
+  try {
+    const [auth, stored] = await Promise.all([
+      ext.runtime.sendMessage({ type: "xaiAuthState" }),
+      ext.storage.local.get("apiKey"),
+    ]);
+    if (!auth?.ok) return;
+    renderAuth({
+      signedIn: auth.status.signedIn,
+      tierDenied: auth.status.tierDenied,
+      hasApiKey: Boolean(stored?.apiKey),
+      pending: auth.pending,
+    });
+  } catch {
+    // Leave the row hidden rather than claim something about credentials.
+  }
+}
+
+el.signIn.addEventListener("click", async () => {
+  el.signIn.disabled = true;
+  el.authLabel.textContent = "Asking xAI for a sign-in code…";
+  try {
+    const response = await ext.runtime.sendMessage({ type: "xaiSignIn" });
+    if (!response?.ok) throw new Error(response?.error || "Could not start the sign-in.");
+    el.auth.dataset.state = "pending";
+    el.authLabel.textContent = `Approve with code ${response.flow.userCode}`;
+    el.signIn.hidden = true;
+  } catch (error) {
+    el.auth.dataset.state = "none";
+    el.authLabel.textContent = error.message;
+  } finally {
+    el.signIn.disabled = false;
+  }
+});
 
 function setScope(next) {
   scope = next;
@@ -186,6 +259,7 @@ el.openOptions.addEventListener("click", () => {
 
 ext.runtime.onMessage.addListener((message) => {
   if (message?.type === "tabStateChanged") render(message.state);
+  if (message?.type === "xaiAuthChanged") loadAuth();
 });
 
 /**
@@ -228,10 +302,17 @@ function load() {
       } catch {
         // Leave the controls on their defaults.
       }
-      // A reader we could not reach says nothing about the key, so say it here.
+      // Which credential is in play does not depend on reaching the reader, so
+      // it is asked for separately and shown either way.
+      const credentials = loadAuth();
+      // A reader we could not reach says nothing about credentials, so say it
+      // here instead.
       if ((await reader) === null && stored) {
-        render({ ...current, hasApiKey: Boolean(stored.apiKey) });
+        const auth = await ext.runtime.sendMessage({ type: "xaiAuthState" }).catch(() => null);
+        const signedIn = Boolean(auth?.ok && auth.status.signedIn && !auth.status.tierDenied);
+        render({ ...current, hasCredential: Boolean(stored.apiKey) || signedIn });
       }
+      await credentials;
     }, 0),
   );
 }

@@ -1,4 +1,5 @@
 import { ext } from "./browser.js";
+import { getStatus as getAuthStatus } from "./xai-auth.js";
 
 export const DEFAULT_SETTINGS = {
   apiKey: "",
@@ -65,8 +66,20 @@ export async function setSettings(patch) {
   await ext.storage.local.set(patch);
 }
 
-/** Everything except the key, for contexts that must never see it. */
+/**
+ * Everything except the key, for contexts that must never see it.
+ *
+ * `hasCredential` is the one a caller should gate a read on: either credential
+ * will do, and an xAI account the API has gated counts as neither.
+ */
 export async function getPublicSettings() {
   const { apiKey, ...rest } = await getSettings();
-  return { ...rest, hasApiKey: Boolean(apiKey) };
+  const auth = await getAuthStatus();
+  return {
+    ...rest,
+    hasApiKey: Boolean(apiKey),
+    signedIn: Boolean(auth.signedIn),
+    tierDenied: Boolean(auth.tierDenied),
+    hasCredential: Boolean(apiKey) || (auth.signedIn && !auth.tierDenied),
+  };
 }

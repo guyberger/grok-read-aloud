@@ -27,6 +27,11 @@
   box-sizing: border-box;
 }
 
+/** `hidden` has to beat the author rules below that also set `display`. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   width: 310px;
@@ -241,6 +246,42 @@ select {
   border-radius: 8px;
   padding: 8px 10px;
   font: inherit;
+}
+
+.auth {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.auth__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.auth[data-state="signedIn"] .auth__label {
+  color: var(--accent);
+}
+
+.auth[data-state="tierDenied"] .auth__label {
+  color: var(--danger);
+}
+
+.auth__label::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  vertical-align: 1px;
 }
 
 .message {

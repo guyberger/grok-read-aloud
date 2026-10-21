@@ -5,7 +5,7 @@
   "description": "Reads the current page or selection aloud with xAI Grok text-to-speech, highlighting each word as it is spoken.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "scripting", "activeTab"],
-  "host_permissions": ["https://api.x.ai/*"],
+  "host_permissions": ["https://api.x.ai/*", "https://auth.x.ai/*"],
   "optional_host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background/background.js",

@@ -27,6 +27,8 @@ dependencies — just the files in `src/` and a ~40-line copy script.
   between parts.
 - Opens with one short request — a sentence or two — so it starts speaking in
   about a second, and grows the chunks from there.
+- Authenticates either by signing in with your xAI account or with an API key,
+  and falls back from the first to the second when xAI turns the sign-in away.
 
 ## How it talks to the API
 
@@ -78,6 +80,11 @@ Audio is requested as MP3 at 24 kHz / 64 kbps — the bitrate the API documents 
 good for speech — which keeps each chunk small enough to pass cheaply between
 the worker and the page.
 
+The `Authorization: Bearer …` header is the same either way: an API key and an
+OAuth access token from a sign-in go in the same place, so nothing below the
+choice between them has to know which one it was handed. That includes TTS,
+which is the only thing this extension asks for.
+
 ## Install
 
 Build the two unpacked extensions first:
@@ -118,7 +125,36 @@ asks for it in one click; you can also enable it from `about:addons` →
 **Read Aloud** → **Permissions**. Requests generally work even without it,
 because the API allows cross-origin calls, but granting it is the reliable path.
 
-## Set your API key
+The extension declares exactly two hosts — `api.x.ai` for the API and
+`auth.x.ai` for the sign-in — and `npm run check` fails if a manifest ever
+declares a third. `accounts.x.ai`, where a sign-in is approved, is only ever
+opened in a tab, which needs no permission at all.
+
+## Sign in
+
+There are two ways to authenticate, and the extension works with either one.
+Both end up as the same `Authorization: Bearer …` header on the same requests
+to `api.x.ai`.
+
+### Sign in with xAI
+
+1. Open the extension's options page.
+2. Click **Sign in with xAI**. A tab opens on `accounts.x.ai` with the sign-in
+   already identified by a code; the options page shows the same code in case
+   the page asks for it.
+3. Approve it there. The options page switches to **Signed in with xAI** on its
+   own — you do not have to come back to it first.
+4. Pick a voice and click **Preview voice** to hear it.
+
+**xAI gates this by subscription tier.** Signing in can succeed and the API can
+still answer 403 to the token it produced; see
+[Known limits](#known-limits). When that happens the extension falls back to
+the API key if one is set, and says in the popup that it did.
+
+**Sign out** removes the tokens from this browser and asks xAI to revoke the
+grant.
+
+### Use an API key instead
 
 1. Create a key at [console.x.ai](https://console.x.ai).
 2. Open the extension's options page.
@@ -128,11 +164,89 @@ because the API allows cross-origin calls, but granting it is the reliable path.
    `GET /v1/tts/voices`.
 5. Pick a voice and click **Preview voice** to hear it.
 
-The key is written to `browser.storage.local`, which is scoped to that browser
-profile. It is sent only to `api.x.ai`, is never logged, and never leaves the
-background worker — the page-side code is handed everything *except* the key.
-Nothing in this repository contains a key, and `npm run check` fails the build if
-anything that looks like one is ever committed.
+A key on its own is the whole of how the extension authenticates, exactly as it
+was before sign-in existed. Alongside a sign-in it is the fallback.
+
+### Where the credentials live
+
+Both the key and the OAuth tokens are written to `browser.storage.local`, which
+is scoped to that browser profile. Neither is logged — `npm run check` fails if
+anything in `common/xai-auth.js` or `common/credentials.js` so much as calls
+`console`, which is the only reliable way to keep a token out of the worker's
+devtools. The key never leaves the background worker: page-side code is handed
+everything *except* it, and the status the popup and options page read has no
+token in it at all. Nothing in this repository contains a credential, and
+`npm run check` fails the build if anything shaped like a key or a signed JWT is
+ever committed.
+
+### Which one a request uses
+
+| State | What a request to `api.x.ai` carries |
+| --- | --- |
+| Signed in, no key | The OAuth access token |
+| Key, not signed in | The key, unchanged from before sign-in existed |
+| Both | The OAuth token; the key catches it if xAI turns it away |
+| Signed in but gated, with a key | The key, with a notice in the popup saying why |
+| Signed in but gated, no key | Nothing — the popup explains the gate |
+| Neither | Nothing — the popup says what is missing |
+
+A **401** is read as a token this extension let go stale: it costs one forced
+refresh and one more attempt before it counts as a rejection. A **403** is the
+tier gate, which refreshing cannot lift, so it falls straight through to the
+key — and the extension stops leading with the sign-in until some later request
+succeeds, rather than paying for a 403 on every chunk of a long page.
+
+## How the sign-in works
+
+The device authorization grant, [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628),
+against `auth.x.ai`. Approval happens in a browser tab rather than on a
+redirect back into the extension, which is what makes it usable here: an
+extension has no stable loopback port to be redirected to.
+
+1. `POST https://auth.x.ai/oauth2/device/code` with the client id and scopes
+   returns a `device_code`, a `user_code`, and the URL to approve at.
+2. The worker opens that URL in a tab and polls
+   `POST https://auth.x.ai/oauth2/token` with
+   `grant_type=urn:ietf:params:oauth:grant-type:device_code`.
+   `authorization_pending` means wait; `slow_down` means wait a second longer.
+3. Approval turns the next poll into an access token and a refresh token.
+4. From then on the token is refreshed five minutes before it expires.
+
+The polling lives in the background worker, not in the page that started it:
+the popup closes the moment the approval tab takes focus, and the sign-in has
+to survive that. Each poll is a `fetch`, which is what keeps the worker from
+being shut down mid-flow. Signing in again while one is already in flight shows
+the code that flow already has rather than stranding it.
+
+### The values, and where they came from
+
+Every value is hard-coded from a public source rather than discovered at
+runtime, so the extension declares one extra host permission instead of
+trusting whatever a discovery response names.
+
+| Value | Source |
+| --- | --- |
+| `https://auth.x.ai` issuer | `auth.x.ai/.well-known/openid-configuration` |
+| `/oauth2/device/code`, `/oauth2/token`, `/oauth2/revoke` | the same document's `device_authorization_endpoint`, `token_endpoint`, `revocation_endpoint` |
+| `urn:ietf:params:oauth:grant-type:device_code` | listed in its `grant_types_supported` |
+| Scopes `openid profile email offline_access grok-cli:access api:access` | all listed in its `scopes_supported`; this exact set is what Hermes Agent's `xai-oauth` provider sends |
+| No client secret | `token_endpoint_auth_methods_supported` includes `none` |
+| Client id `b1a00492-073a-47ea-816f-4c329264a828` | **Hermes Agent's**, not ours — see below |
+
+`common/xai-auth.js` has a `verifyEndpoints()` that re-checks the first five
+against the live document, for when the question is whether they have drifted.
+
+The client id is the one value that is not ours to have. xAI publishes no way
+to register an OAuth client, and the device-code endpoint rejects an
+unregistered one, so there is no id of our own to use yet — this is the one
+[Hermes Agent](https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth)
+registered, which is the only published client of this flow. It means xAI sees
+this extension as Hermes. It is a single named constant in `common/xai-auth.js`
+and should be replaced the moment xAI offers registration.
+
+`offline_access` is the scope that buys the refresh token and `api:access` is
+the one the bearer needs to reach `api.x.ai`; losing either silently breaks a
+different half of this, so `npm test` asserts both are still asked for.
 
 ## Use it
 
@@ -175,14 +289,29 @@ that requests the broader permission; **Revoke** takes it back.
 
 ## Manual test checklist
 
-With a key saved and the article at `tests/fixtures/article.html` open (or any
-article you like):
+With a credential saved and the article at `tests/fixtures/article.html` open
+(or any article you like):
 
 **Setup**
 - [ ] Options page opens by itself the first time the extension is installed.
 - [ ] **Test & load voices** reports a voice count and fills the picker.
 - [ ] **Preview voice** plays audio and reports a duration.
 - [ ] Changing the voice and reloading the options page keeps the new choice.
+
+**Signing in with xAI** — against the real `auth.x.ai`, which the end-to-end
+checks cannot do
+- [ ] **Sign in with xAI** opens `accounts.x.ai` in a tab and shows a user code.
+- [ ] Approving there flips the options page to **Signed in with xAI** without
+      you touching it, and the popup's credential row agrees.
+- [ ] Closing the options page mid-flow and reopening it shows the same code
+      still waiting, and approving still completes.
+- [ ] Reading a page works with no API key saved at all.
+- [ ] If xAI answers 403, the popup says the account is gated rather than
+      looping on a retry — and with a key saved, the read still works and the
+      popup says the key was used instead.
+- [ ] **Sign out** returns the options page to **Sign in with xAI**, and a read
+      falls back to the key with nothing to explain.
+- [ ] With both signed out and no key, the popup says what is missing.
 
 **Reading a page**
 - [ ] Clicking **Read page** starts audio in about a second.
@@ -232,7 +361,8 @@ article you like):
 - [ ] Turn **Click a word to read from there** off: clicks stop moving playback.
 
 **Failure handling**
-- [ ] With no key saved, the popup says to add one rather than failing silently.
+- [ ] With no credential at all, the popup says what is missing rather than
+      failing silently.
 - [ ] With a deliberately wrong key, the popup shows that the key was rejected.
 - [ ] On a page you have not clicked yet, if audio is blocked, both the page and
       the popup say to click the page once — and clicking it starts playback.
@@ -254,8 +384,9 @@ empty dependency tree, and exists only so that `npm ci` succeeds as a no-op
 instead of failing for want of a lockfile.
 
 `npm test` covers chunking, timestamp alignment, the API client's error
-handling, content extraction, and the mapping from a click to a word, a chunk
-and a time. The extraction and click tests drive a headless Chrome, because
+handling, content extraction, the mapping from a click to a word, a chunk and a
+time, the device-code sign-in, and the rule for which credential a request goes
+out with. The extraction and click tests drive a headless Chrome, because
 what counts as rendered — and what is under a given pixel — is the browser's
 answer, and testing it against a DOM stub would only test the stub. They skip
 themselves where there is no Chrome; set `CHROME_PATH` to point at one.
@@ -283,17 +414,17 @@ node tools/first-audio.js --extension "$PWD/dist/chrome-test" --runs 5
 src/
   manifest.chrome.json    Chrome MV3: service_worker background
   manifest.firefox.json   Firefox MV3: background.scripts + gecko id
-  common/                 Settings and the API client (ES modules)
-  background/             Holds the key, makes every network call, injects content scripts
+  common/                 Settings, the API client, the xAI sign-in and the choice between credentials
+  background/             Holds the credentials, makes every network call, injects content scripts
   content/                Injected on demand; extraction, alignment, clicks, playback, highlighting
   popup/  options/        Extension UI
 tools/                    Build, icons, static checks, mock API, end-to-end and timing drivers
 tests/                    Unit tests and a fixture article
 ```
 
-The background worker is the only place the API key exists. Content scripts are
-injected on demand rather than declared for every URL, so the extension never
-runs on a page you did not point it at.
+The background worker is the only place the API key and the OAuth tokens exist.
+Content scripts are injected on demand rather than declared for every URL, so
+the extension never runs on a page you did not point it at.
 
 ### Picking the text to read
 
@@ -475,10 +606,21 @@ synthesise, at `GET /debug/requests`, which is how the jump checks assert that a
 jump cost one request starting on the clicked word rather than several, or one
 beginning earlier.
 
+The sign-in checks run against the same mock, which also stands in for the
+OAuth server and for the approval page on `accounts.x.ai` — approval in those
+checks is a real click on a real button in a real tab, not something the driver
+fakes. One process answers for all three hosts because the paths do not
+collide: the API under `/v1`, the OAuth server under `/oauth2` and
+`/.well-known`, and the approval page at `/oauth2/device`. Its tokens are
+opaque strings prefixed `mock-oauth-`, which cannot be mistaken for anything
+that works against the real API, and `GET /debug/oauth` reports what it has
+issued so a check can assert a refresh happened without reading a token.
+
 ```bash
-# 1. a certificate the mock can serve as api.x.ai
+# 1. one certificate for all three hostnames the mock answers as
 openssl req -x509 -newkey rsa:2048 -keyout /tmp/key.pem -out /tmp/cert.pem \
-  -days 2 -nodes -subj "/CN=api.x.ai" -addext "subjectAltName=DNS:api.x.ai"
+  -days 2 -nodes -subj "/CN=api.x.ai" \
+  -addext "subjectAltName=DNS:api.x.ai,DNS:auth.x.ai,DNS:accounts.x.ai"
 SPKI=$(openssl x509 -in /tmp/cert.pem -pubkey -noout \
   | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | openssl enc -base64)
 
@@ -486,10 +628,11 @@ SPKI=$(openssl x509 -in /tmp/cert.pem -pubkey -noout \
 node tools/mock-api.js --port 8443 --cert /tmp/cert.pem --key /tmp/key.pem &
 (cd tests/fixtures && python3 -m http.server 8777 --bind 127.0.0.1) &
 
-# 3. Chrome, with api.x.ai pointed at the mock. Drop --headless=new to watch.
+# 3. Chrome, with all three xAI hosts pointed at the mock. Drop --headless=new
+#    to watch.
 google-chrome --headless=new --window-size=1000,800 \
   --user-data-dir=/tmp/ra-profile --enable-unsafe-extension-debugging \
-  --host-resolver-rules="MAP api.x.ai 127.0.0.1:8443" \
+  --host-resolver-rules="MAP api.x.ai 127.0.0.1:8443,MAP auth.x.ai 127.0.0.1:8443,MAP accounts.x.ai 127.0.0.1:8443" \
   --ignore-certificate-errors-spki-list="$SPKI" \
   --remote-debugging-port=9333 --autoplay-policy=no-user-gesture-required \
   http://127.0.0.1:8777/article.html &
@@ -509,6 +652,34 @@ the driver loads the extension over the protocol instead.
 
 ## Known limits
 
+- **Signing in with xAI may not get you through to the API.** xAI gates OAuth
+  access to its API by subscription tier, and has been seen to answer `403 The
+  caller does not have permission to execute the specified operation` to
+  accounts whose in-app subscription is perfectly active
+  ([Hermes Agent #26847](https://github.com/NousResearch/hermes-agent/issues/26847)).
+  The sign-in itself succeeds, the tokens are real, and the API refuses them
+  anyway. Nothing about this is fixable from here: signing in again changes
+  nothing, which is why the extension does not suggest it. What it does instead
+  is fall back to the API key when one is set, say so in the popup, and stop
+  leading with the gated sign-in until a later request gets through. With no key
+  set it fails with that explanation rather than a bare 403.
+
+  So the API key is not legacy. For an account xAI gates, it is the only path
+  that works, and it stays the documented one.
+- **The sign-in borrows Hermes Agent's client id.** xAI publishes no client
+  registration, so the extension identifies itself to `auth.x.ai` as the one
+  published client of this flow. See
+  [The values, and where they came from](#the-values-and-where-they-came-from).
+  Practically this means the approval page names Hermes rather than Read Aloud,
+  and that whatever rate limits or allowlists xAI applies per client are shared
+  with every other Hermes user.
+- **A sign-in in progress does not survive a browser restart.** Approval can
+  take minutes, and the polling that waits for it lives in the background
+  worker. Each poll is a `fetch`, which keeps Chrome from shutting an idle
+  worker down, so an ordinary sign-in completes even with every extension page
+  closed. A restart in the middle is the exception: the device code is still
+  good at xAI, but nothing here is waiting on it any more, so the options page
+  clears the stale prompt and the sign-in has to be started again.
 - **Audio can need one click.** Browsers block audio that was not started by a
   gesture *on the page itself*, and clicking the toolbar popup does not count.
   When that happens the extension says so in both the page and the popup, and

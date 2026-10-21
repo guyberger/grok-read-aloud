@@ -5,6 +5,16 @@ const PREVIEW_TEXT =
   "This is how I sound. I will read the page aloud and highlight each word as I say it.";
 
 const el = {
+  signIn: document.getElementById("sign-in"),
+  signOut: document.getElementById("sign-out"),
+  cancelSignIn: document.getElementById("cancel-sign-in"),
+  authOpen: document.getElementById("auth-open"),
+  authSignedOut: document.getElementById("auth-signed-out"),
+  authSignedIn: document.getElementById("auth-signed-in"),
+  authPending: document.getElementById("auth-pending"),
+  authCode: document.getElementById("auth-code"),
+  authUrl: document.getElementById("auth-url"),
+  authStatus: document.getElementById("auth-status"),
   apiKey: document.getElementById("api-key"),
   reveal: document.getElementById("reveal"),
   saveKey: document.getElementById("save-key"),
@@ -118,6 +128,107 @@ async function checkHostPermissions() {
   }
 }
 
+/**
+ * The sign-in panel, in one of three shapes: signed out, waiting for approval,
+ * or signed in. Nothing here ever holds a token — the worker answers with a
+ * status that has none in it.
+ */
+let pendingFlow = null;
+
+function renderAuth({ status, flow, error }) {
+  pendingFlow = flow ?? null;
+  const waiting = Boolean(pendingFlow);
+  const signedIn = Boolean(status?.signedIn);
+
+  el.authPending.hidden = !waiting;
+  el.authSignedIn.hidden = waiting || !signedIn;
+  el.authSignedOut.hidden = waiting || signedIn;
+
+  if (waiting) {
+    el.authCode.textContent = pendingFlow.userCode;
+    el.authUrl.href = pendingFlow.verificationUrlComplete || pendingFlow.verificationUrl;
+    el.authUrl.textContent = pendingFlow.verificationUrl;
+    setStatus(el.authStatus, "Waiting for you to approve the sign-in…");
+    return;
+  }
+
+  if (error) {
+    setStatus(el.authStatus, error, "error");
+    return;
+  }
+  if (!signedIn) {
+    setStatus(el.authStatus, "");
+    return;
+  }
+  if (status.tierDenied) {
+    setStatus(
+      el.authStatus,
+      "Signed in, but xAI will not let this account through to the API — it gates OAuth access by " +
+        "subscription tier. The API key below is used instead.",
+      "error",
+    );
+    return;
+  }
+  const minutes = Math.max(1, Math.round(status.expiresInSeconds / 60));
+  setStatus(el.authStatus, `Signed in with xAI — token good for another ${minutes} min, then refreshed.`, "ok");
+}
+
+async function refreshAuth(extra = {}) {
+  try {
+    const response = await ext.runtime.sendMessage({ type: "xaiAuthState" });
+    if (!response?.ok) throw new Error(response?.error || "Could not read the sign-in state.");
+    renderAuth({ status: response.status, flow: response.flow, ...extra });
+    return response;
+  } catch (error) {
+    renderAuth({ status: { signedIn: false }, flow: null, error: error.message });
+    return null;
+  }
+}
+
+el.signIn.addEventListener("click", async () => {
+  el.signIn.disabled = true;
+  setStatus(el.authStatus, "Asking xAI for a sign-in code…");
+  try {
+    const response = await ext.runtime.sendMessage({ type: "xaiSignIn" });
+    if (!response?.ok) throw new Error(response?.error || "Could not start the sign-in.");
+    renderAuth({ status: { signedIn: false }, flow: response.flow });
+  } catch (error) {
+    renderAuth({ status: { signedIn: false }, flow: null, error: error.message });
+  } finally {
+    el.signIn.disabled = false;
+  }
+});
+
+el.authOpen.addEventListener("click", () => {
+  if (!pendingFlow) return;
+  ext.tabs.create({ url: pendingFlow.verificationUrlComplete || pendingFlow.verificationUrl, active: true });
+});
+
+el.cancelSignIn.addEventListener("click", async () => {
+  await ext.runtime.sendMessage({ type: "xaiCancelSignIn" }).catch(() => {});
+  await refreshAuth();
+});
+
+el.signOut.addEventListener("click", async () => {
+  el.signOut.disabled = true;
+  try {
+    await ext.runtime.sendMessage({ type: "xaiSignOut" });
+    await refreshAuth();
+    setStatus(el.authStatus, "Signed out of xAI.");
+    flashSaved();
+  } finally {
+    el.signOut.disabled = false;
+  }
+});
+
+// The sign-in finishes in the worker, long after the click that started it.
+ext.runtime.onMessage.addListener((message) => {
+  if (message?.type !== "xaiAuthChanged") return;
+  if (message.state === "failed") refreshAuth({ error: message.error });
+  else refreshAuth();
+  if (message.state === "signedIn") refreshVoiceList({ announce: false });
+});
+
 el.reveal.addEventListener("click", () => {
   const hidden = el.apiKey.type === "password";
   el.apiKey.type = hidden ? "text" : "password";
@@ -220,6 +331,7 @@ el.preview.addEventListener("click", async () => {
   fillVoices(Array.isArray(cachedVoices) && cachedVoices.length ? cachedVoices : FALLBACK_VOICES, settings.voiceId);
 
   await checkHostPermissions();
-  if (settings.apiKey) await refreshVoiceList({ announce: false });
-  else setStatus(el.keyStatus, "Paste your xAI API key to get started.");
+  const auth = await refreshAuth();
+  if (settings.apiKey || auth?.status?.signedIn) await refreshVoiceList({ announce: false });
+  else setStatus(el.keyStatus, "Sign in with xAI above, or paste an API key here.");
 })();

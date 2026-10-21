@@ -50,6 +50,8 @@
     sentenceTint: true,
     clickToJump: true,
     hasApiKey: false,
+    signedIn: false,
+    hasCredential: false,
   };
 
   let doc = null;
@@ -88,6 +90,8 @@
       rate: settings.rate,
       voiceId: settings.voiceId,
       hasApiKey: settings.hasApiKey,
+      signedIn: settings.signedIn,
+      hasCredential: settings.hasCredential,
       title: document.title,
     };
   }
@@ -144,6 +148,12 @@
         language: settings.language,
       });
       if (!response?.ok) throw new Error(response?.error || "Synthesis failed.");
+      // The worker says here when it had to fall back from the xAI sign-in to
+      // the API key. The audio is fine; the user still wants to know.
+      if (response.notice && state.notice !== response.notice) {
+        state.notice = response.notice;
+        emit();
+      }
 
       cache.set(key, {
         bytes: util.base64ToBytes(response.audio),
@@ -320,8 +330,12 @@
     sentences = null;
 
     await settingsReady;
-    if (!settings.hasApiKey) {
-      reportError("No API key set. Open the extension options and paste your xAI key.");
+    if (!settings.hasCredential) {
+      reportError(
+        settings.tierDenied
+          ? "xAI will not let the signed-in account through to the API. Add an API key in the extension options."
+          : "No xAI credentials. Sign in with xAI or add an API key in the extension options.",
+      );
       return snapshot();
     }
     if (!doc) {

@@ -10,8 +10,44 @@
     <main class="page">
       <header class="page__head">
         <h1>Read Aloud</h1>
-        <p class="subtitle">Page narration powered by your own xAI Grok text-to-speech key.</p>
+        <p class="subtitle">
+          Page narration powered by xAI Grok text-to-speech — your xAI sign-in, or your own API key.
+        </p>
       </header>
+
+      <section class="card">
+        <h2>Sign in with xAI</h2>
+        <p class="help">
+          Sign in with your xAI account instead of pasting a key. Approval happens on
+          <a href="https://accounts.x.ai" target="_blank" rel="noreferrer noopener">accounts.x.ai</a> in a new tab; the
+          token lives only in this browser profile, is refreshed before it expires, and is sent only to
+          <code>api.x.ai</code>. xAI restricts OAuth access to some subscription tiers — if it turns this account
+          away, the API key below is used instead.
+        </p>
+
+        <div id="auth-signed-out" class="row row--actions" hidden>
+          <button id="sign-in" class="btn btn--primary" type="button">Sign in with xAI</button>
+        </div>
+
+        <div id="auth-pending" class="auth-pending" hidden>
+          <p class="help">
+            Approve this sign-in at
+            <a id="auth-url" href="#" target="_blank" rel="noreferrer noopener">accounts.x.ai</a>. If it asks for a
+            code, this is it:
+          </p>
+          <p id="auth-code" class="auth-code"></p>
+          <div class="row row--actions">
+            <button id="auth-open" class="btn" type="button">Open the approval page again</button>
+            <button id="cancel-sign-in" class="btn btn--ghost" type="button">Cancel</button>
+          </div>
+        </div>
+
+        <div id="auth-signed-in" class="row row--actions" hidden>
+          <button id="sign-out" class="btn" type="button">Sign out</button>
+        </div>
+
+        <p id="auth-status" class="status" hidden></p>
+      </section>
 
       <section class="card">
         <h2>xAI API key</h2>
@@ -19,7 +55,8 @@
           Create a key at
           <a href="https://console.x.ai" target="_blank" rel="noreferrer noopener">console.x.ai</a>. It is stored
           only in this browser profile's extension storage, is sent only to <code>api.x.ai</code>, and is never
-          written to logs.
+          written to logs. With a sign-in above, this is the fallback; on its own, it is the whole of how the
+          extension authenticates.
         </p>
         <div class="row">
           <input
