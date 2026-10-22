@@ -1,6 +1,6 @@
 import { ext } from "../common/browser.js";
 import { withCredential } from "../common/credentials.js";
-import { getPublicSettings, getSettings } from "../common/settings.js";
+import { DEFAULT_SETTINGS, getPublicSettings, getSettings } from "../common/settings.js";
 import { API_BASE, listVoices, synthesizeWithRetry } from "../common/tts-client.js";
 import * as xaiAuth from "../common/xai-auth.js";
 
@@ -10,6 +10,7 @@ const CONTENT_FILES = [
   "content/align.js",
   "content/highlight.js",
   "content/pointer.js",
+  "content/positions.js",
   "content/player.js",
   "content/reader.js",
 ];
@@ -283,8 +284,12 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-ext.storage.onChanged.addListener((_changes, area) => {
-  if (area === "local") cachedSettings = null;
+ext.storage.onChanged.addListener((changes, area) => {
+  // Only a settings write matters. A read writes down where it has got to in
+  // the same area as it goes, and dropping the warm copy for one of those
+  // would put extension storage back in front of the next synthesis.
+  if (area !== "local") return;
+  if (Object.keys(changes).some((key) => key in DEFAULT_SETTINGS)) cachedSettings = null;
 });
 
 ext.commands.onCommand.addListener(async (command) => {

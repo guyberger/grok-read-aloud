@@ -20,6 +20,9 @@ dependencies — just the files in `src/` and a ~40-line copy script.
 - Jumps to any word you click while it is reading, and carries on from there.
 - Steps back and forward a sentence at a time, so a few words you missed take
   one key press to hear again.
+- Remembers where you left off on a page, so coming back to it carries on from
+  there instead of from the top — and asks for the audio from there, so the
+  part you already heard is not paid for twice.
 - Play, pause, resume and stop from the popup or a keyboard shortcut.
 - Speed control from 0.5× to 3×, applied instantly without re-synthesising.
 - Splits long pages into chunks at paragraph and sentence boundaries, and
@@ -260,10 +263,17 @@ different half of this, so `npm test` asserts both are still asked for.
   the popup.
 - **Click any word** while it is reading to carry on from that word. It works
   while paused too, and starts playing again from there.
+- **Continue page** — when a page was left part-read, the popup says how far in
+  it got and the read button continues from there. **Start over** next to it
+  goes back to the top.
 
 Pressing back part-way through a sentence reads *that* sentence again, since
 that is where the words you missed are. Press it again at the start of one and
 it goes to the sentence before it.
+
+**Stop** is the control that finishes with a page: it resets the popup to Ready
+and forgets the position. Pausing, closing the tab and a failed request all keep
+it — those are reads that were interrupted rather than ended.
 
 Rebind any of these at `chrome://extensions/shortcuts`, or in Firefox under
 `about:addons` → the gear menu → **Manage Extension Shortcuts**.
@@ -341,6 +351,17 @@ checks cannot do
 - [ ] ▶ on the last sentence of the page does nothing rather than erroring.
 - [ ] `Alt+Shift+←` and `Alt+Shift+→` do the same as the two buttons.
 
+**Picking up where you left off**
+- [ ] Read a few paragraphs of a long page, pause, close the tab, reopen the
+      page: the popup says how far in it got and the button reads **Continue
+      page**.
+- [ ] Clicking it carries on from about where it stopped, not from the top.
+- [ ] **Start over** reads from the top, and the offer to continue is gone.
+- [ ] **Stop** clears the offer; the next read starts from the top.
+- [ ] Hearing a page to the end clears it too.
+- [ ] A page only a sentence or two in is not offered — it reads from the top.
+- [ ] Reading a **Selection** leaves the page's own position alone.
+
 **Selection**
 - [ ] Select two sentences, choose **Selection**, read: only the selected text is
       spoken and highlighted.
@@ -385,8 +406,9 @@ instead of failing for want of a lockfile.
 
 `npm test` covers chunking, timestamp alignment, the API client's error
 handling, content extraction, the mapping from a click to a word, a chunk and a
-time, the device-code sign-in, and the rule for which credential a request goes
-out with. The extraction and click tests drive a headless Chrome, because
+time, the device-code sign-in, the rule for which credential a request goes
+out with, and finding a remembered position again in a page that has changed
+under it. The extraction and click tests drive a headless Chrome, because
 what counts as rendered — and what is under a given pixel — is the browser's
 answer, and testing it against a DOM stub would only test the stub. They skip
 themselves where there is no Chrome; set `CHROME_PATH` to point at one.
@@ -592,6 +614,58 @@ clicking far ahead can: the audio for the text behind the playhead may already
 have been dropped. Stepping within a chunk — which is most steps, since a chunk
 is several sentences — costs nothing at all.
 
+### Picking up where you left off
+
+A long page is rarely heard in one sitting, and starting it again from the top
+costs the listener their place and the account the characters a second time. So
+a whole-page read writes down where its playhead is — every five seconds, at
+each chunk boundary, when it is paused, when the tab goes away, and when a
+request fails — and the next read of that page continues from there.
+
+Continuing is the same move as [clicking a word](#jumping-to-a-clicked-word):
+the position is a character index, a chunk boundary is forced at it, and the
+first request comes back *beginning* on the word about to be spoken rather than
+carrying the part of the page already heard.
+
+**What a position is remembered by is the text, not the index.** An index is
+only true of the page as it was. A comment thread that grew, an advert that
+expanded, a sentence the author fixed — and the same number now points into the
+middle of a different word. So a position carries the 80 characters that were
+about to be spoken, and finding it again is: trust the stored index if the text
+there still matches, otherwise look for those characters and take the
+occurrence nearest to where they used to be. A page edited above the position
+therefore resumes exactly; a page edited *at* the position falls back to the
+first 40 then 24 characters of the anchor; a page with none of it left starts
+from the top, which is also what happens below 16 characters of match, where a
+hit says too little to trust.
+
+| What happens | The position |
+| --- | --- |
+| Pause, or close the tab, or follow a link | Kept |
+| A request fails part-way through | Kept, so **Try again** carries on from the chunk that failed |
+| **Stop** | Forgotten — the popup is back to Ready, and the page is done with |
+| **Start over** | Forgotten, then read from the top |
+| The page is heard to the end | Forgotten |
+
+Two thresholds keep the offer from being noise. A position in the first 400
+characters is not offered, because the opening of a page is quicker to hear
+again than to decide about, and one in the last 3% is treated as a page that
+was finished. A selection read leaves no position at all: it is about text the
+user picked out, which may not be selected — or even be there — next time.
+
+The store is one key in `browser.storage.local`, holding the 40 most recently
+read pages and nothing older than a month, keyed by URL with the fragment
+dropped so that a footnote link and the page it jumps back from are one page.
+A position is a convenience, so every read and write of it swallows its own
+failures: nothing about a read should break because storage would not answer.
+
+That store is written several times a minute, which is why both the worker and
+the reader now check *what* changed in storage before reacting. Treating a
+position as a settings change would have dropped the worker's warm settings
+copy — the one that keeps extension storage off the path of the next
+synthesis — and sent the reader on a round trip to the worker for a value that
+had not changed.
+
 ### Running the end-to-end check
 
 `tools/e2e.js` drives a real Chrome over the DevTools Protocol and asserts that
@@ -605,6 +679,11 @@ without spending a key. The mock also keeps a log of what it was asked to
 synthesise, at `GET /debug/requests`, which is how the jump checks assert that a
 jump cost one request starting on the clicked word rather than several, or one
 beginning earlier.
+
+The checks for [picking up where you left off](#picking-up-where-you-left-off)
+reload the page between the two reads, so the content scripts, the chunk list
+and every byte of audio are gone and the second read has nothing to go on but
+what the first one wrote down.
 
 The sign-in checks run against the same mock, which also stands in for the
 OAuth server and for the approval page on `accounts.x.ai` — approval in those

@@ -189,7 +189,13 @@ async function main() {
     const pressedAt = await ui.evaluate(`
       (() => {
         const pressedAt = Date.now();
-        chrome.runtime.sendMessage({ type: "control", action: "start", args: { scope: "page" } });
+        // From the top every run: a position left behind by an earlier run
+        // would shorten the first request and flatter the measurement.
+        chrome.runtime.sendMessage({
+          type: "control",
+          action: "start",
+          args: { scope: "page", from: "start" },
+        });
         return pressedAt;
       })()
     `);

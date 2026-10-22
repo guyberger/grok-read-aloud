@@ -160,6 +160,12 @@ async function main() {
     return command({ type: "control", action, args: args_ });
   };
 
+  /** What the popup is handed when it opens on the article, state and all. */
+  const tabState = async () => {
+    await browser.send("Target.activateTarget", { targetId: articleTarget.id });
+    return command({ type: "getTabState" });
+  };
+
   /**
    * What the API was asked to synthesise, so the checks can be about requests
    * and characters rather than guesses. Fetched from the page, which is where
@@ -206,7 +212,8 @@ async function main() {
   const started = await control("start", { scope: "page" });
   check("start command reaches the page", Boolean(started?.ok), started?.error);
 
-  const world = await page.isolatedContextId();
+  // Reassigned after a reload, which leaves the old isolated world behind.
+  let world = await page.isolatedContextId();
   await control("setRate", { rate: 2.5 });
 
   const probe = `
@@ -729,7 +736,116 @@ async function main() {
   await control("setRate", { rate: 1 });
   await control("stop");
 
-  // 11. Sign in with xAI.
+  // 11. Picking up where you left off.
+  //
+  // The page is reloaded between the two reads, so the content scripts, the
+  // chunk list and every byte of audio are gone. All the second read has to go
+  // on is what the first one wrote down.
+  await control("start", { scope: "page" });
+  await control("setRate", { rate: 0.5 });
+  for (let i = 0; i < 80; i += 1) {
+    const sample = await page.evaluate(probe, world);
+    if (sample.status === "playing" && sample.word) break;
+    await sleep(250);
+  }
+  // Deep enough into the article that continuing from it is worth offering,
+  // and in a paragraph the checks below can name.
+  await page.evaluate(`window.showElement("article p", 4)`, world);
+  const leaveAt = await wordPoint("article p", 4, "engineering");
+  await clickAt(leaveAt);
+  const parked = await awaitHighlight(leaveAt.word, { timeoutMs: 15000 });
+  check("parked deep in the article before leaving it", parked.matched, parked.seen.slice(-3).join(" "));
+
+  const interrupted = await control("pause");
+  check("the read is paused, not stopped", interrupted?.state?.status === "paused", interrupted?.state?.status);
+  const leftOff = interrupted?.state?.resume;
+  check(
+    "a paused read reports where it was left off",
+    (leftOff?.percent ?? 0) > 0.1,
+    leftOff ? `${Math.round(leftOff.percent * 100)}% through` : "no position",
+  );
+
+  // Reloading is the honest version of coming back to a page later: nothing
+  // of the previous read is still in memory to fall back on.
+  await sleep(600);
+  await page.send("Page.navigate", { url: PAGE_URL });
+  await sleep(1500);
+  const reloaded = await tabState();
+  world = await page.isolatedContextId();
+  check(
+    "a freshly loaded page still knows where the read stopped",
+    Math.abs((reloaded?.state?.resume?.percent ?? 0) - (leftOff?.percent ?? 0)) < 0.02,
+    `${Math.round((reloaded?.state?.resume?.percent ?? 0) * 100)}% vs ${Math.round((leftOff?.percent ?? 0) * 100)}%`,
+  );
+
+  const beforeContinue = (await synthesised()).length;
+  await control("start", { scope: "page" });
+  const continued = await awaitStatus("playing", { timeoutMs: 20000 });
+  const continueRequests = (await synthesised()).slice(beforeContinue);
+  check("continuing a page starts playing", continued.status === "playing", continued.status || continued.error);
+  // The request begins on the word the read was left on rather than carrying
+  // the part of the page already heard — the same economy a jump gets.
+  const continuedHead = continueRequests[0]?.head.slice(0, 30) ?? "";
+  const headInParagraph = await page.evaluate(
+    `
+    (() => {
+      const paragraph = document.querySelectorAll("article p")[4].innerText.replace(/\\s+/g, " ").trim();
+      return paragraph.includes(${JSON.stringify(continuedHead)});
+    })()
+  `,
+    world,
+  );
+  check(
+    "the audio it asks for begins where the read left off, not at the top of the page",
+    Boolean(continuedHead) && headInParagraph,
+    `${continueRequests.length} request(s), first ${JSON.stringify(continuedHead)}`,
+  );
+  const landed = await page.evaluate(
+    `
+    (() => {
+      const highlight = CSS.highlights.get("read-aloud-word");
+      let word = null;
+      for (const range of highlight ?? []) { word = range.toString().trim(); break; }
+      const paragraph = document.querySelectorAll("article p")[4].innerText.replace(/\\s+/g, " ");
+      return { word, inParagraph: word ? paragraph.includes(word) : false };
+    })()
+  `,
+    world,
+  );
+  check(
+    "the highlight comes back in the paragraph the read was left in",
+    landed.inParagraph,
+    landed.word ?? "no word",
+  );
+  check(
+    "continuing does not renumber the page into one short piece",
+    continued.chunkCount > 1 && continued.chunkIndex > 0,
+    `part ${continued.chunkIndex + 1} of ${continued.chunkCount}`,
+  );
+
+  // Start over is the way back to the top, and it forgets the position so the
+  // next read cannot be pulled into the middle again.
+  const beforeOver = (await synthesised()).length;
+  await control("start", { scope: "page", from: "start" });
+  await awaitStatus("playing", { timeoutMs: 20000 });
+  const overRequests = (await synthesised()).slice(beforeOver);
+  check(
+    "starting over asks for the opening of the page again",
+    overRequests[0]?.head === opening[0]?.head,
+    JSON.stringify(overRequests[0]?.head.slice(0, 40) ?? "no request"),
+  );
+
+  // Stop is the control that says this page is done with.
+  await control("stop");
+  await sleep(400);
+  const afterStopped = await tabState();
+  check(
+    "stopping forgets the position",
+    afterStopped?.state?.resume === null,
+    JSON.stringify(afterStopped?.state?.resume),
+  );
+
+  // 12. Sign in with xAI.
   //
   // The whole flow, against the mock OAuth server: a device code, the
   // approval page in its own tab with a real click on it, the poll that
