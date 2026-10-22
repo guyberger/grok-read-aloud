@@ -6,9 +6,16 @@
     return;
   }
 
-  const { ext, util, extract, align, highlight, pointer, player: playerFactory } = ns;
+  const { ext, util, extract, align, highlight, pointer, positions, player: playerFactory } = ns;
 
   const PREFETCH_AHEAD = 1;
+
+  /**
+   * How often the playhead is written down while a page is being read. A
+   * position is only ever read when a later read starts, so the cost of
+   * being a few seconds behind is a few seconds of text heard twice.
+   */
+  const REMEMBER_EVERY_MS = 5000;
 
   /**
    * Cap on the first request of a read, and of a jump. The API charges by the
@@ -37,6 +44,14 @@
     engine: "none",
     aligned: true,
   };
+
+  /**
+   * Where this page was left off, when that is somewhere worth continuing
+   * from. The popup reads it to offer the choice; `start` acts on it.
+   */
+  let resumePoint = null;
+  let rememberedAt = 0;
+  let everPlayed = false;
 
   const BLOCKED_NOTICE = "Audio is blocked until you interact with this page — click anywhere to start.";
 
@@ -83,6 +98,7 @@
     const chunkProgress = progressWithinChunk();
     return {
       ...state,
+      resume: resumePoint ? { percent: resumePoint.percent } : null,
       progress:
         state.chunkCount > 0
           ? util.clamp((state.chunkIndex + chunkProgress) / state.chunkCount, 0, 1)
@@ -245,6 +261,11 @@
       state.notice = "";
       emit();
     }
+    everPlayed = true;
+    // A chunk boundary is a position worth keeping even in a tab that is not
+    // on screen, where the frame loop — and with it the periodic write —
+    // stops but the audio carries on.
+    rememberPosition({ force: true });
     startLoop();
   }
 
@@ -260,6 +281,8 @@
 
   function finish() {
     stopLoop();
+    // The page was heard to the end, so there is nothing left to continue.
+    forgetPosition();
     highlight.setWord(null);
     highlight.setSentence(null);
     state.status = "idle";
@@ -269,6 +292,10 @@
 
   function reportError(error) {
     stopLoop();
+    // A read that broke part-way through is the clearest case for remembering
+    // a position: trying again then carries on from the chunk that failed
+    // rather than paying to synthesise the page from the top again.
+    rememberPosition({ force: true });
     state.status = "error";
     state.error = error?.message || String(error);
     highlight.notify(state.error);
@@ -301,6 +328,7 @@
     if (!moved && !needsRepaint) return;
 
     lastPaintKey = paintKey;
+    if (moved) rememberPosition();
     const wordRange = wordIndex >= 0 ? rangeOf(timeline.words[wordIndex]) : null;
     const sentenceRange = sentenceIndex >= 0 ? rangeOf(timeline.sentences[sentenceIndex]) : null;
 
@@ -318,8 +346,17 @@
     return span ? extract.rangeFor(doc, span.start, span.end) : null;
   }
 
-  async function start({ scope = "auto" } = {}) {
-    stop();
+  /**
+   * Start reading, from where this page was left off unless asked for the top.
+   *
+   * `from: "start"` is the popup's Start over: it drops the position before
+   * reading, so the read that follows cannot be resumed back into the middle.
+   */
+  async function start({ scope = "auto", from = "resume" } = {}) {
+    // Read before the reset, which is what the position would not survive.
+    const storedReady = from === "resume" ? positions.load() : Promise.resolve(null);
+    if (from !== "resume") forgetPosition();
+    reset();
 
     // Reading the settings is a round trip to the worker and extraction is a
     // walk of the document; neither needs the other, so they overlap.
@@ -354,6 +391,24 @@
       return snapshot();
     }
 
+    // Where the read begins. A remembered position is a character index like
+    // any other, so continuing from one is the same move as clicking a word
+    // that has not been fetched: a chunk boundary is forced there, and the
+    // first request comes back starting on the word about to be spoken rather
+    // than opening with the part of the page that was already heard.
+    const stored = doc.scope === "page" ? await storedReady : null;
+    const at = stored && positions.offered(stored) ? positions.locate(doc.text, stored) : -1;
+    let first = 0;
+    if (at >= 0) {
+      const wordStart = align.wordStartAt(doc.text, at);
+      chunks = align.chunkRanges(doc.text, settings.chunkChars, {
+        boundaries: [wordStart],
+        firstChars: FIRST_CHUNK_CHARS,
+      });
+      first = align.chunkIndexFor(chunks, wordStart);
+      resumePoint = stored;
+    }
+
     sessionId += 1;
     abortRequests();
     cache = new Map();
@@ -361,7 +416,7 @@
     state.chunkCount = chunks.length;
     state.error = "";
     state.notice = "";
-    playChunk(0).catch(reportError);
+    playChunk(first).catch(reportError);
     return snapshot();
   }
 
@@ -369,6 +424,7 @@
     if (state.status !== "playing") return snapshot();
     player?.pause();
     stopLoop();
+    rememberPosition({ force: true });
     state.status = "paused";
     emit();
     return snapshot();
@@ -383,7 +439,12 @@
     return snapshot();
   }
 
-  function stop() {
+  /**
+   * Everything stopping does except forgetting where the read had got to.
+   * Starting a read resets the one before it, and the position it left behind
+   * is the thing the new read is about to continue from.
+   */
+  function reset() {
     sessionId += 1;
     stopLoop();
     player?.stop();
@@ -393,6 +454,7 @@
     cache = new Map();
     lastWord = -1;
     lastSentence = -1;
+    everPlayed = false;
     state.notice = "";
     if (state.status !== "idle") {
       state.status = "idle";
@@ -400,6 +462,48 @@
       emit();
     }
     return snapshot();
+  }
+
+  /**
+   * Stop, the transport control: the panel goes back to Ready, so this page is
+   * finished with and the position it was at goes with it. Pausing, closing
+   * the tab and failing all keep theirs — those are reads that were
+   * interrupted rather than ended.
+   */
+  function stop() {
+    forgetPosition();
+    return reset();
+  }
+
+  /**
+   * Write down where the playhead is, so a later read can carry on from it.
+   *
+   * Only a whole-page read has anywhere to carry on from: a selection read is
+   * about text the user picked out, which may not be selected — or even be
+   * there — next time. Nothing is remembered before the first audio plays
+   * either, so a read that failed on its credentials cannot overwrite a
+   * position with the top of the page.
+   */
+  function rememberPosition({ force = false } = {}) {
+    if (!everPlayed || !doc || doc.scope !== "page" || !chunks.length) return;
+    const now = Date.now();
+    if (!force && now - rememberedAt < REMEMBER_EVERY_MS) return;
+    rememberedAt = now;
+
+    const entry = positions.entryFor({
+      text: doc.text,
+      charIndex: playheadCharIndex(),
+      title: document.title,
+      at: now,
+    });
+    resumePoint = positions.offered(entry) ? entry : null;
+    positions.store(entry);
+  }
+
+  function forgetPosition() {
+    resumePoint = null;
+    rememberedAt = 0;
+    positions.clear();
   }
 
   const ACTIVE = new Set(["loading", "playing", "paused"]);
@@ -541,7 +645,8 @@
     // Refreshed first so an opening popup never reports a key that has since
     // been saved, or a voice that has since changed.
     getState: async () => {
-      await refreshSettings();
+      const [, stored] = await Promise.all([refreshSettings(), positions.load()]);
+      resumePoint = stored && positions.offered(stored) ? stored : null;
       return snapshot();
     },
     start,
@@ -567,13 +672,21 @@
   });
 
   ext.storage.onChanged.addListener((changes, area) => {
-    if (area === "local") refreshSettings();
+    // The reader writes its own position into this area several times a
+    // minute; re-reading the settings for each of those would be a round trip
+    // to the worker for no change at all.
+    if (area !== "local") return;
+    if (Object.keys(changes).every((key) => key === positions.STORE_KEY)) return;
+    refreshSettings();
   });
 
   pointer.watch(onTextClick);
 
+  // Closing the tab or following a link is an interrupted read, not a finished
+  // one, so the position is kept rather than stopped away.
   window.addEventListener("pagehide", () => {
-    stop();
+    rememberPosition({ force: true });
+    reset();
     player?.destroy();
     player = null;
   });

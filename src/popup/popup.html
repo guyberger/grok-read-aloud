@@ -25,6 +25,15 @@
       </div>
       <p id="chunk-label" class="chunk-label">No audio loaded</p>
 
+      <!--
+        Hidden until the reader says this page was left part-read. Showing it
+        by default would promise a position that most pages do not have.
+      -->
+      <div id="resume" class="resume" hidden>
+        <span id="resume-label" class="resume__label"></span>
+        <button id="start-over" class="link" type="button">Start over</button>
+      </div>
+
       <div class="transport">
         <button
           id="previous"

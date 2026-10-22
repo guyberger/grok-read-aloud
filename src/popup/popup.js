@@ -34,6 +34,9 @@ const el = {
   previous: document.getElementById("previous"),
   next: document.getElementById("next"),
   stop: document.getElementById("stop"),
+  resume: document.getElementById("resume"),
+  resumeLabel: document.getElementById("resume-label"),
+  startOver: document.getElementById("start-over"),
   rate: document.getElementById("rate"),
   rateValue: document.getElementById("rate-value"),
   voice: document.getElementById("voice"),
@@ -69,9 +72,19 @@ function render(state) {
 
   el.status.textContent = label.status;
   el.status.dataset.state = current.status;
+
+  // Where this page was left off, when the reader found one worth continuing
+  // from. Only a whole-page read has one, and only with nothing playing is
+  // there a choice to make about it.
+  const left = scope === "page" && !ACTIVE.has(current.status) ? current.resume : null;
+  el.resume.hidden = !left;
+  if (left) el.resumeLabel.textContent = `Left off ${Math.round(left.percent * 100)}% through`;
+
   el.toggleLabel.textContent =
     current.status === "idle" || current.status === "error" || current.status === "pending"
-      ? `${label.action} ${scope === "selection" ? "selection" : "page"}`
+      ? left
+        ? "Continue page"
+        : `${label.action} ${scope === "selection" ? "selection" : "page"}`
       : label.action;
 
   const active = ACTIVE.has(current.status);
@@ -222,6 +235,8 @@ async function loadVoices(selected) {
 }
 
 el.toggle.addEventListener("click", () => control("toggle", { scope }));
+// The one way to ask for the top of a page that was left part-read.
+el.startOver.addEventListener("click", () => control("start", { scope: "page", from: "start" }));
 el.previous.addEventListener("click", () => control("skipSentence", { delta: -1 }));
 el.next.addEventListener("click", () => control("skipSentence", { delta: 1 }));
 el.stop.addEventListener("click", () => control("stop"));
