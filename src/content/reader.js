@@ -6,7 +6,7 @@
     return;
   }
 
-  const { ext, util, extract, align, highlight, pointer, positions, player: playerFactory } = ns;
+  const { ext, util, extract, align, highlight, pointer, positions, handoff, player: playerFactory } = ns;
 
   const PREFETCH_AHEAD = 1;
 
@@ -54,6 +54,7 @@
   let everPlayed = false;
 
   const BLOCKED_NOTICE = "Audio is blocked until you interact with this page — click anywhere to start.";
+  const HANDOFF_NOTICE = "Paused — a read started in another tab.";
 
   let settings = {
     voiceId: "eve",
@@ -255,6 +256,11 @@
     emit();
 
     update();
+    // Taking the read silences whichever other tab had it. It happens as this
+    // tab starts speaking rather than when the read was asked for, so a read
+    // that never gets as far as audio — no credential, a request that failed
+    // — never silences a tab that is working.
+    handoff.take();
     await audio.play();
     if (session !== sessionId) return;
     if (state.notice === BLOCKED_NOTICE) {
@@ -432,11 +438,32 @@
 
   async function resume() {
     if (state.status !== "paused") return snapshot();
+    // Resuming is this tab asking for the read back, so the explanation for
+    // why it stopped is no longer true.
+    if (state.notice === HANDOFF_NOTICE) state.notice = "";
     state.status = "playing";
     emit();
+    handoff.take();
     await player?.play();
     startLoop();
     return snapshot();
+  }
+
+  /**
+   * Another tab has started speaking, so this one goes quiet.
+   *
+   * Pausing rather than stopping: the place is kept, the popup offers Resume,
+   * and taking the read back is one click — which claims it straight back and
+   * silences the other tab in turn.
+   *
+   * A read still loading its first chunk is left alone. It has made no sound
+   * to overlap with yet, and it will claim the read for itself the moment it
+   * does, which is the rule either way: the tab that spoke last keeps it.
+   */
+  function yieldRead() {
+    if (state.status !== "playing") return;
+    state.notice = HANDOFF_NOTICE;
+    pause();
   }
 
   /**
@@ -671,12 +698,19 @@
     return true;
   });
 
+  /**
+   * What a reader writes into the settings area that is not a setting: where
+   * this page has got to, and which tab holds the read. Both are written
+   * while a page is being read, and re-reading the settings for either would
+   * be a round trip to the worker for a value that has not changed.
+   */
+  const READER_KEYS = new Set([positions.STORE_KEY, handoff.CLAIM_KEY]);
+
   ext.storage.onChanged.addListener((changes, area) => {
-    // The reader writes its own position into this area several times a
-    // minute; re-reading the settings for each of those would be a round trip
-    // to the worker for no change at all.
     if (area !== "local") return;
-    if (Object.keys(changes).every((key) => key === positions.STORE_KEY)) return;
+    // A read starting in another tab arrives here, as that tab's claim.
+    if (handoff.taken(changes)) yieldRead();
+    if (Object.keys(changes).every((key) => READER_KEYS.has(key))) return;
     refreshSettings();
   });
 
