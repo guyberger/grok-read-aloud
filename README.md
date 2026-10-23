@@ -23,6 +23,8 @@ dependencies — just the files in `src/` and a ~40-line copy script.
 - Remembers where you left off on a page, so coming back to it carries on from
   there instead of from the top — and asks for the audio from there, so the
   part you already heard is not paid for twice.
+- Reads in one tab at a time: starting a read somewhere else pauses the tab that
+  was reading, rather than two voices talking over each other.
 - Play, pause, resume and stop from the popup or a keyboard shortcut.
 - Speed control from 0.5× to 3×, applied instantly without re-synthesising.
 - Splits long pages into chunks at paragraph and sentence boundaries, and
@@ -271,6 +273,10 @@ Pressing back part-way through a sentence reads *that* sentence again, since
 that is where the words you missed are. Press it again at the start of one and
 it goes to the sentence before it.
 
+Only one tab reads at a time. Start a read in a second tab and the first one
+pauses, keeping its place and saying why; resuming it takes the read back and
+quietens the second.
+
 **Stop** is the control that finishes with a page: it resets the popup to Ready
 and forgets the position. Pausing, closing the tab and a failed request all keep
 it — those are reads that were interrupted rather than ended.
@@ -362,6 +368,16 @@ checks cannot do
 - [ ] A page only a sentence or two in is not offered — it reads from the top.
 - [ ] Reading a **Selection** leaves the page's own position alone.
 
+**One read at a time**
+- [ ] Start a read, open a second article in another tab and read that: the
+      first tab goes quiet, and its popup says a read started in another tab.
+- [ ] Resuming the first tab carries on where it paused, and the second tab
+      pauses with the same explanation.
+- [ ] Neither tab loses its place in the handover, and neither re-reads from
+      the top.
+- [ ] A read that fails on its credentials in a second tab does not silence the
+      tab that is reading.
+
 **Selection**
 - [ ] Select two sentences, choose **Selection**, read: only the selected text is
       spoken and highlighted.
@@ -407,8 +423,8 @@ instead of failing for want of a lockfile.
 `npm test` covers chunking, timestamp alignment, the API client's error
 handling, content extraction, the mapping from a click to a word, a chunk and a
 time, the device-code sign-in, the rule for which credential a request goes
-out with, and finding a remembered position again in a page that has changed
-under it. The extraction and click tests drive a headless Chrome, because
+out with, finding a remembered position again in a page that has changed under
+it, and the claim that keeps one tab reading at a time. The extraction and click tests drive a headless Chrome, because
 what counts as rendered — and what is under a given pixel — is the browser's
 answer, and testing it against a DOM stub would only test the stub. They skip
 themselves where there is no Chrome; set `CHROME_PATH` to point at one.
@@ -438,7 +454,7 @@ src/
   manifest.firefox.json   Firefox MV3: background.scripts + gecko id
   common/                 Settings, the API client, the xAI sign-in and the choice between credentials
   background/             Holds the credentials, makes every network call, injects content scripts
-  content/                Injected on demand; extraction, alignment, clicks, playback, highlighting
+  content/                Injected on demand; extraction, alignment, clicks, playback, highlighting, the cross-tab handoff
   popup/  options/        Extension UI
 tools/                    Build, icons, static checks, mock API, end-to-end and timing drivers
 tests/                    Unit tests and a fixture article
@@ -666,6 +682,43 @@ copy — the one that keeps extension storage off the path of the next
 synthesis — and sent the reader on a round trip to the worker for a value that
 had not changed.
 
+### One read at a time
+
+![Two popups side by side: the tab that was reading is paused and says a read started in another tab, while the tab that started reading is playing](docs/one-read-at-a-time.png)
+
+Two tabs reading different pages over each other is not a feature anyone wants,
+and the one nobody is listening to is still being billed by the character — so a
+tab left reading behind a window you have moved on from is worse than useless.
+When a read starts speaking, every other reader goes quiet.
+
+The tabs arrange that between themselves. No tab can see another, and the
+background worker cannot reliably message a tab that is not the active one —
+`activeTab` is granted per gesture, and this extension asks for nothing broader
+by default. What every injected content script *does* already have is the
+extension's own storage area, and a listener on it. So the reader about to speak
+writes its own id under one key, and every other reader hears that write and
+pauses itself. A write also reaches *every* reader at once, including one left
+over from a worker that has since been shut down and restarted.
+
+Three details make it behave the way a listener would expect:
+
+- **The claim is taken as the audio starts, not when read was pressed.** A read
+  that never gets as far as a sound — no credential, a request that failed —
+  silences nothing, so the tab that is working carries on.
+- **The tab that spoke last keeps the read.** A read still fetching its first
+  chunk is not interrupted by another tab starting, because it will claim the
+  read for itself the moment it has audio. Whichever one that is, exactly one
+  tab ends up speaking.
+- **The other tab pauses rather than stops**, so it keeps its place and says
+  why in the popup: *Paused — a read started in another tab*. Resuming it takes
+  the read straight back, which silences the tab that had taken it. The
+  explanation goes with the resume.
+
+A claim is written once per handoff, not once per chunk: a reader that already
+holds it writes nothing, so reading a long page is one write however many
+requests it takes. Like a remembered position, a claim is a convenience — a
+storage area that will not answer costs the handoff, never the read.
+
 ### Running the end-to-end check
 
 `tools/e2e.js` drives a real Chrome over the DevTools Protocol and asserts that
@@ -684,6 +737,12 @@ The checks for [picking up where you left off](#picking-up-where-you-left-off)
 reload the page between the two reads, so the content scripts, the chunk list
 and every byte of audio are gone and the second read has nothing to go on but
 what the first one wrote down.
+
+The checks for [one read at a time](#one-read-at-a-time) open the article in a
+second tab and drive both readers, which is the only way to see a handoff at
+all: each assertion is about what the *other* tab did in response to this one
+starting, and with the claim removed from the reader three of them fail with
+both tabs reporting that they are playing.
 
 The sign-in checks run against the same mock, which also stands in for the
 OAuth server and for the approval page on `accounts.x.ai` — approval in those
@@ -811,8 +870,9 @@ the driver loads the extension over the protocol instead.
 - **Shortcuts are tab-scoped by default.** With only `activeTab`, the keyboard
   shortcut acts on the focused tab at the moment you press it. Use **Allow on
   all sites** in the options if you want it unconditional.
-- **One tab at a time, by design.** Each tab keeps its own reader, but nothing
-  stops two tabs reading at once if you start both.
+- **One tab at a time.** Starting a read in a second tab pauses the first one
+  rather than talking over it — see [One read at a time](#one-read-at-a-time).
+  Two tabs can still be paused mid-read at once, each holding its own place.
 - **Pages the browser protects** — `chrome://`, `about:`, the Web Store, other
   extensions' pages — cannot be read, and the popup says so.
 - **Long pages cost real money.** Billing is per input character, and the whole
