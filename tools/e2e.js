@@ -154,11 +154,13 @@ async function main() {
     ui.evaluate(`new Promise((res) => chrome.runtime.sendMessage(${JSON.stringify(payload)}, res))`);
 
   // Commands without an explicit tab id go to the active tab, so make sure the
-  // article is the active tab every time rather than racing the options tab.
-  const control = async (action, args_ = {}) => {
-    await browser.send("Target.activateTarget", { targetId: articleTarget.id });
+  // tab being driven is the active one rather than racing the options tab.
+  const controlOn = async (targetId, action, args_ = {}) => {
+    await browser.send("Target.activateTarget", { targetId });
     return command({ type: "control", action, args: args_ });
   };
+
+  const control = (action, args_ = {}) => controlOn(articleTarget.id, action, args_);
 
   /** What the popup is handed when it opens on the article, state and all. */
   const tabState = async () => {
@@ -230,7 +232,7 @@ async function main() {
       return { word, sentence, status: snapshot.status, chunkIndex: snapshot.chunkIndex,
                chunkCount: snapshot.chunkCount, progress: snapshot.progress,
                engine: snapshot.engine, aligned: snapshot.aligned, error: snapshot.error,
-               scrollY: Math.round(window.scrollY) };
+               notice: snapshot.notice, scrollY: Math.round(window.scrollY) };
     })()
   `;
 
@@ -472,17 +474,20 @@ async function main() {
     return { matched: false, seen, sample };
   };
 
-  /** Samples the reader until it reports `status`. */
-  const awaitStatus = async (status, { timeoutMs = 15000 } = {}) => {
+  /** Samples one tab's reader until it reports `status`. */
+  const awaitStatusIn = async (session, contextId, status, { timeoutMs = 15000 } = {}) => {
     const deadline = Date.now() + timeoutMs;
     let sample = null;
     while (Date.now() < deadline) {
-      sample = await page.evaluate(probe, world);
+      sample = await session.evaluate(probe, contextId);
       if (sample.status === status || sample.error) return sample;
       await sleep(80);
     }
     return sample;
   };
+
+  /** Samples the article tab's reader until it reports `status`. */
+  const awaitStatus = (status, options) => awaitStatusIn(page, world, status, options);
 
   // A click outside the selection is outside everything a selection read knows
   // about, so it must do nothing. Paused, because a jump would resume playing.
@@ -1091,6 +1096,86 @@ async function main() {
   );
   await ui.evaluate(`chrome.storage.local.set({ apiKey: "test-key-for-local-mock" }).then(() => true)`);
   await control("stop");
+
+  // 13. One read at a time, across tabs.
+  //
+  // Two tabs on the same article, each with its own reader and neither able to
+  // see the other. The tab that starts speaking last keeps the audio; the one
+  // that had it pauses itself, says why, and keeps its place — so taking the
+  // read back is one resume, which silences the second tab in turn.
+  const secondUrl = `${PAGE_URL}?second=1`;
+  await browser.send("Target.createTarget", { url: secondUrl, background: true });
+  const secondTarget = await findTarget((target) => target.url.startsWith(secondUrl), {
+    label: secondUrl,
+  });
+  const secondTab = await new Session(secondTarget.webSocketDebuggerUrl).open();
+  await secondTab.send("Page.enable");
+  await secondTab.send("Runtime.enable");
+
+  await control("start", { scope: "page", from: "start" });
+  world = await page.isolatedContextId();
+  const firstReading = await awaitStatus("playing", { timeoutMs: 20000 });
+  check(
+    "the first tab is reading",
+    firstReading.status === "playing",
+    firstReading.status || firstReading.error,
+  );
+
+  await controlOn(secondTarget.id, "start", { scope: "page", from: "start" });
+  const secondWorld = await secondTab.isolatedContextId();
+  const secondReading = await awaitStatusIn(secondTab, secondWorld, "playing", { timeoutMs: 20000 });
+  check(
+    "a second tab can start its own read",
+    secondReading.status === "playing",
+    secondReading.status || secondReading.error,
+  );
+
+  const handedOver = await awaitStatusIn(page, world, "paused", { timeoutMs: 8000 });
+  check(
+    "the tab that was reading goes quiet when another starts",
+    handedOver.status === "paused",
+    handedOver.status || handedOver.error,
+  );
+  check(
+    "the tab that went quiet says why",
+    /another tab/i.test(handedOver.notice ?? ""),
+    JSON.stringify(handedOver.notice ?? ""),
+  );
+  check(
+    "the tab that took the read keeps playing",
+    (await secondTab.evaluate(probe, secondWorld)).status === "playing",
+  );
+
+  // Resuming is how the read comes back, and it hands over the same way.
+  await control("resume");
+  const firstAgain = await awaitStatus("playing", { timeoutMs: 10000 });
+  const secondQuiet = await awaitStatusIn(secondTab, secondWorld, "paused", { timeoutMs: 8000 });
+  check(
+    "resuming the quiet tab takes the read back",
+    firstAgain.status === "playing",
+    firstAgain.status || firstAgain.error,
+  );
+  check(
+    "the tab it was taken from pauses in turn",
+    secondQuiet.status === "paused",
+    secondQuiet.status || secondQuiet.error,
+  );
+  check(
+    "taking the read back drops the explanation",
+    !firstAgain.notice,
+    JSON.stringify(firstAgain.notice ?? ""),
+  );
+  check(
+    "the tab that was paused carries on rather than starting again",
+    firstAgain.chunkIndex === handedOver.chunkIndex &&
+      firstAgain.progress >= handedOver.progress - 1e-6,
+    `chunk ${handedOver.chunkIndex} → ${firstAgain.chunkIndex}, progress ${handedOver.progress.toFixed(3)} → ${firstAgain.progress.toFixed(3)}`,
+  );
+
+  await controlOn(secondTarget.id, "stop");
+  await control("stop");
+  secondTab.close();
+  await browser.send("Target.closeTarget", { targetId: secondTarget.id }).catch(() => {});
 
   ui.close();
   page.close();
