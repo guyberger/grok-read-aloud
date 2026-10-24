@@ -23,10 +23,13 @@ async function read(fixture) {
   pages.push(page);
   return {
     page,
-    extract: (scope = "page") =>
+    extract: (scope = "page", options = {}) =>
       page.evaluate(`
         (() => {
-          const doc = globalThis.__readAloud.extract.extract(${JSON.stringify(scope)});
+          const doc = globalThis.__readAloud.extract.extract(
+            ${JSON.stringify(scope)},
+            ${JSON.stringify(options)},
+          );
           return doc ? { text: doc.text, scope: doc.scope } : null;
         })()
       `),
@@ -135,6 +138,96 @@ test("a sidebar inside the article is still a sidebar", { skip }, async () => {
   assert.ok(!doc.text.includes("Navigation:"));
   assert.ok(!doc.text.includes("Footer:"));
   assert.ok(!doc.text.includes("display none and must never be read"));
+});
+
+test("code written into a sentence is read as part of it", { skip }, async () => {
+  const { extract } = await read("inline-code.html");
+  const doc = await extract();
+
+  // The whole clause, not just the word: a sentence that lost its subject
+  // still reads as a sentence, which is what makes dropping it so quiet.
+  assert.ok(
+    doc.text.includes("Set autoCommit to false before the first nightly run"),
+    "inline code was dropped out of the sentence around it",
+  );
+  assert.ok(doc.text.includes("lives in build.config.json at the root"), "an inline file name was dropped");
+  assert.ok(doc.text.includes("Pass --dry-run the first time"), "an inline flag was dropped");
+});
+
+test("whole snippets are left out by default", { skip }, async () => {
+  const { extract } = await read("inline-code.html");
+  const doc = await extract();
+
+  assert.ok(!doc.text.includes("scheduleCron"), "a <pre> code block was read");
+  assert.ok(!doc.text.includes("timeoutMinutes"), "a <pre> code block was read");
+  assert.ok(!doc.text.includes("rotateSecrets"), "a <code> laid out as a block was read");
+});
+
+test("a <code> the page lays out as a block is a snippet, whatever the tag says", { skip }, async () => {
+  const { page } = await read("inline-code.html");
+
+  const [inline, block] = await page.evaluate(`
+    (() => {
+      const { isCodeBlock } = globalThis.__readAloud.extract;
+      const first = document.querySelector("article p code");
+      const snippet = document.querySelector("code.snippet");
+      return [isCodeBlock(first), isCodeBlock(snippet)];
+    })()
+  `);
+  assert.equal(inline, false, "code in the run of a sentence was called a block");
+  assert.equal(block, true, "a display:block <code> was called inline");
+});
+
+test("the setting reads the snippets too", { skip }, async () => {
+  const { extract } = await read("inline-code.html");
+  const doc = await extract("page", { readCodeBlocks: true });
+
+  assert.ok(doc.text.includes("scheduleCron"), "the <pre> block was still skipped");
+  assert.ok(doc.text.includes("rotateSecrets"), "the block-laid-out <code> was still skipped");
+  assert.ok(doc.text.includes("Set autoCommit to false"), "the prose went missing with the setting on");
+});
+
+test("a selection of nothing but a snippet is read anyway", { skip }, async () => {
+  const { page, extract } = await read("inline-code.html");
+
+  await page.evaluate(`
+    (() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.querySelector("pre"));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()
+  `);
+
+  // Silence is not an answer to text the user picked out and pressed read on.
+  const doc = await extract("selection");
+  assert.ok(doc, "a selected code block extracted to nothing");
+  assert.equal(doc.scope, "selection");
+  assert.ok(doc.text.includes("scheduleCron"));
+});
+
+test("a selection around a snippet still drops it", { skip }, async () => {
+  const { page, extract } = await read("inline-code.html");
+
+  await page.evaluate(`
+    (() => {
+      const paragraphs = document.querySelectorAll("article p");
+      const range = document.createRange();
+      range.setStart(paragraphs[1], 0);
+      range.setEnd(paragraphs[2], paragraphs[2].childNodes.length);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()
+  `);
+
+  const doc = await extract("selection");
+  assert.ok(doc.text.includes("lives in build.config.json"), "the prose either side was dropped");
+  assert.ok(doc.text.includes("Pass --dry-run"), "the prose either side was dropped");
+  assert.ok(!doc.text.includes("scheduleCron"), "the snippet between them was read");
 });
 
 test("a selection is read wherever it is, including inside page furniture", { skip }, async () => {

@@ -15,6 +15,9 @@ dependencies — just the files in `src/` and a ~40-line copy script.
 - Reads the readable body of a page, skipping navigation, sidebars, footers,
   forms, code blocks and anything hidden with CSS.
 - Reads just the current selection instead, when you ask it to.
+- Reads the code written into a sentence — a setting name, a flag, a file path
+  — because a sentence without it says something else. Whole snippets are
+  skipped by default, and there is a setting for those.
 - Highlights the spoken word, tints the sentence around it, and scrolls to keep
   up — driven by the per-character timestamps the API returns, not by guesswork.
 - Jumps to any word you click while it is reading, and carries on from there.
@@ -299,6 +302,7 @@ that requests the broader permission; **Revoke** takes it back.
 | Default speed | 1.0× | Applied to the audio element, so pitch is preserved |
 | Characters per request | 1200 | The size chunks settle at; the first one or two are smaller regardless, so a read starts quickly |
 | Click a word to read from there | on | Only plain clicks on the text being read |
+| Read code blocks aloud | off | Whole snippets. Code inside a sentence is read either way |
 | Follow the spoken word | on | Scrolls only when the word leaves a comfortable band |
 | Tint the current sentence | on | |
 | Highlight colour | amber | Text colour adapts for contrast automatically |
@@ -378,6 +382,18 @@ checks cannot do
 - [ ] A read that fails on its credentials in a second tab does not silence the
       tab that is reading.
 
+**Code on the page** — with `tests/fixtures/inline-code.html` open
+- [ ] The first sentence is read as "set autoCommit to false", with the
+      highlight landing on `autoCommit` itself.
+- [ ] Neither the `{ "scheduleCron": … }` block nor the `rotateSecrets` line is
+      read or highlighted.
+- [ ] Turning **Read code blocks aloud** on and reading again speaks both, and
+      the "Part *n* of *m*" count goes up.
+- [ ] With the setting off, selecting the snippet alone and reading
+      **Selection** reads it.
+- [ ] Selecting two paragraphs with the snippet between them reads the prose
+      and skips the snippet.
+
 **Selection**
 - [ ] Select two sentences, choose **Selection**, read: only the selected text is
       spoken and highlighted.
@@ -424,7 +440,8 @@ instead of failing for want of a lockfile.
 handling, content extraction, the mapping from a click to a word, a chunk and a
 time, the device-code sign-in, the rule for which credential a request goes
 out with, finding a remembered position again in a page that has changed under
-it, and the claim that keeps one tab reading at a time. The extraction and click tests drive a headless Chrome, because
+it, the claim that keeps one tab reading at a time, and the line between code
+written into a sentence and a snippet. The extraction and click tests drive a headless Chrome, because
 what counts as rendered — and what is under a given pixel — is the browser's
 answer, and testing it against a DOM stub would only test the stub. They skip
 themselves where there is no Chrome; set `CHROME_PATH` to point at one.
@@ -457,7 +474,7 @@ src/
   content/                Injected on demand; extraction, alignment, clicks, playback, highlighting, the cross-tab handoff
   popup/  options/        Extension UI
 tools/                    Build, icons, static checks, mock API, end-to-end and timing drivers
-tests/                    Unit tests and a fixture article
+tests/                    Unit tests and the fixture pages they read
 ```
 
 The background worker is the only place the API key and the OAuth tokens exist.
@@ -476,6 +493,41 @@ hidden nodes.
 rather than by `Element.checkVisibility`, which reports anything without a
 layout box as invisible — including `display: contents` wrappers, whose
 children render perfectly well and which component frameworks emit freely.
+
+### Code in a page
+
+![A documentation page being read: the spoken word is `autoCommit`, highlighted inside the code element in the middle of the sentence, while the JSON snippet below is passed over](docs/code-in-a-page.png)
+
+`<code>` holds two different things, and reading them the same way is wrong
+either way round.
+
+A snippet is punctuation, indentation and symbols. Spoken aloud it is noise,
+and it is billed by the character like everything else, so it is skipped —
+which is what the extension always did.
+
+Code written into a sentence is the opposite. `autoCommit` in *set `autoCommit`
+to false before the first run* is the subject of the sentence. Dropping it
+leaves "set to false", which is still a sentence, still reads fluently, and
+says something else entirely. Nothing in the audio hints that a word went
+missing. On a page of documentation — which is much of what this extension is
+pointed at — that happened in most paragraphs.
+
+So which one a `<code>` is gets decided by the page, not by the tag. A `<pre>`
+is a snippet. Any other `<code>` is a snippet if the page lays it out as a
+block and a phrase if it sits in the run of the text, which is the same
+question, asked of the same computed styles, as whether an element is rendered
+at all. That catches the `<code class="…">` block a site emits without a
+`<pre>` around it, and it costs one style resolve per code element per read.
+
+Two smaller rules round it off:
+
+- **Read code blocks aloud** in the options brings the snippets back, for
+  anyone who wants them. It is off by default.
+- **A selection of nothing but a snippet is read regardless of that setting.**
+  It is text the user picked out and pressed read on, and silence — or worse,
+  falling back to reading the whole page — is not an answer to that. A
+  selection that merely *contains* a snippet still skips it, like any other
+  read.
 
 ### Why the popup paints before it knows anything
 
@@ -738,6 +790,12 @@ reload the page between the two reads, so the content scripts, the chunk list
 and every byte of audio are gone and the second read has nothing to go on but
 what the first one wrote down.
 
+The checks for [code in a page](#code-in-a-page) read
+`tests/fixtures/inline-code.html` from top to bottom and collect every word the
+highlight lands on, which is the only way to assert a negative: no word of
+either snippet is ever spoken, while `autoCommit` is — and the highlight on it
+really is inside the `<code>` element rather than near it.
+
 The checks for [one read at a time](#one-read-at-a-time) open the article in a
 second tab and drive both readers, which is the only way to see a handoff at
 all: each assertion is about what the *other* tab did in response to this one
@@ -831,8 +889,12 @@ the driver loads the extension over the protocol instead.
   minus navigation, headers, sidebars and footers. On an unusual layout it may
   read too much or too little; selecting the text you want and reading the
   selection always works.
-- **Code blocks are skipped** (`<pre>` and `<code>`), on the grounds that they
-  rarely read well aloud. There is no setting for this yet.
+- **Whole code snippets are skipped by default**, on the grounds that
+  punctuation and indentation rarely read well aloud. Code written into a
+  sentence is always read — see [Code in a page](#code-in-a-page) — and
+  **Read code blocks aloud** in the options turns the snippets on. Which of
+  the two a `<code>` is comes from how the page lays it out, so a snippet in a
+  `<code>` the page styles as inline is read as if it were a phrase.
 - **No streaming.** Each chunk is one request that must finish before it can
   play. A short opening chunk cuts that wait to about a second (see
   [Time to first audio](#time-to-first-audio)), but it is still a wait, and it

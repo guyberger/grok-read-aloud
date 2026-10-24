@@ -11,6 +11,10 @@ export const DEFAULT_SETTINGS = {
   chunkChars: 1200,
   // Clicking a word in the text being read moves playback to it.
   clickToJump: true,
+  // Whole snippets — a <pre>, or a <code> the page lays out as a block. Code
+  // written into a sentence is read either way, because leaving it out
+  // changes what the sentence says.
+  readCodeBlocks: false,
   autoScroll: true,
   highlightColor: "#ffd34d",
   sentenceTint: true,

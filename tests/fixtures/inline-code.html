@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Turn on the nightly build — Test Guide</title>
+    <!--
+      A documentation page of the shape this extension is most often pointed
+      at: prose with code written into the sentences, and two whole snippets
+      that are not sentences at all.
+
+      Three kinds of code appear here, and they are meant to be treated
+      differently:
+
+      1. <code> in the run of a sentence. Dropping it changes what the
+         sentence says — "set to false" is not "set autoCommit to false".
+      2. <pre><code>, a snippet. Punctuation and indentation, which do not
+         read well aloud.
+      3. <code class="snippet">, which the page lays out as a block. Same
+         thing as (2), without the <pre>.
+    -->
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.7 ui-serif, Georgia, serif;
+        color: #1d1d1f;
+        background: #fdfdfb;
+      }
+      nav,
+      footer {
+        background: #ebebe6;
+        padding: 14px 20px;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+      main {
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 120px;
+      }
+      h1 {
+        font-size: 30px;
+        line-height: 1.25;
+        margin: 0 0 18px;
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.92em;
+        background: #f1f0ea;
+        border-radius: 4px;
+        padding: 1px 4px;
+      }
+      pre {
+        background: #f1f0ea;
+        border-radius: 6px;
+        padding: 12px 14px;
+        overflow-x: auto;
+      }
+      pre code {
+        background: none;
+        padding: 0;
+      }
+      /* A snippet with no <pre> around it, laid out as a block by the page. */
+      code.snippet {
+        display: block;
+        white-space: pre;
+        padding: 12px 14px;
+        margin: 18px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation: Home · Guides · Reference</nav>
+
+    <main>
+      <article>
+        <header>
+          <h1>Turn on the nightly build</h1>
+        </header>
+
+        <p>
+          Set <code>autoCommit</code> to false before the first nightly run, or the job will push a
+          half-finished tree to whichever branch it was handed. The flag is read once, when the runner
+          starts, so changing it while a build is in flight does nothing until the next one.
+        </p>
+
+        <p>
+          Every other knob lives in <code>build.config.json</code> at the root of the repository. The runner
+          looks for that file and nothing else; a configuration left in the home directory is ignored
+          without a warning, which is the single most common reason a first nightly build does not behave
+          the way the person who set it up expected.
+        </p>
+
+        <pre><code>{
+  "scheduleCron": "0 3 * * *",
+  "retainBuilds": 14,
+  "notify": ["builds@example.test"],
+  "steps": [
+    { "run": "install", "timeoutMinutes": 10 },
+    { "run": "compile", "timeoutMinutes": 25 },
+    { "run": "verify", "timeoutMinutes": 40 }
+  ]
+}</code></pre>
+
+        <p>
+          Give the schedule a quiet hour. A build that starts at three in the morning finishes long before
+          anybody opens the dashboard, and the machines it runs on are otherwise idle, which is worth real
+          money over a quarter. Pass <code>--dry-run</code> the first time to see the plan the runner would
+          follow without it doing any of it.
+        </p>
+
+        <p>
+          Secrets are the one thing the file must never hold. The runner reads them from the environment at
+          the moment each step starts, so a leaked configuration file leaks nothing but the shape of the
+          build. Rotate them on the same schedule as everything else:
+        </p>
+
+        <code class="snippet">rotateSecrets --since 90d --apply</code>
+
+        <p>
+          Once the first green build has landed, turn the notifications down. An alert that fires every
+          night is an alert nobody reads by the end of the month, and the dashboard already says what the
+          last run did.
+        </p>
+      </article>
+    </main>
+
+    <footer>Footer: Status · Changelog · Contact</footer>
+  </body>
+</html>

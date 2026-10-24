@@ -65,6 +65,7 @@
     highlightColor: "#ffd34d",
     sentenceTint: true,
     clickToJump: true,
+    readCodeBlocks: false,
     hasApiKey: false,
     signedIn: false,
     hasCredential: false,
@@ -369,10 +370,20 @@
     const settingsReady = refreshSettings();
 
     const wanted = scope === "auto" ? (window.getSelection()?.isCollapsed === false ? "selection" : "page") : scope;
-    doc = extract.extract(wanted) || (wanted === "selection" ? extract.extract("page") : null);
+    const walk = (how) =>
+      extract.extract(wanted, how) || (wanted === "selection" ? extract.extract("page", how) : null);
+
+    // Whether code blocks are read is the one setting extraction depends on,
+    // so it runs on the snapshot in hand and re-walks only if the round trip
+    // comes back with a different answer — which costs a few milliseconds on
+    // the one read after the setting was changed, rather than putting the
+    // round trip in front of every read.
+    const readCodeBlocks = settings.readCodeBlocks;
+    doc = walk({ readCodeBlocks });
     sentences = null;
 
     await settingsReady;
+    if (settings.readCodeBlocks !== readCodeBlocks) doc = walk({ readCodeBlocks: settings.readCodeBlocks });
     if (!settings.hasCredential) {
       reportError(
         settings.tierDenied
