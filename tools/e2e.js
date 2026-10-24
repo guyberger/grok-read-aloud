@@ -1177,6 +1177,84 @@ async function main() {
   secondTab.close();
   await browser.send("Target.closeTarget", { targetId: secondTarget.id }).catch(() => {});
 
+  // 14. Code on a page, in its two forms.
+  //
+  // A documentation page is where this decides whether a sentence makes sense
+  // at all, so this section reads one from top to bottom: code written into a
+  // sentence has to be spoken and highlighted like any other word, and a whole
+  // snippet has to be passed over unless the setting asks for it.
+  const codePageUrl = new URL("inline-code.html", PAGE_URL).href;
+  await page.send("Page.navigate", { url: codePageUrl });
+  await sleep(1500);
+  // Opening the popup is what injects the content scripts into a page that
+  // has just loaded, so the isolated world only exists after this.
+  await tabState();
+  world = await page.isolatedContextId();
+
+  const codeProbe = `
+    (() => {
+      const highlight = CSS.highlights.get("read-aloud-word");
+      let word = null;
+      let inCode = false;
+      for (const range of highlight ?? []) {
+        word = range.toString();
+        let node = range.commonAncestorContainer;
+        if (node.nodeType !== 1) node = node.parentElement;
+        inCode = Boolean(node?.closest("code"));
+        break;
+      }
+      const snapshot = globalThis.__readAloud?.reader?.snapshot?.() ?? {};
+      return { word, inCode, status: snapshot.status, chunkCount: snapshot.chunkCount,
+               error: snapshot.error };
+    })()
+  `;
+
+  await control("start", { scope: "page", from: "start" });
+  await control("setRate", { rate: 3 });
+
+  const spoken = [];
+  let codeChunkCount = 0;
+  let codeError = "";
+  let readCodeWord = false;
+  let sawCodePlaying = false;
+  for (let i = 0; i < 260; i += 1) {
+    const sample = await page.evaluate(codeProbe, world);
+    if (sample.status === "playing") sawCodePlaying = true;
+    if (sample.chunkCount) codeChunkCount = sample.chunkCount;
+    if (sample.error) {
+      codeError = sample.error;
+      break;
+    }
+    const current = sample.word?.trim();
+    if (current && spoken.at(-1) !== current) spoken.push(current);
+    if (current === "autoCommit" && sample.inCode) readCodeWord = true;
+    if (sample.status === "idle" && sawCodePlaying) break;
+    await sleep(150);
+  }
+
+  check("the documentation page was read to the end", !codeError && spoken.length > 20, codeError || `${spoken.length} words`);
+  check(
+    "code written into a sentence is spoken with it",
+    spoken.includes("autoCommit") && spoken.includes("build.config.json"),
+    spoken.slice(0, 8).join(" "),
+  );
+  check("the highlight lands on the code element itself", readCodeWord);
+  const snippetWords = spoken.filter((word) => /scheduleCron|retainBuilds|timeoutMinutes|rotateSecrets/.test(word));
+  check("whole snippets are passed over", snippetWords.length === 0, snippetWords.slice(0, 5).join(" "));
+
+  await control("stop");
+  await ui.evaluate(`chrome.storage.local.set({ readCodeBlocks: true }).then(() => true)`);
+  await sleep(600);
+  await control("start", { scope: "page", from: "start" });
+  const withSnippets = await awaitStatus("playing", { timeoutMs: 20000 });
+  check(
+    "the setting puts the snippets back into the read",
+    withSnippets.chunkCount > codeChunkCount,
+    `${codeChunkCount} → ${withSnippets.chunkCount} parts`,
+  );
+  await control("stop");
+  await ui.evaluate(`chrome.storage.local.set({ readCodeBlocks: false }).then(() => true)`);
+
   ui.close();
   page.close();
   browser.close();

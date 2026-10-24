@@ -17,9 +17,11 @@
     "TEXTAREA",
     "INPUT",
     "BUTTON",
-    "CODE",
-    "PRE",
   ]);
+
+  // Code is not skipped by tag name, because the same two tags cover two very
+  // different things: see `isCodeBlock`.
+  const CODE_TAGS = new Set(["PRE", "CODE"]);
 
   // Page furniture, dropped when reading a whole page without a trustworthy
   // content container. An explicit selection inside a sidebar is still
@@ -70,6 +72,26 @@
     // `content-visibility: auto` only skips painting what is offscreen; that
     // text is still part of the page. Only `hidden` takes it out.
     return style.contentVisibility !== "hidden";
+  }
+
+  /**
+   * Whether this element is a code *block* rather than code written into a
+   * sentence.
+   *
+   * The distinction matters because the two read completely differently. A
+   * snippet is punctuation and indentation and rarely makes sense aloud, but
+   * `autoCommit` in the middle of a sentence is the subject of that sentence —
+   * dropping it leaves "set to false", which says something else entirely.
+   *
+   * Which one a `<code>` is cannot be told from the markup: the same tag holds
+   * both, and the page decides by laying one out as a block and the other in
+   * the run of text. So the layout is what gets asked, the same way visibility
+   * is. `<pre>` needs no asking.
+   */
+  function isCodeBlock(element) {
+    if (element.tagName === "PRE") return true;
+    const display = getComputedStyle(element).display;
+    return !display.startsWith("inline") && display !== "contents";
   }
 
   /** Whether the element renders, ancestors included. Memoised per walk. */
@@ -160,7 +182,16 @@
     return end > start ? [start, end] : null;
   }
 
-  function collectTextNodes(root, range, chromeTags, cache = new Map()) {
+  function collectTextNodes(root, range, chromeTags, cache = new Map(), { readCodeBlocks = false } = {}) {
+    // Asking the layout costs a style resolve, and a page of API docs has a
+    // great many `<code>` elements, so each one is asked once per walk.
+    const codeBlocks = new Map();
+    const inCodeBlock = (element) => {
+      let known = codeBlocks.get(element);
+      if (known === undefined) codeBlocks.set(element, (known = isCodeBlock(element)));
+      return known;
+    };
+
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
         if (!node.data || !node.data.trim()) return NodeFilter.FILTER_REJECT;
@@ -170,6 +201,9 @@
         if (!parent || !visible(parent, cache)) return NodeFilter.FILTER_REJECT;
         for (let el = parent; el && el !== root.parentElement; el = el.parentElement) {
           if (SKIP_TAGS.has(el.tagName)) return NodeFilter.FILTER_REJECT;
+          if (!readCodeBlocks && CODE_TAGS.has(el.tagName) && inCodeBlock(el)) {
+            return NodeFilter.FILTER_REJECT;
+          }
           if (chromeTags?.has(el.tagName) && el !== root) return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;
@@ -257,8 +291,8 @@
     return range.toString().trim() ? range : null;
   }
 
-  function buildFrom(root, range, chromeTags, cache) {
-    const slices = collectTextNodes(root, range, chromeTags, cache);
+  function buildFrom(root, range, chromeTags, cache, options) {
+    const slices = collectTextNodes(root, range, chromeTags, cache, options);
     if (!slices.length) return null;
     const built = buildText(slices);
     if (!built.text.trim()) return null;
@@ -267,16 +301,24 @@
 
   /**
    * @param {"page"|"selection"} scope
+   * @param {{readCodeBlocks?: boolean}} options
    * @returns {{text, charNodes, charOffsets, slices, scope}|null}
    */
-  function extract(scope) {
+  function extract(scope, { readCodeBlocks = false } = {}) {
+    const options = { readCodeBlocks };
     const range = scope === "selection" ? activeSelectionRange() : null;
     if (scope === "selection" && !range) return null;
 
     if (range) {
       let root = range.commonAncestorContainer;
       if (root.nodeType !== Node.ELEMENT_NODE) root = root.parentElement;
-      const built = root && buildFrom(root, range, null);
+      // A selection of nothing but a snippet is still text the user picked out
+      // and asked to hear, and silence is not an answer to that — so a
+      // selection the setting would empty is read with the setting set aside.
+      const built =
+        root &&
+        (buildFrom(root, range, null, new Map(), options) ??
+          buildFrom(root, range, null, new Map(), { readCodeBlocks: true }));
       return built ? { ...built, scope: "selection" } : null;
     }
 
@@ -285,13 +327,13 @@
 
     const cache = new Map();
     const root = findMainContent(cache);
-    let built = root && root !== body ? buildFrom(root, null, CONTENT_CHROME_TAGS, cache) : null;
+    let built = root && root !== body ? buildFrom(root, null, CONTENT_CHROME_TAGS, cache, options) : null;
 
     // Picking the article body is a guess, and a guess that comes back nearly
     // empty is worth abandoning. Every visible word in the body minus the page
     // furniture reads worse than a clean article, and far better than silence.
     if (!built || built.text.trim().length < MIN_PAGE_CHARS) {
-      const fallback = buildFrom(body, null, PAGE_CHROME_TAGS, cache);
+      const fallback = buildFrom(body, null, PAGE_CHROME_TAGS, cache, options);
       if (fallback && fallback.text.trim().length > (built?.text.trim().length ?? 0)) built = fallback;
     }
 
@@ -399,5 +441,5 @@
     return range;
   }
 
-  ns.extract = { extract, rangeFor, findMainContent, charIndexAt, charIndexFromPoint };
+  ns.extract = { extract, rangeFor, findMainContent, isCodeBlock, charIndexAt, charIndexFromPoint };
 })(globalThis.__readAloud);
