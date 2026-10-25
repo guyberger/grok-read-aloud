@@ -6,7 +6,7 @@
     return;
   }
 
-  const { ext, util, extract, align, highlight, pointer, positions, handoff, player: playerFactory } = ns;
+  const { ext, util, extract, align, highlight, pointer, positions, handoff, pace, player: playerFactory } = ns;
 
   const PREFETCH_AHEAD = 1;
 
@@ -84,6 +84,9 @@
   // in hand must survive that.
   let cache = new Map();
   let inflight = new Map();
+  // What the API has said about how long its audio runs per character of this
+  // read, which is what turns the characters left into minutes left.
+  const pacing = pace.createPace();
   let nextRequestId = 1;
   let player = null;
   let frame = 0;
@@ -105,6 +108,7 @@
         state.chunkCount > 0
           ? util.clamp((state.chunkIndex + chunkProgress) / state.chunkCount, 0, 1)
           : 0,
+      remainingSeconds: remainingSeconds(),
       rate: settings.rate,
       voiceId: settings.voiceId,
       hasApiKey: settings.hasApiKey,
@@ -117,6 +121,26 @@
   function progressWithinChunk() {
     if (!player || !timeline?.duration) return 0;
     return util.clamp(player.getTime() / timeline.duration, 0, 1);
+  }
+
+  /**
+   * How long there is left to listen, or null when nothing is being read.
+   *
+   * While a chunk is loading its timeline still describes the previous one, so
+   * nothing is taken as being in hand: the estimate runs from the character
+   * the next audio starts at, which is where the listener actually is.
+   */
+  function remainingSeconds() {
+    if (!doc || !chunks.length || !ACTIVE.has(state.status)) return null;
+    const inHand = timeline && player && state.status !== "loading";
+    const from = inHand ? chunks[state.chunkIndex].end : playheadCharIndex();
+    return pace.remainingSeconds({
+      playedSeconds: inHand ? player.getTime() : 0,
+      chunkDuration: inHand ? timeline.duration : 0,
+      charsAfterChunk: doc.text.length - from,
+      secondsPerChar: pacing.secondsPerChar,
+      rate: settings.rate,
+    });
   }
 
   async function refreshSettings() {
@@ -172,6 +196,10 @@
         state.notice = response.notice;
         emit();
       }
+
+      // What this chunk cost in audio seconds per character of text, which is
+      // what the estimate of the time left is built from.
+      pacing.record(text.length, response.duration);
 
       cache.set(key, {
         bytes: util.base64ToBytes(response.audio),
@@ -490,6 +518,10 @@
     timeline = null;
     abortRequests();
     cache = new Map();
+    // The pace is measured per read: a voice or a language changed between two
+    // reads speaks at its own rate, and carrying the old one over would make
+    // the first minutes of the new read confidently wrong.
+    pacing.reset();
     lastWord = -1;
     lastSentence = -1;
     everPlayed = false;

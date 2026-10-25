@@ -20,6 +20,9 @@ dependencies — just the files in `src/` and a ~40-line copy script.
   skipped by default, and there is a setting for those.
 - Highlights the spoken word, tints the sentence around it, and scrolls to keep
   up — driven by the per-character timestamps the API returns, not by guesswork.
+- Says how long there is left to listen, measured against the audio the API is
+  actually returning rather than guessed from a word count — and in the time
+  the speed you are reading at will take, not the length of the recording.
 - Jumps to any word you click while it is reading, and carries on from there.
 - Steps back and forward a sentence at a time, so a few words you missed take
   one key press to hear again.
@@ -266,6 +269,8 @@ different half of this, so `npm test` asserts both are still asked for.
 - **Alt+Shift+←** / **Alt+Shift+→** — back a sentence, or on to the next one.
   The same two steps are the ◀ and ▶ buttons either side of the read button in
   the popup.
+- **About *n* min left** — next to the part count, how much listening is left
+  at the speed currently set. Moving the speed slider moves it.
 - **Click any word** while it is reading to carry on from that word. It works
   while paused too, and starts playing again from there.
 - **Continue page** — when a page was left part-read, the popup says how far in
@@ -344,6 +349,15 @@ checks cannot do
 - [ ] Hidden (`display: none`) text is never read.
 - [ ] Audio continues smoothly across a chunk boundary — watch the "Part *n* of
       *m*" label in the popup tick over without a long gap.
+
+**How long is left**
+- [ ] A read under way says *about n min left* next to the part count.
+- [ ] The figure falls as the read goes on, including across a part boundary.
+- [ ] Moving the speed to 2× roughly halves it, straight away.
+- [ ] It is still there while paused, and gone once **Stop** is pressed.
+- [ ] Left open for a couple of minutes, the panel's figure has gone down.
+- [ ] On a short page it says *under a minute left* rather than counting
+      seconds down.
 
 **Transport**
 - [ ] **Pause** stops the audio and freezes the highlight.
@@ -440,8 +454,9 @@ instead of failing for want of a lockfile.
 handling, content extraction, the mapping from a click to a word, a chunk and a
 time, the device-code sign-in, the rule for which credential a request goes
 out with, finding a remembered position again in a page that has changed under
-it, the claim that keeps one tab reading at a time, and the line between code
-written into a sentence and a snippet. The extraction and click tests drive a headless Chrome, because
+it, the claim that keeps one tab reading at a time, the line between code
+written into a sentence and a snippet, and the arithmetic behind how long a
+read has left. The extraction and click tests drive a headless Chrome, because
 what counts as rendered — and what is under a given pixel — is the browser's
 answer, and testing it against a DOM stub would only test the stub. They skip
 themselves where there is no Chrome; set `CHROME_PATH` to point at one.
@@ -771,6 +786,45 @@ holds it writes nothing, so reading a long page is one write however many
 requests it takes. Like a remembered position, a claim is a convenience — a
 storage area that will not answer costs the handoff, never the read.
 
+### How long is left
+
+![The popup mid-read: Part 2 of 11, and next to it "about 8 min left"](docs/time-left.png)
+
+"Part 2 of 11" answers a question nobody asked. A part is a billing and latency
+decision, its size changes when a jump re-cuts the chunks, and two of eleven
+says nothing about whether this page fits in the walk to the station. The
+question a listener has is *how much longer*, and the answer is a time.
+
+Speech is per-character work at a roughly steady rate, so the time left is the
+characters left times the seconds a character takes. That second number is not
+guessed at for long: every chunk the API answers with reports its own
+`duration`, so from the first one on the rate is measured against this voice,
+this language and this page's own prose. It is averaged over every chunk so far
+rather than taken from the last one, because a paragraph that happened to be
+dialogue should not move the estimate for the twenty minutes after it. Until the
+first chunk lands — a second or so — the figure comes from an assumed 15
+characters a second, which is ordinary English narration.
+
+Three things make the number behave:
+
+- **The chunk being spoken is timed, not estimated.** Its audio is in hand and
+  its duration came back with it, so what is left of it is known to the
+  millisecond and only the text beyond it is multiplied out. The estimate is
+  therefore exact over the next minute and approximate over the next twenty,
+  which is the right way round.
+- **Speed divides it.** The extension changes speed on the audio element rather
+  than re-synthesising, so the same audio at 2× is the same speech in half the
+  time — and the figure is the time you will spend, not the length of the
+  recording. Moving the slider moves it immediately.
+- **A panel left open counts down on its own.** The reader announces its state
+  when something happens to it, not on a timer, because a message a second from
+  every reading tab is exactly the traffic that keeps a background worker from
+  ever being allowed to sleep. So the popup counts the seconds down itself and
+  the next announcement — a chunk boundary, a pause, a jump — puts it right.
+
+It is rounded to the minute, and under a minute it stops counting down at all:
+a number ticking 50, 49, 48 is the part of a progress display nobody wanted.
+
 ### Running the end-to-end check
 
 `tools/e2e.js` drives a real Chrome over the DevTools Protocol and asserts that
@@ -795,6 +849,11 @@ The checks for [code in a page](#code-in-a-page) read
 highlight lands on, which is the only way to assert a negative: no word of
 either snippet is ever spoken, while `autoCommit` is — and the highlight on it
 really is inside the `<code>` element rather than near it.
+
+The checks for [how long is left](#how-long-is-left) sample the estimate across
+a part boundary, which is the one place it could jump — it stops multiplying
+one chunk out there and starts timing the next — and compare it against what
+the mock's own audio implies for the text on the page.
 
 The checks for [one read at a time](#one-read-at-a-time) open the article in a
 second tab and drive both readers, which is the only way to see a handoff at
@@ -919,6 +978,13 @@ the driver loads the extension over the protocol instead.
   background script alive the way it keeps a Chrome service worker alive. With a
   key and answers to those, this is the next change to make, and the transport
   is already behind one message in the worker.
+- **How long is left is an estimate, and says so.** The chunk being spoken is
+  timed exactly; everything after it is the characters left multiplied by the
+  rate the chunks so far came back at. A page whose second half is one long
+  table of numbers reads slower than its first half implies, so the figure
+  drifts — and the first second or two of a read, before any chunk has
+  answered, assumes a rate rather than knowing one. It is rounded to the minute
+  for that reason.
 - **Jumping far ahead can need a new request.** Clicking a word inside the audio
   already fetched is instant. Clicking well beyond it costs one synthesis
   request — the same few seconds the first chunk costs — and re-cuts the chunks

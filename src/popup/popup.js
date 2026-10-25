@@ -29,6 +29,7 @@ const el = {
   pageTitle: document.getElementById("page-title"),
   progressBar: document.getElementById("progress-bar"),
   chunkLabel: document.getElementById("chunk-label"),
+  timeLeft: document.getElementById("time-left"),
   toggle: document.getElementById("toggle"),
   toggleLabel: document.getElementById("toggle-label"),
   previous: document.getElementById("previous"),
@@ -66,6 +67,51 @@ const LABELS = {
 /** Statuses with something to stop, step through or resume. */
 const ACTIVE = new Set(["loading", "playing", "paused"]);
 
+/**
+ * How long there is left to listen, in the words someone would use.
+ *
+ * Rounded to the minute, and never to a precision the estimate does not have:
+ * the reader knows the chunk in hand exactly and multiplies out the rest, so
+ * "about 14 min" is the honest form of 13 minutes and 52 seconds. Under a
+ * minute it stops counting down altogether — a number ticking 50, 49, 48 is
+ * the part of a progress display nobody wanted.
+ */
+function timeLeft(seconds) {
+  if (!(seconds > 0)) return "";
+  if (seconds < 60) return "under a minute left";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `about ${minutes} min left`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `about ${hours} h ${rest} min left` : `about ${hours} h left`;
+}
+
+function renderTimeLeft() {
+  const remaining = timeLeft(current.remainingSeconds);
+  el.timeLeft.textContent = remaining;
+  el.timeLeft.hidden = !remaining;
+}
+
+/**
+ * Keep the estimate current in a panel left open.
+ *
+ * The reader announces its state when something happens to it — a chunk
+ * boundary, a pause, a jump — not on a timer, because a message a second from
+ * every reading tab is exactly the traffic that keeps a background worker from
+ * ever being allowed to sleep. So the panel counts the seconds down itself,
+ * from the number the reader gave it, and the next announcement puts it right.
+ */
+let ticking = 0;
+
+function countDown() {
+  clearInterval(ticking);
+  if (current.status !== "playing" || !(current.remainingSeconds > 0)) return;
+  ticking = setInterval(() => {
+    current.remainingSeconds = Math.max(0, current.remainingSeconds - 1);
+    renderTimeLeft();
+  }, 1000);
+}
+
 function render(state) {
   current = state ?? { status: "idle" };
   const label = LABELS[current.status] ?? LABELS.idle;
@@ -101,6 +147,9 @@ function render(state) {
   } else {
     el.chunkLabel.textContent = "No audio loaded";
   }
+
+  renderTimeLeft();
+  countDown();
 
   const problem = current.status === "error" ? current.error : "";
   const missingCredential =

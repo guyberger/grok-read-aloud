@@ -231,6 +231,7 @@ async function main() {
       const snapshot = globalThis.__readAloud?.reader?.snapshot?.() ?? {};
       return { word, sentence, status: snapshot.status, chunkIndex: snapshot.chunkIndex,
                chunkCount: snapshot.chunkCount, progress: snapshot.progress,
+               remainingSeconds: snapshot.remainingSeconds,
                engine: snapshot.engine, aligned: snapshot.aligned, error: snapshot.error,
                notice: snapshot.notice, scrollY: Math.round(window.scrollY) };
     })()
@@ -1254,6 +1255,91 @@ async function main() {
   );
   await control("stop");
   await ui.evaluate(`chrome.storage.local.set({ readCodeBlocks: false }).then(() => true)`);
+
+  // 15. How long is left.
+  //
+  // The estimate is the characters left times the seconds a character takes,
+  // with the chunk in hand timed rather than multiplied out — so the checks
+  // are that it is in the region the audio itself implies, that it only ever
+  // falls, that the speed control moves it, and that it is withdrawn rather
+  // than left on screen when there is nothing being read.
+  await page.send("Page.navigate", { url: PAGE_URL });
+  await sleep(1500);
+  await tabState();
+  world = await page.isolatedContextId();
+
+  const idleEstimate = await page.evaluate(probe, world);
+  check(
+    "with nothing being read there is no estimate to give",
+    idleEstimate.remainingSeconds === null,
+    JSON.stringify(idleEstimate.remainingSeconds),
+  );
+
+  await control("setRate", { rate: 1 });
+  await control("start", { scope: "page", from: "start" });
+  const timing = await awaitStatus("playing", { timeoutMs: 20000 });
+
+  // What the mock's own audio says this article is worth: it answers with
+  // 0.055 seconds of audio per character of text. `innerText` is the rendered
+  // text, so the paragraph the fixture hides is already out of it — the same
+  // text the extraction walk arrives at.
+  const readableChars = await page.evaluate(
+    `document.querySelector("article").innerText.replace(/\\s+/g, " ").trim().length`,
+  );
+  const impliedSeconds = readableChars * 0.055;
+  check(
+    "a read says how long is left, in the region the audio implies",
+    timing.remainingSeconds > impliedSeconds * 0.6 && timing.remainingSeconds < impliedSeconds * 1.4,
+    `${Math.round(timing.remainingSeconds)}s estimated against ${Math.round(impliedSeconds)}s of audio for ${readableChars} characters`,
+  );
+
+  // Sampled across a chunk boundary, where the estimate stops multiplying one
+  // chunk out and starts timing the next — the one place it could jump.
+  const falling = [];
+  let crossed = 0;
+  for (let i = 0; i < 60; i += 1) {
+    const sample = await page.evaluate(probe, world);
+    if (sample.status !== "playing") break;
+    crossed = Math.max(crossed, sample.chunkIndex);
+    falling.push(sample.remainingSeconds);
+    await sleep(500);
+    if (crossed > 0 && falling.length > 8) break;
+  }
+  const rose = falling.filter((seconds, i) => i > 0 && seconds > falling[i - 1] + 0.75);
+  check(
+    "the estimate falls as the read advances, including across a chunk boundary",
+    falling.length > 4 && falling.at(-1) < falling[0] && rose.length === 0,
+    `${falling.map((seconds) => Math.round(seconds)).join(" → ")}s over part ${crossed + 1}`,
+  );
+
+  const atNormalSpeed = (await page.evaluate(probe, world)).remainingSeconds;
+  await control("setRate", { rate: 2 });
+  await sleep(300);
+  const atDoubleSpeed = (await page.evaluate(probe, world)).remainingSeconds;
+  check(
+    "reading twice as fast halves the time left",
+    Math.abs(atDoubleSpeed - atNormalSpeed / 2) < Math.max(2, atNormalSpeed * 0.06),
+    `${Math.round(atNormalSpeed)}s at 1x → ${Math.round(atDoubleSpeed)}s at 2x`,
+  );
+  await control("setRate", { rate: 1 });
+
+  // Paused, the estimate is still the answer to how much is left; stopped,
+  // there is nothing left to be left of.
+  await control("pause");
+  const pausedEstimate = await page.evaluate(probe, world);
+  check(
+    "a paused read still says how much is left",
+    pausedEstimate.remainingSeconds > 0,
+    `${Math.round(pausedEstimate.remainingSeconds ?? 0)}s`,
+  );
+  await control("stop");
+  await sleep(300);
+  const stoppedEstimate = await page.evaluate(probe, world);
+  check(
+    "stopping withdraws the estimate",
+    stoppedEstimate.remainingSeconds === null,
+    JSON.stringify(stoppedEstimate.remainingSeconds),
+  );
 
   ui.close();
   page.close();
