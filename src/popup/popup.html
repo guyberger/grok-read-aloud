@@ -23,7 +23,14 @@
       <div class="progress" role="progressbar" aria-label="Reading progress" aria-valuemin="0" aria-valuemax="100">
         <div id="progress-bar" class="progress__bar"></div>
       </div>
-      <p id="chunk-label" class="chunk-label">No audio loaded</p>
+      <div class="meta">
+        <p id="chunk-label" class="chunk-label">No audio loaded</p>
+        <!--
+          Hidden until a read is under way, because with nothing being read
+          there is no answer to give and a dash in its place is just noise.
+        -->
+        <p id="time-left" class="chunk-label time-left" hidden></p>
+      </div>
 
       <!--
         Hidden until the reader says this page was left part-read. Showing it
