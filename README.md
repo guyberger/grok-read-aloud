@@ -680,6 +680,8 @@ which is also what makes a selection read click only within its selection.
 
 ### Where a sentence ends
 
+![A sentence being read: the tint runs from "The survey was led by Dr. Mair" all the way to "worth writing down", with the spoken word "institute" highlighted inside it](docs/where-a-sentence-ends.png)
+
 A full stop followed by a space is not a sentence ending, and a sentence
 ending is not always a full stop followed by a space. Prose is full of both
 mistakes waiting to be made:
