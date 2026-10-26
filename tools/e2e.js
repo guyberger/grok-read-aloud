@@ -1341,6 +1341,102 @@ async function main() {
     JSON.stringify(stoppedEstimate.remainingSeconds),
   );
 
+  // 16. Where a sentence ends.
+  //
+  // Prose puts a full stop in plenty of places that do not end a sentence —
+  // `Dr. Mair`, `Sept. 1974`, `approx. 400` — and puts the end of one inside a
+  // quote mark. Three things read the answer: the tint, the sentence steps,
+  // and the points a chunk may be cut at, which is the one the listener hears,
+  // because a chunk ending `led by Dr.` is a name read with a full stop in it.
+  //
+  // The chunks are cut small here so that cuts land inside a paragraph rather
+  // than on its newline, which is where the question actually arises.
+  const proseUrl = new URL("abbreviations.html", PAGE_URL).href;
+  await ui.evaluate(`chrome.storage.local.set({ chunkChars: 200 }).then(() => true)`);
+  await page.send("Page.navigate", { url: proseUrl });
+  await sleep(1500);
+  await tabState();
+  world = await page.isolatedContextId();
+
+  const tintProbe = `
+    (() => {
+      const tint = CSS.highlights.get("read-aloud-sentence");
+      let sentence = null;
+      for (const range of tint ?? []) { sentence = range.toString().replace(/\\s+/g, " ").trim(); break; }
+      const snapshot = globalThis.__readAloud?.reader?.snapshot?.() ?? {};
+      return { sentence, status: snapshot.status, error: snapshot.error };
+    })()
+  `;
+
+  const beforeProse = (await synthesised()).length;
+  await control("start", { scope: "page", from: "start" });
+  await control("setRate", { rate: 3 });
+
+  const tinted = [];
+  let proseError = "";
+  let sawProsePlaying = false;
+  for (let i = 0; i < 320; i += 1) {
+    const sample = await page.evaluate(tintProbe, world);
+    if (sample.status === "playing") sawProsePlaying = true;
+    if (sample.error) {
+      proseError = sample.error;
+      break;
+    }
+    if (sample.sentence && tinted.at(-1) !== sample.sentence) tinted.push(sample.sentence);
+    if (sample.status === "idle" && sawProsePlaying) break;
+    await sleep(150);
+  }
+
+  check(
+    "the prose page was read to the end",
+    !proseError && tinted.length > 5,
+    proseError || `${tinted.length} tinted sentences`,
+  );
+
+  // Each of these is an abbreviation in the fixture, so a tint or a request
+  // ending on one is a sentence that was cut at a title or a date.
+  const ABBREVIATION_TAIL = /\b(Dr|Mt|Prof|Sept|Nov|Fig|approx|Ltd|al|p)\.$/;
+  const fragments = tinted.filter((sentence) => ABBREVIATION_TAIL.test(sentence));
+  check(
+    "the tint never stops at an abbreviation's full stop",
+    fragments.length === 0,
+    fragments.slice(0, 3).map((sentence) => JSON.stringify(sentence)).join(", "),
+  );
+  check(
+    "a title and the name after it are tinted as one sentence",
+    tinted.some(
+      (sentence) =>
+        sentence.startsWith("The survey was led by Dr. Mair") && sentence.endsWith("writing down."),
+    ),
+    JSON.stringify(tinted.find((sentence) => sentence.includes("Dr. Mair")) ?? "never tinted"),
+  );
+  check(
+    "a quoted sentence is tinted up to the quote that closes it",
+    tinted.includes('He said "Not at this tide, not for anyone."'),
+    JSON.stringify(tinted.find((sentence) => sentence.includes("Not at this tide")) ?? "never tinted"),
+  );
+
+  const proseRequests = (await synthesised()).slice(beforeProse);
+  const cutShort = proseRequests
+    .map((entry) => entry.tail.trimEnd())
+    .filter((tail) => ABBREVIATION_TAIL.test(tail));
+  check(
+    "no request is cut inside an abbreviation",
+    proseRequests.length > 3 && cutShort.length === 0,
+    cutShort.length
+      ? cutShort.map((tail) => JSON.stringify(tail.slice(-20))).join(", ")
+      : `${proseRequests.length} requests`,
+  );
+  check(
+    "a chunk can be cut after the quote that closes a sentence",
+    proseRequests.some((entry) => /\."$/.test(entry.tail.trimEnd())),
+    JSON.stringify(proseRequests.map((entry) => entry.tail.trimEnd().slice(-6))),
+  );
+
+  await control("stop");
+  await control("setRate", { rate: 1 });
+  await ui.evaluate(`chrome.storage.local.set({ chunkChars: 400 }).then(() => true)`);
+
   ui.close();
   page.close();
   browser.close();

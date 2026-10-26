@@ -5,6 +5,10 @@ import { loadContentNamespace } from "./load-content.js";
 const ns = loadContentNamespace();
 const { sentences, sentenceStartFrom, spanIndexFor, wordStartAt } = ns.align;
 
+/** The sentences of `text`, trimmed, so a failure prints what was cut where. */
+const split = (text) =>
+  Array.from(sentences(text)).map((span) => text.slice(span.start, span.end).trim());
+
 const PARAGRAPH =
   "Grinding therefore happened at odd hours. " +
   "A mill that was busy at dawn one week would be busy at midday the next. " +
@@ -42,8 +46,120 @@ test("spanIndexFor finds the span a character falls in", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Where a sentence actually ends.
+// ---------------------------------------------------------------------------
+
+test("a title's full stop does not end a sentence", () => {
+  assert.deepEqual(split("The study was led by Dr. Mair and Prof. Ito. Both agreed."), [
+    "The study was led by Dr. Mair and Prof. Ito.",
+    "Both agreed.",
+  ]);
+});
+
+test("a dotted initialism is one word, however many stops it contains", () => {
+  assert.deepEqual(split("Ship it to the U.S. market in Q3. Europe follows."), [
+    "Ship it to the U.S. market in Q3.",
+    "Europe follows.",
+  ]);
+  assert.deepEqual(split("J. R. R. Tolkien wrote it. Slowly."), [
+    "J. R. R. Tolkien wrote it.",
+    "Slowly.",
+  ]);
+  assert.deepEqual(split("The talk starts at 9 a.m. sharp. Be early."), [
+    "The talk starts at 9 a.m. sharp.",
+    "Be early.",
+  ]);
+});
+
+test("editorial shorthand does not end a sentence either", () => {
+  assert.deepEqual(split("Use a flag, e.g. --dry-run, first. Then commit."), [
+    "Use a flag, e.g. --dry-run, first.",
+    "Then commit.",
+  ]);
+  assert.deepEqual(split("See Fig. 2 for the layout. It repeats on p. 14."), [
+    "See Fig. 2 for the layout.",
+    "It repeats on p. 14.",
+  ]);
+  assert.deepEqual(split("Mair et al. measured it in Sept. 1974. Nobody repeated it."), [
+    "Mair et al. measured it in Sept. 1974.",
+    "Nobody repeated it.",
+  ]);
+});
+
+test("a sentence ends after the quote or bracket that closes it, not before", () => {
+  assert.deepEqual(split('She said "Stop." He did not.'), ['She said "Stop."', "He did not."]);
+  assert.deepEqual(split("Ask them (if you can.) Later, perhaps."), [
+    "Ask them (if you can.)",
+    "Later, perhaps.",
+  ]);
+  assert.deepEqual(split('He shouted "Why?" Nobody answered.'), [
+    'He shouted "Why?"',
+    "Nobody answered.",
+  ]);
+  assert.deepEqual(split("She wrote ‘enough’. Then left."), ["She wrote ‘enough’.", "Then left."]);
+});
+
+test("a bracket that closes mid-sentence is not mistaken for the end of one", () => {
+  assert.deepEqual(split("Use the flag (the short one) carefully. Then commit."), [
+    "Use the flag (the short one) carefully.",
+    "Then commit.",
+  ]);
+});
+
+test("full stops that really do end a sentence still end one", () => {
+  assert.deepEqual(split("The mill closed in 1974. Nothing replaced it."), [
+    "The mill closed in 1974.",
+    "Nothing replaced it.",
+  ]);
+  // `etc.` and `No.` are left off the abbreviation list on purpose: both
+  // finish sentences more often than they sit inside one.
+  assert.deepEqual(split("Wheels, sluices, gates, etc. The list is long."), [
+    "Wheels, sluices, gates, etc.",
+    "The list is long.",
+  ]);
+  assert.deepEqual(split("It costs 3.14 dollars. Really."), ["It costs 3.14 dollars.", "Really."]);
+  assert.deepEqual(split("Stop! Then go? Now."), ["Stop!", "Then go?", "Now."]);
+});
+
+test("an abbreviation at the very end of the text closes the last sentence", () => {
+  assert.deepEqual(split("It was published by Acme Inc."), ["It was published by Acme Inc."]);
+  assert.deepEqual(split("Written by Dr."), ["Written by Dr."]);
+});
+
+test("a newline still ends a sentence, abbreviation or not", () => {
+  assert.deepEqual(split("Notes from Dr. Mair\nThe tide was the clock."), [
+    "Notes from Dr. Mair",
+    "The tide was the clock.",
+  ]);
+});
+
+// ---------------------------------------------------------------------------
 // Stepping between sentences.
 // ---------------------------------------------------------------------------
+
+test("stepping over an abbreviation moves a sentence, not a title", () => {
+  const text = "The study was led by Dr. Mair and Prof. Ito. Both of them agreed.";
+  const spans = sentences(text);
+
+  assert.equal(
+    landedOn(text, sentenceStartFrom(spans, 0, 1)),
+    "Both",
+    "one step forward should clear the whole first sentence",
+  );
+  assert.equal(
+    sentenceStartFrom(spans, at(text, "Mair"), 0),
+    0,
+    "the sentence being read starts at its first word, not at the title",
+  );
+});
+
+test("stepping back from a quoted sentence reaches the one that opened it", () => {
+  const text = 'The miller refused. He said "Not at this tide." They waited.';
+  const spans = sentences(text);
+  const last = at(text, "They");
+
+  assert.equal(landedOn(text, sentenceStartFrom(spans, last, -1)), "He");
+});
 
 test("stepping back from mid-sentence can re-read that sentence", () => {
   const spans = sentences(PARAGRAPH);

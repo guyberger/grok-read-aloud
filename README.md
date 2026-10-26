@@ -25,7 +25,8 @@ dependencies — just the files in `src/` and a ~40-line copy script.
   the speed you are reading at will take, not the length of the recording.
 - Jumps to any word you click while it is reading, and carries on from there.
 - Steps back and forward a sentence at a time, so a few words you missed take
-  one key press to hear again.
+  one key press to hear again — a sentence being a whole one, so `Dr. Mair` and
+  `Sept. 1974` are not three of them.
 - Remembers where you left off on a page, so coming back to it carries on from
   there instead of from the top — and asks for the audio from there, so the
   part you already heard is not paid for twice.
@@ -375,6 +376,16 @@ checks cannot do
 - [ ] ▶ on the last sentence of the page does nothing rather than erroring.
 - [ ] `Alt+Shift+←` and `Alt+Shift+→` do the same as the two buttons.
 
+**Where a sentence ends** — with `tests/fixtures/abbreviations.html` open
+- [ ] The first sentence is read straight through: `Dr. Mair`, `Mt. Vernon`,
+      `Prof. Ito` and `Sept. 1974` carry no pause and no falling cadence.
+- [ ] The tint covers the whole sentence, not `The survey was led by Dr.`
+- [ ] One press of ▶ from the top of that paragraph reaches `They measured`,
+      not `Mair`.
+- [ ] `He said "Not at this tide, not for anyone."` is tinted as one sentence,
+      closing quote included, and the sentence after it is tinted separately.
+- [ ] Nothing is read twice or skipped where a part boundary falls.
+
 **Picking up where you left off**
 - [ ] Read a few paragraphs of a long page, pause, close the tab, reopen the
       page: the popup says how far in it got and the button reads **Continue
@@ -667,6 +678,56 @@ nothing in that path ever calls `preventDefault`, so a page that wants a click
 keeps it. A click outside the text being read resolves to no character at all,
 which is also what makes a selection read click only within its selection.
 
+### Where a sentence ends
+
+![A sentence being read: the tint runs from "The survey was led by Dr. Mair" all the way to "worth writing down", with the spoken word "institute" highlighted inside it](docs/where-a-sentence-ends.png)
+
+A full stop followed by a space is not a sentence ending, and a sentence
+ending is not always a full stop followed by a space. Prose is full of both
+mistakes waiting to be made:
+
+| Written | A stop and a space says | What it is |
+| --- | --- | --- |
+| `led by Dr. Mair` | two sentences | one, with a title in it |
+| `in Sept. 1974` | two sentences | one, with a date in it |
+| `it cost approx. 400 pounds` | two sentences | one |
+| `described on p. 112` | two sentences | one |
+| `He said "Not at this tide." They waited.` | one sentence | two — the stop is inside the quote |
+
+Three things read that answer, and all three are visible:
+
+- **The tint** around the word being spoken, which is meant to be the clause
+  you are in. On the first row above it covers `led by Dr.` and then jumps.
+- **Stepping back and forward**, which should move a sentence per press. On
+  that same row, back lands on a two-word fragment, so recovering the sentence
+  takes two presses instead of one.
+- **Where a chunk may be cut**, which is the one the listener actually hears.
+  Chunk boundaries prefer sentence ends, so a chunk gets cut after `Dr.`, the
+  API is handed text ending in `led by Dr.`, and it reads the title with a full
+  stop in it — a falling cadence and a pause in the middle of a name. The next
+  request opens on `Mair`, which it reads as the start of something.
+
+So all three ask one predicate, and it is deliberately small:
+
+- A sentence ends after the quotes and brackets closing over the terminator,
+  not before them — `."`, `.)`, `?"`, `’.` — so the quote goes with the
+  sentence it closes rather than opening the next one.
+- A full stop is not an ending when the word before it is one letter standing
+  on its own. That is one rule for every dotted form: the last stop of `U.S.`,
+  `a.m.`, `e.g.` and `Ph.D.` all follow a single letter whose own predecessor
+  is a stop, and the stops in `J. R. R. Tolkien` follow one letter after a
+  space. A stop after a digit — `in 1999.` — is an ending, since no
+  abbreviation ends that way.
+- Otherwise it is an ending unless the word is on a list of about seventy:
+  titles, reference shorthand, company suffixes, street words, months and days.
+- A newline ends a sentence outright, whatever punctuation it carries, because
+  a heading or a list item usually carries none.
+
+The list is the part that can be wrong, so what is *not* on it matters as much
+as what is. `etc.` and `No.` are absent on purpose: both finish sentences more
+often than they sit inside one, so listing them would trade a rare mistake for
+a common one.
+
 ### Stepping a sentence at a time
 
 Stepping is the same move as clicking a word, aimed by the text instead of by
@@ -680,7 +741,9 @@ paused read — applies unchanged.
 Two details are worth stating:
 
 - **The sentences come from the whole extracted text, not from the chunk being
-  played.** A chunk's timeline only knows the sentences inside it, and a
+  played**, and they end where [a sentence
+  ends](#where-a-sentence-ends) rather than at every full stop. A chunk's
+  timeline only knows the sentences inside it, and a
   sentence that straddles a chunk join is cut in two there. Stepping over
   document-wide sentence ranges means a join is invisible to it, which is the
   point: the chunk boundaries are a billing and latency decision, and the
@@ -850,6 +913,17 @@ highlight lands on, which is the only way to assert a negative: no word of
 either snippet is ever spoken, while `autoCommit` is — and the highlight on it
 really is inside the `<code>` element rather than near it.
 
+The checks for [where a sentence ends](#where-a-sentence-ends) read
+`tests/fixtures/abbreviations.html` — prose with titles, dates, references and
+quoted speech in it — with the chunks cut small, so the cuts land inside a
+paragraph rather than on its newline, which is where the question arises. They
+collect every tinted sentence and every request the mock was asked to
+synthesise: no tint and no request may end on an abbreviation, the title and
+the name after it must be tinted as one sentence, and a cut after a closing
+quote must be one the chunker is willing to make. With the predicate reduced to
+a full stop and a space, five of them fail, the tint arriving in pieces like
+`The survey was led by Dr.` and a request going out ending `It cost approx.`
+
 The checks for [how long is left](#how-long-is-left) sample the estimate across
 a part boundary, which is the one place it could jump — it stops multiplying
 one chunk out there and starts timing the next — and compare it against what
@@ -942,6 +1016,16 @@ the driver loads the extension over the protocol instead.
   once you have played audio there a few times. Routing playback through a
   Chrome offscreen document would remove the click on Chrome, but Firefox has no
   equivalent, so v1 keeps one shared path.
+- **Where a sentence ends is decided by a list, so it can be wrong.** The
+  rules in [Where a sentence ends](#where-a-sentence-ends) cover the dotted
+  forms outright, but everything else is a list of about seventy abbreviations,
+  and an unlisted one — a journal title, a language's own shorthand — is still
+  read as the end of a sentence. The reverse happens too: a sentence that
+  genuinely ends on a listed word (`…published by Acme Inc.`) or on a single
+  letter (`…the grade was a B.`) is joined to the one after it. Nothing is
+  misread either way; the cost is a tint that covers too much or too little,
+  and a step that moves by two sentences or by half of one. The list is
+  English, and a language that abbreviates differently gets the naive answer.
 - **Readable-content detection is heuristic.** It looks for `<article>`,
   `[role=main]` and `<main>` first, then falls back to scoring text density,
   and if the winner yields almost nothing it reads the visible body instead,
