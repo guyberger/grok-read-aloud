@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>The Vernon survey — Test Article</title>
+    <!--
+      An article written the way most prose actually is: titles, initials,
+      dates, references and quoted speech, all of which put a full stop
+      somewhere other than the end of a sentence.
+
+      Every abbreviation here is one a naive "a full stop and then a space"
+      rule gets wrong — it cuts the sentence in two at the title, which shows
+      up three ways: the tint covers `Dr.` on its own, stepping back lands on
+      a two-letter fragment, and a chunk can be cut there, so the API is asked
+      to read text that ends in the middle of a name.
+
+      The quoted sentences are the mirror image: the stop is inside the quote,
+      so the same rule never sees a sentence end at all and runs two of them
+      together.
+    -->
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.7 ui-serif, Georgia, serif;
+        color: #1d1d1f;
+        background: #fdfdfb;
+      }
+      nav,
+      footer {
+        background: #ebebe6;
+        padding: 14px 20px;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+      main {
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 120px;
+      }
+      h1 {
+        font-size: 30px;
+        line-height: 1.25;
+        margin: 0 0 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation: Home · Archive · About</nav>
+
+    <main>
+      <article>
+        <header>
+          <h1>The Vernon survey</h1>
+        </header>
+
+        <p>
+          The survey was led by Dr. Mair of the Mt. Vernon institute and by Prof. Ito, who had walked the
+          same valley in Sept. 1974 and found almost nothing worth writing down. They measured every
+          channel twice, once at the spring tide and once at the neap, and wrote the two figures side by
+          side so that the difference between them could not be quietly lost.
+        </p>
+
+        <p>
+          Their method is set out in Fig. 3 of the report, and the instrument they used is described on
+          p. 112 by Mair et al. in an appendix nobody has ever cited. It cost approx. 400 pounds, which
+          the institute paid for out of a fund meant for something else entirely, and it was heavy enough
+          that carrying it to the head of the valley took two people and the better part of a morning.
+        </p>
+
+        <p>
+          The farmer who owned the land was not persuaded. He said "Not at this tide, not for anyone."
+          The two of them waited three days for him to change his mind, and he did, on the condition that
+          they filled in every hole they dug and told nobody at all what they found in them.
+        </p>
+
+        <p>
+          What they found was a sluice, laid in about 1250 and repaired so often that no two courses of
+          its stonework matched. Mair wrote that it was "the most carefully mended thing I have ever had
+          to draw." The drawing took her eleven days, and it is the only part of the survey that anybody
+          has reprinted since.
+        </p>
+
+        <p>
+          The report was published by Vernon Press Ltd. in the spring of the following year, bound in the
+          grey board the institute used for everything, and it sold fewer than three hundred copies. Prof.
+          Ito gave a lecture about it in Nov. 1976 to a room that was, by his own account, less than a
+          third full, and never spoke about the valley in public again.
+        </p>
+      </article>
+    </main>
+
+    <footer>Footer: Index · Credits · Contact</footer>
+  </body>
+</html>

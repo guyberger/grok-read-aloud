@@ -47,6 +47,42 @@ test("chunkRanges prefers paragraph and sentence boundaries", () => {
   }
 });
 
+test("chunkRanges does not cut a chunk inside an abbreviation", () => {
+  // The cut is what the API hears: a chunk ending `led by Dr.` is read with a
+  // full stop in the middle of a name, and the next one opens on `Mair`.
+  const sentence = "The survey was led by Dr. Mair of the Mt. Vernon institute, who filed it in Sept. 1974. ";
+  const text = sentence.repeat(12);
+  const ranges = own(chunkRanges(text, 300));
+
+  assert.ok(ranges.length > 3, `expected several chunks, got ${ranges.length}`);
+  const tails = ranges.slice(0, -1).map((range) => text.slice(range.start, range.end).trimEnd());
+  for (const tail of tails) {
+    assert.ok(
+      !/\b(Dr|Mt|Sept)\.$/.test(tail),
+      `chunk ended on an abbreviation: ${JSON.stringify(tail.slice(-20))}`,
+    );
+  }
+});
+
+test("chunkRanges cuts after the quote that closes a sentence, not before it", () => {
+  // Every sentence here ends on a quote mark, so the only boundary a chunk can
+  // be cut at is one. Cut at the stop instead and the next chunk opens on a
+  // stray `"`, which the API reads as the start of something.
+  const sentence = 'He said "Not at this tide, not for anyone, not for the abbot himself." ';
+  const text = sentence.repeat(12);
+  const ranges = own(chunkRanges(text, 200));
+
+  assert.ok(ranges.length > 3, `expected several chunks, got ${ranges.length}`);
+  for (const range of ranges) {
+    const piece = text.slice(range.start, range.end).trim();
+    assert.ok(!piece.startsWith('"'), `a chunk opened on a stray quote: ${JSON.stringify(piece.slice(0, 20))}`);
+  }
+  assert.ok(
+    ranges.slice(0, -1).every((range) => text.slice(range.start, range.end).trimEnd().endsWith('."')),
+    `chunks ended on ${JSON.stringify(ranges.map((range) => text.slice(range.start, range.end).trimEnd().slice(-3)))}`,
+  );
+});
+
 test("chunkRanges never emits a whitespace-only chunk", () => {
   const ranges = chunkRanges("   \n\n  Hello there, world.  \n\n   ", 300);
   assert.equal(ranges.length, 1);

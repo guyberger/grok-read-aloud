@@ -5,6 +5,85 @@
   const SENTENCE_ENDERS = new Set([".", "!", "?", "…", "。", "！", "？"]);
 
   /**
+   * Punctuation that can sit between a full stop and the space after it. A
+   * sentence ends after the quote mark that closes it, not before it — cut at
+   * the stop and `He said "Stop."` leaves a stray `"` to open the next one.
+   */
+  const CLOSERS = new Set(['"', "'", "”", "’", "»", "›", ")", "]", "}", "」", "』", "〉"]);
+
+  /**
+   * Words that take a full stop without finishing a sentence. Without this,
+   * every `Dr. Mair` and `e.g. the flag` is two sentences: stepping back lands
+   * on a two-letter fragment, the tint covers a title rather than a clause,
+   * and — the audible one — a chunk can be cut there, so the API is handed
+   * text ending in `led by Dr.` and reads the name with a full stop in it.
+   *
+   * Only words that rarely end a sentence are listed. `etc.` and `No.` are
+   * deliberately absent: both finish sentences often enough that joining them
+   * to the next one would be the commoner mistake.
+   */
+  const ABBREVIATIONS = new Set([
+    // Titles and forms of address.
+    "mr", "mrs", "ms", "mx", "dr", "prof", "rev", "hon", "sr", "jr", "st", "fr",
+    "gen", "col", "sgt", "capt", "lt", "maj", "pres", "gov", "sen", "rep",
+    // References and editorial shorthand.
+    "al", "ca", "cf", "viz", "approx", "est", "fig", "figs", "eq", "eqs", "ref",
+    "refs", "vol", "vols", "ch", "chs", "sec", "secs", "pp", "para", "ed", "eds",
+    "trans", "repr", "dept", "univ", "vs",
+    // Company suffixes.
+    "inc", "ltd", "corp", "co", "llc", "plc", "bros",
+    // Places.
+    "mt", "ave", "rd", "blvd", "apt",
+    // Months and days, which are abbreviated in dates far more often than they
+    // are written at the end of a sentence.
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov",
+    "dec", "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
+  ]);
+
+  const LETTER = /\p{L}/u;
+  const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+
+  /**
+   * Whether the full stop at `dot` belongs to an abbreviation rather than to
+   * the end of a sentence.
+   *
+   * A single letter standing on its own covers the dotted forms in one rule:
+   * the last stop of `U.S.`, `a.m.`, `e.g.` and `Ph.D.` all follow one letter
+   * whose own predecessor is a stop, and the stops in `J. R. R. Tolkien`
+   * follow one letter after a space. A stop after a digit — `in 1999.` — is
+   * not an abbreviation at all.
+   */
+  function abbreviates(text, dot) {
+    let start = dot;
+    while (start > 0 && LETTER.test(text[start - 1])) start -= 1;
+    if (start === dot) return false;
+    if (dot - start === 1 && (start === 0 || !LETTER_OR_DIGIT.test(text[start - 1]))) return true;
+    return ABBREVIATIONS.has(text.slice(start, dot).toLowerCase());
+  }
+
+  /**
+   * Whether a sentence ends at `index` — the one place the three things that
+   * care agree: the spans the tint and the sentence steps walk, and the points
+   * a chunk may be cut at.
+   *
+   * A sentence ends on a terminator (or the last of the quotes and brackets
+   * closing over it) that whitespace follows, unless the terminator is a full
+   * stop an abbreviation owns. A newline ends one outright: a heading or a
+   * list item carries no punctuation of its own.
+   */
+  function sentenceEndsAt(text, index) {
+    const char = text[index];
+    if (char === "\n") return true;
+    if (!SENTENCE_ENDERS.has(char) && !CLOSERS.has(char)) return false;
+    if (index + 1 < text.length && !isSpace(text[index + 1])) return false;
+
+    let stop = index;
+    while (stop >= 0 && CLOSERS.has(text[stop])) stop -= 1;
+    if (stop < 0 || !SENTENCE_ENDERS.has(text[stop])) return false;
+    return text[stop] === "." ? !abbreviates(text, stop) : true;
+  }
+
+  /**
    * Cut [from, to) into request-sized pieces, appending them to `ranges`.
    *
    * `limitAt` gives the size allowed for the nth piece of this segment, which
@@ -30,7 +109,10 @@
       if (cut < limit * 0.4) {
         cut = -1;
         for (let i = window.length - 1; i >= limit * 0.4; i -= 1) {
-          if (SENTENCE_ENDERS.has(window[i]) && (i + 1 >= window.length || isSpace(window[i + 1]))) {
+          // Asked of the whole text rather than the window, so the look-back
+          // for an abbreviation is not truncated at the window's edge and the
+          // character after the last one in the window is the real one.
+          if (sentenceEndsAt(text, start + i)) {
             cut = i + 1;
             break;
           }
@@ -230,12 +312,7 @@
   }
 
   function sentences(text) {
-    return tokenRanges(
-      text,
-      (value, i) =>
-        value[i] === "\n" ||
-        (SENTENCE_ENDERS.has(value[i]) && (i + 1 >= value.length || isSpace(value[i + 1]))),
-    );
+    return tokenRanges(text, sentenceEndsAt);
   }
 
   function timeSpans(tokens, times, text, duration) {
@@ -287,6 +364,7 @@
     characterTimes,
     words,
     sentences,
+    sentenceEndsAt,
     buildChunkTimeline,
     wordStartAt,
     spanIndexFor,
