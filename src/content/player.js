@@ -8,14 +8,42 @@
    * refuses to load the blob URL.
    */
 
-  function mediaEngine() {
+  function mediaEngine({ onPausedOutside, onResumedOutside } = {}) {
     const audio = new Audio();
     audio.preload = "auto";
     let objectUrl = "";
 
+    /**
+     * What this engine was last asked for.
+     *
+     * The audio element can be paused and started again without the extension
+     * being involved at all: the browser's media controls reach it directly,
+     * and so does anything in the system that takes audio over. Its events say
+     * *that* it changed, never *who* changed it — so the last thing asked for
+     * is kept here, and an event that disagrees with it is somebody else's.
+     */
+    let wanted = "paused";
+
+    audio.addEventListener("pause", () => {
+      // The pause at the end of a chunk is the element running out of audio,
+      // which is already handled as the chunk ending.
+      if (wanted !== "playing" || audio.ended) return;
+      wanted = "paused";
+      onPausedOutside?.();
+    });
+
+    audio.addEventListener("play", () => {
+      if (wanted !== "paused") return;
+      wanted = "playing";
+      onResumedOutside?.();
+    });
+
     return {
       name: "media",
       async load(bytes, contentType) {
+        // Loading a new source stops whatever was playing, which is this
+        // engine's own doing rather than anything outside it.
+        wanted = "paused";
         if (objectUrl) URL.revokeObjectURL(objectUrl);
         objectUrl = URL.createObjectURL(new Blob([bytes], { type: contentType }));
         audio.src = objectUrl;
@@ -37,9 +65,16 @@
           audio.load();
         });
       },
-      play: () => audio.play(),
-      pause: () => audio.pause(),
+      play() {
+        wanted = "playing";
+        return audio.play();
+      },
+      pause() {
+        wanted = "paused";
+        audio.pause();
+      },
       stop() {
+        wanted = "paused";
         audio.pause();
         try {
           audio.currentTime = 0;
@@ -63,6 +98,7 @@
         audio.addEventListener("ended", handler);
       },
       destroy() {
+        wanted = "paused";
         audio.pause();
         audio.removeAttribute("src");
         if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -164,7 +200,13 @@
     };
   }
 
-  function createPlayer({ onEnded, onBlocked }) {
+  /**
+   * `onPausedOutside` and `onResumedOutside` report playback that changed
+   * without being asked for here — see `wanted` above. Only the media element
+   * can be reached that way; a Web Audio buffer has no controls on it for
+   * anything else to find.
+   */
+  function createPlayer({ onEnded, onBlocked, onPausedOutside, onResumedOutside }) {
     let engine = null;
     let rate = 1;
     let ended = onEnded;
@@ -181,7 +223,7 @@
         }
       }
       try {
-        const media = mediaEngine();
+        const media = mediaEngine({ onPausedOutside, onResumedOutside });
         await media.load(bytes, contentType);
         engine = media;
       } catch {

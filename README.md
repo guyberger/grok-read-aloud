@@ -32,7 +32,11 @@ dependencies — just the files in `src/` and a ~40-line copy script.
   part you already heard is not paid for twice.
 - Reads in one tab at a time: starting a read somewhere else pauses the tab that
   was reading, rather than two voices talking over each other.
-- Play, pause, resume and stop from the popup or a keyboard shortcut.
+- Play, pause, resume and stop from the popup or a keyboard shortcut — or from
+  the play/pause key on a keyboard, a headphone button, or whatever the system
+  shows for the thing currently making sound, all of which work with the tab in
+  the background. If something outside the extension pauses the audio, the read
+  pauses with it rather than claiming to still be playing.
 - Speed control from 0.5× to 3×, applied instantly without re-synthesising.
 - Splits long pages into chunks at paragraph and sentence boundaries, and
   fetches the next chunk while the current one plays, so playback does not stall
@@ -270,6 +274,11 @@ different half of this, so `npm test` asserts both are still asked for.
 - **Alt+Shift+←** / **Alt+Shift+→** — back a sentence, or on to the next one.
   The same two steps are the ◀ and ▶ buttons either side of the read button in
   the popup.
+- **The media keys** — while a page is being read, the play/pause key on a
+  keyboard, the button on a pair of headphones, and the media panel the
+  browser and the operating system show all drive the read: play, pause, stop,
+  and previous/next for a sentence either way. They say which page is being
+  read, and unlike the shortcuts above they do not need the tab focused.
 - **About *n* min left** — next to the part count, how much listening is left
   at the speed currently set. Moving the speed slider moves it.
 - **Click any word** while it is reading to carry on from that word. It works
@@ -281,6 +290,10 @@ different half of this, so `npm test` asserts both are still asked for.
 Pressing back part-way through a sentence reads *that* sentence again, since
 that is where the words you missed are. Press it again at the start of one and
 it goes to the sentence before it.
+
+Anything else that pauses the audio — a call taking over the sound, headphones
+unplugged, a video started in the same tab — pauses the read too, keeping its
+place, so carrying on is one press of whichever control you have to hand.
 
 Only one tab reads at a time. Start a read in a second tab and the first one
 pauses, keeping its place and saying why; resuming it takes the read back and
@@ -366,6 +379,19 @@ checks cannot do
 - [ ] **Stop** clears the highlight completely and resets the popup to Ready.
 - [ ] Moving the speed slider changes the pace immediately, mid-sentence.
 - [ ] `Alt+Shift+R` and `Alt+Shift+S` do the same as the popup buttons.
+
+**The browser's own media controls** — the part no automated check can press
+- [ ] While reading, the page appears in the browser's media panel (Chrome:
+      the ▶ button in the toolbar) named after the page, with the site under it.
+- [ ] The play/pause key on the keyboard pauses and resumes the read, with the
+      tab in the background and the popup closed.
+- [ ] Previous and next in that panel step a sentence back and forward.
+- [ ] Pausing from the panel shows **Paused** in the popup, not Playing over a
+      frozen highlight; resuming from the popup moves the panel back.
+- [ ] Starting a video in another tab pauses the read, and the popup says
+      Paused.
+- [ ] **Stop** takes the entry out of the panel; a page with a player of its own
+      is left with its own entry once the read has stopped.
 
 **Stepping a sentence**
 - [ ] ▶ moves to the first word of the next sentence without a gap.
@@ -466,11 +492,15 @@ handling, content extraction, the mapping from a click to a word, a chunk and a
 time, the device-code sign-in, the rule for which credential a request goes
 out with, finding a remembered position again in a page that has changed under
 it, the claim that keeps one tab reading at a time, the line between code
-written into a sentence and a snippet, and the arithmetic behind how long a
-read has left. The extraction and click tests drive a headless Chrome, because
-what counts as rendered — and what is under a given pixel — is the browser's
-answer, and testing it against a DOM stub would only test the stub. They skip
-themselves where there is no Chrome; set `CHROME_PATH` to point at one.
+written into a sentence and a snippet, the arithmetic behind how long a read
+has left, what the read looks like on the browser's own media controls, and the
+line between a pause the extension asked for and one that came from outside it.
+The extraction, click, media-control and playback tests drive a headless
+Chrome, because what counts as rendered, what is under a given pixel, which
+media actions a browser has and when an audio element fires `pause` are the
+browser's answers, and testing them against a stub would only test the stub.
+They skip themselves where there is no Chrome; set `CHROME_PATH` to point at
+one.
 
 ```bash
 node tools/popup-paint.js --runs 20           # popup paint and load timings
@@ -497,7 +527,7 @@ src/
   manifest.firefox.json   Firefox MV3: background.scripts + gecko id
   common/                 Settings, the API client, the xAI sign-in and the choice between credentials
   background/             Holds the credentials, makes every network call, injects content scripts
-  content/                Injected on demand; extraction, alignment, clicks, playback, highlighting, the cross-tab handoff
+  content/                Injected on demand; extraction, alignment, clicks, playback, highlighting, the cross-tab handoff, the browser's media controls
   popup/  options/        Extension UI
 tools/                    Build, icons, static checks, mock API, end-to-end and timing drivers
 tests/                    Unit tests and the fixture pages they read
@@ -888,6 +918,59 @@ Three things make the number behave:
 It is rounded to the minute, and under a minute it stops counting down at all:
 a number ticking 50, 49, 48 is the part of a progress display nobody wanted.
 
+### The browser's own media controls
+
+Everything that pauses audio from outside a page — the play/pause key on a
+keyboard, the button on a pair of headphones, the lock screen, the media panel
+behind the toolbar — talks to it through one interface,
+`navigator.mediaSession`. Nothing there needs the tab focused or the popup
+open, which for something that talks for twenty minutes is the difference
+between pausing it and hunting for the tab that is talking.
+
+`src/content/controls.js` puts the read on those controls, and it is the only
+part of the extension that writes to the page's media session. Four decisions
+in it are worth stating:
+
+- **Nothing is touched until a read starts.** The media session belongs to the
+  page, which may have a player of its own. The extension takes it over when it
+  is the thing actually speaking — the handlers go on with the audio player —
+  and hands it back, handlers and metadata and all, when the read stops or the
+  page goes away.
+- **Each action is registered on its own.** A browser that does not know an
+  action throws on it, and an unsupported `stop` must not take `pause` down
+  with it. `tests/controls.test.js` asks a real Chrome which of them it accepts,
+  because that is the one question a stand-in for the API cannot answer.
+- **There is no seek bar.** A position slider would be measured against the
+  audio element, which holds one chunk of a page rather than the page, so it
+  would promise a position it cannot keep. Previous and next step a sentence
+  instead, which is what those buttons are wanted for here anyway.
+- **A chunk being fetched still shows pause.** `loading` is a read in progress,
+  so the controls do not flip to a play button at every chunk join — which
+  matches the popup, whose own button is held still while loading.
+
+The other half is the one that is not optional. The media controls reach the
+audio element directly, and so does anything in the system that takes audio
+over; the element's events say *that* it was paused, never *who* paused it. Get
+that wrong and the popup goes on saying Playing above a highlight that has
+stopped moving. So `player.js` keeps the last thing it was asked for and treats
+an event that disagrees with it as somebody else's:
+
+```js
+audio.addEventListener("pause", () => {
+  if (wanted !== "playing" || audio.ended) return;
+  wanted = "paused";
+  onPausedOutside?.();
+});
+```
+
+The `ended` half of that condition is load-bearing. Chrome fires `pause` when a
+clip runs out, immediately before `ended` — so without it every chunk boundary
+would look like an interruption and the read would stop after the first one
+instead of advancing. `tests/player.test.js` drives a real element through a
+real tone to hold all of it down: the extension's own pause and resume are not
+reported, a pause on the element is, playing it again is, and running off the
+end is the chunk ending rather than an interruption.
+
 ### Running the end-to-end check
 
 `tools/e2e.js` drives a real Chrome over the DevTools Protocol and asserts that
@@ -934,6 +1017,15 @@ second tab and drive both readers, which is the only way to see a handoff at
 all: each assertion is about what the *other* tab did in response to this one
 starting, and with the claim removed from the reader three of them fail with
 both tabs reporting that they are playing.
+
+The checks for [the browser's own media controls](#the-browsers-own-media-controls)
+assert what the real extension writes into `navigator.mediaSession` on a real
+page: that a page keeps its own session until a read starts, that a read then
+appears there as playing and named after the page and the site, that pausing
+and resuming move it, that the page is described once rather than at every
+state change, and that stopping hands the session back. The buttons themselves
+belong to the operating system and cannot be pressed over the DevTools
+Protocol, which is why pressing them is a unit test against a stand-in.
 
 The sign-in checks run against the same mock, which also stands in for the
 OAuth server and for the approval page on `accounts.x.ai` — approval in those
@@ -1079,6 +1171,16 @@ the driver loads the extension over the protocol instead.
   own `speed` parameter tops out at 1.5× and would require re-fetching on every
   change, so the extension uses the audio element's rate, which preserves pitch.
   The Web Audio fallback path does *not* preserve pitch.
+- **The media controls show one chunk, not the page.** Play, pause, stop and
+  the two sentence steps are the extension's own; the position and duration
+  beside them are the browser reading the audio element, which holds the chunk
+  being spoken rather than the whole page. So that clock restarts at every
+  chunk boundary, and the extension deliberately registers no seek action
+  rather than appear to offer a page-wide scrub bar it cannot honour. The
+  popup is where the page-wide figure lives — see
+  [How long is left](#how-long-is-left). Chrome also only shows the panel once
+  audio is genuinely playing, so it appears a second or so into a read rather
+  than the moment read is pressed.
 - **Shortcuts are tab-scoped by default.** With only `activeTab`, the keyboard
   shortcut acts on the focused tab at the moment you press it. Use **Allow on
   all sites** in the options if you want it unconditional.
