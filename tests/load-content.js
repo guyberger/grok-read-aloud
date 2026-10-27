@@ -9,8 +9,12 @@ import vm from "node:vm";
 
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "../src/content");
 
-export function loadContentNamespace(files = ["util.js", "align.js"]) {
-  const context = vm.createContext({ globalThis: null, console });
+/**
+ * `globals` stands in for the parts of a browser a module reaches for through
+ * `globalThis` — `navigator`, `location` — so a test can hand it a fake one.
+ */
+export function loadContentNamespace(files = ["util.js", "align.js"], globals = {}) {
+  const context = vm.createContext({ globalThis: null, console, ...globals });
   context.globalThis = context;
   for (const file of files) {
     vm.runInContext(readFileSync(resolve(SRC, file), "utf8"), context, { filename: file });

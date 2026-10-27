@@ -1437,6 +1437,89 @@ async function main() {
   await control("setRate", { rate: 1 });
   await ui.evaluate(`chrome.storage.local.set({ chunkChars: 400 }).then(() => true)`);
 
+  // 17. The browser's own media controls.
+  //
+  // A media key, a headphone button and the panel behind the toolbar all reach
+  // a page through `navigator.mediaSession`, so what the extension writes there
+  // is what those controls show and do. The buttons themselves belong to the
+  // operating system and cannot be pressed from here — `tests/controls.test.js`
+  // presses them against a stand-in, and `tests/player.test.js` drives a real
+  // element to check that a pause from outside is noticed. What this adds is
+  // the real extension, on a real page: that a read claims those controls, that
+  // they say what is being read and follow it, and that leaving the session as
+  // the extension found it actually happens.
+  await page.send("Page.navigate", { url: PAGE_URL });
+  await sleep(1500);
+  await tabState();
+  world = await page.isolatedContextId();
+
+  const mediaProbe = `
+    (() => {
+      const media = navigator.mediaSession;
+      const snapshot = globalThis.__readAloud?.reader?.snapshot?.() ?? {};
+      return {
+        state: media.playbackState,
+        title: media.metadata?.title ?? null,
+        artist: media.metadata?.artist ?? null,
+        pageTitle: document.title,
+        status: snapshot.status,
+      };
+    })()
+  `;
+
+  const beforeAnyRead = await page.evaluate(mediaProbe, world);
+  check(
+    "before a read, the page keeps its own media session",
+    beforeAnyRead.state === "none" && beforeAnyRead.title === null,
+    `${beforeAnyRead.state}, ${JSON.stringify(beforeAnyRead.title)}`,
+  );
+
+  await control("start", { scope: "page", from: "start" });
+  await awaitStatus("playing", { timeoutMs: 20000 });
+  const onControls = await page.evaluate(mediaProbe, world);
+  check(
+    "a read shows up in the browser's media controls as playing",
+    onControls.state === "playing",
+    onControls.state,
+  );
+  check(
+    "the controls name the page and the site it is being read from",
+    onControls.title === onControls.pageTitle && onControls.artist === new URL(PAGE_URL).hostname,
+    `${JSON.stringify(onControls.title)} — ${JSON.stringify(onControls.artist)}`,
+  );
+
+  await control("pause");
+  await sleep(200);
+  const pausedOnControls = await page.evaluate(mediaProbe, world);
+  check(
+    "pausing the read offers play on the controls",
+    pausedOnControls.state === "paused",
+    pausedOnControls.state,
+  );
+
+  await control("resume");
+  const resumedOnControls = await awaitStatus("playing", { timeoutMs: 15000 });
+  const resumedMedia = await page.evaluate(mediaProbe, world);
+  check(
+    "resuming puts them back to playing",
+    resumedOnControls.status === "playing" && resumedMedia.state === "playing",
+    resumedMedia.state,
+  );
+  check(
+    "the page is named once, not described again at every state change",
+    resumedMedia.title === onControls.title,
+    `${JSON.stringify(resumedMedia.title)}`,
+  );
+
+  await control("stop");
+  await sleep(300);
+  const afterStop = await page.evaluate(mediaProbe, world);
+  check(
+    "stopping hands the media session back to the page",
+    afterStop.state === "none" && afterStop.title === null,
+    `${afterStop.state}, ${JSON.stringify(afterStop.title)}`,
+  );
+
   ui.close();
   page.close();
   browser.close();

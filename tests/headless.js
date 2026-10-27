@@ -84,7 +84,8 @@ export class Browser {
     this.connection = connection;
   }
 
-  static async launch({ port = 9470 + Math.floor(Math.random() * 90) } = {}) {
+  /** `args` adds switches a particular test needs, such as an autoplay policy. */
+  static async launch({ port = 9470 + Math.floor(Math.random() * 90), args = [] } = {}) {
     const binary = findChrome();
     if (!binary) throw new Error("no Chrome binary found");
     const process_ = spawn(
@@ -95,6 +96,7 @@ export class Browser {
         "--disable-gpu",
         "--no-first-run",
         "--disable-extensions",
+        ...args,
         `--remote-debugging-port=${port}`,
         `--user-data-dir=/tmp/read-aloud-test-${port}`,
         "about:blank",

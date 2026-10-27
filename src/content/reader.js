@@ -6,7 +6,19 @@
     return;
   }
 
-  const { ext, util, extract, align, highlight, pointer, positions, handoff, pace, player: playerFactory } = ns;
+  const {
+    ext,
+    util,
+    extract,
+    align,
+    highlight,
+    pointer,
+    positions,
+    handoff,
+    pace,
+    controls,
+    player: playerFactory,
+  } = ns;
 
   const PREFETCH_AHEAD = 1;
 
@@ -96,7 +108,12 @@
   let lastPaintKey = "";
 
   function emit() {
-    ext.runtime.sendMessage({ type: "stateChanged", state: snapshot() }).catch(() => {});
+    const state = snapshot();
+    // The browser's media controls are shown the same thing the popup is, on
+    // the same transitions, so the two can never disagree about whether this
+    // page is talking.
+    controls.update(state);
+    ext.runtime.sendMessage({ type: "stateChanged", state }).catch(() => {});
   }
 
   function snapshot() {
@@ -163,8 +180,26 @@
         highlight.notify(BLOCKED_NOTICE);
         emit();
       },
+      // Something outside the extension reached the audio: the media controls,
+      // or anything in the system that takes audio over. The read follows it,
+      // rather than leaving a popup that says Playing above a highlight that
+      // has stopped moving — and the place is kept, so taking it back is one
+      // press of the same button.
+      onPausedOutside: () => pause(),
+      onResumedOutside: () => {
+        resume().catch(reportError);
+      },
     });
     player.setRate(settings.rate);
+    // Attached with the player rather than at injection: until a read starts,
+    // the media session is the page's own.
+    controls.attach({
+      play: () => resume(),
+      pause: () => pause(),
+      stop: () => stop(),
+      previous: () => skipSentence(-1),
+      next: () => skipSentence(1),
+    });
     return player;
   }
 
@@ -764,6 +799,7 @@
   window.addEventListener("pagehide", () => {
     rememberPosition({ force: true });
     reset();
+    controls.detach();
     player?.destroy();
     player = null;
   });
