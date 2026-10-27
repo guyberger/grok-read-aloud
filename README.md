@@ -920,6 +920,8 @@ a number ticking 50, 49, 48 is the part of a progress display nobody wanted.
 
 ### The browser's own media controls
 
+![The article being read with Chrome's media panel open beside it, naming the page and the site it is being read from, with pause and the two sentence steps](docs/media-controls.png)
+
 Everything that pauses audio from outside a page — the play/pause key on a
 keyboard, the button on a pair of headphones, the lock screen, the media panel
 behind the toolbar — talks to it through one interface,
