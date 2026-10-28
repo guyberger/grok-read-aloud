@@ -57,7 +57,8 @@ dependencies — just the files in `src/` and a ~40-line copy script.
 - Says how long there is left to listen, measured against the audio the API is
   actually returning rather than guessed from a word count — and in the time
   the speed you are reading at will take, not the length of the recording.
-- Jumps to any word you click while it is reading, and carries on from there.
+- Jumps to any sentence you click while it is reading, from its first word, and
+  carries on from there.
 - Keeps the audio it has already fetched for as long as the page is open, so
   going back through a page, or reading it again, replays what is in hand
   instead of buying the same sentences twice.
@@ -335,8 +336,13 @@ different half of this, so `npm test` asserts both are still asked for.
   read, and unlike the shortcuts above they do not need the tab focused.
 - **About *n* min left** — next to the part count, how much listening is left
   at the speed currently set. Moving the speed slider moves it.
-- **Click any word** while it is reading to carry on from that word. It works
-  while paused too, and starts playing again from there.
+- **Click anywhere in the text** while it is reading to carry on from the
+  sentence you clicked, starting at its first word. The audio stops where it
+  was and picks up there. It works while paused too, and starts playing again
+  from there. While a read is running the cursor over the text being read is a
+  pointer, so you can see where this works; links, buttons and fields keep
+  their own behaviour, selecting text by dragging still selects, and a click
+  outside the text being read does nothing.
 - **Continue page** — when a page was left part-read, the popup says how far in
   it got and the read button continues from there. **Start over** next to it
   goes back to the top.
@@ -374,7 +380,7 @@ that requests the broader permission; **Revoke** takes it back.
 | Language | `en` | 20 languages plus `auto` detection |
 | Default speed | 1.0× | Applied to the audio element, so pitch is preserved |
 | Characters per request | 1200 | The size chunks settle at; the first one or two are smaller regardless, so a read starts quickly |
-| Click a word to read from there | on | Only plain clicks on the text being read |
+| Click a sentence to read from it | on | Only plain clicks on the text being read, and only while one is running |
 | Read code blocks aloud | off | Whole snippets. Code inside a sentence is read either way |
 | Follow the spoken word | on | Scrolls only when the word leaves a comfortable band |
 | Tint the current sentence | on | |
@@ -526,17 +532,22 @@ checks cannot do
 - [ ] While a selection is being read, clicking outside it does nothing.
 
 **Clicking to jump**
-- [ ] While reading, click a word further down the same paragraph: playback
-      continues from that word, with no pause.
-- [ ] Click a word near the end of a long article: it starts there within a
+- [ ] While reading, the cursor over the text being read is a pointer, and over
+      the navigation and the footer it is not.
+- [ ] Click the middle of a sentence further down the same paragraph: playback
+      continues from the *first word of that sentence*, with no pause, and the
+      tint moves with it.
+- [ ] Click a sentence near the end of a long article: it starts there within a
       second or two and carries on.
-- [ ] Click a word behind the playhead: it goes back to it.
-- [ ] Pause, then click a word: it jumps there and starts playing again.
+- [ ] Click a sentence behind the playhead: it goes back to its start.
+- [ ] Pause, then click a sentence: it jumps there and starts playing again.
 - [ ] Click a link in the article: the link opens, and playback does not move.
 - [ ] Select some text by dragging: playback does not move.
 - [ ] Clicking navigation, the sidebar or the footer does nothing.
-- [ ] With nothing being read, clicking the page does nothing.
-- [ ] Turn **Click a word to read from there** off: clicks stop moving playback.
+- [ ] **Stop**, then click the text: nothing moves, and the pointer cursor is
+      gone.
+- [ ] Turn **Click a sentence to read from it** off mid-read: clicks stop moving
+      playback and the pointer cursor goes with them.
 
 **Failure handling**
 - [ ] With no credential at all, the popup says what is missing rather than
@@ -766,7 +777,7 @@ one or two sentences. From there each chunk doubles until it reaches the
 **Characters per request** setting — 240, 480, 960, 1200 — so the opening is
 quick and the body of the read still arrives in the large, smooth-sounding
 pieces that setting asks for. The ramp restarts at every forced chunk boundary,
-which means [jumping to a clicked word](#jumping-to-a-clicked-word) into text
+which means [jumping to a clicked sentence](#jumping-to-a-clicked-sentence) into text
 that has not been fetched starts quickly for the same reason.
 
 Two other things keep that opening from simply moving the wait to the first
@@ -811,41 +822,69 @@ number.
 *streamed* audio chunk at some cost to quality at chunk boundaries, and a unary
 request is waited on whole, so it would buy nothing here.
 
-### Jumping to a clicked word
+### Jumping to a clicked sentence
 
 A click is a pixel; playback is a time offset into one request's audio. Getting
 from one to the other reuses the map extraction already built: the point becomes
 a text node and offset (`caretPositionFromPoint`, falling back to
 `caretRangeFromPoint`), the node and offset become an index into the extracted
-string, the index snaps back to the start of its word, and the word's character
-index finds the chunk holding it and, through that chunk's timestamps, the
-moment it starts being spoken.
+string, the index snaps back to the start of the sentence it fell in, and that
+character index finds the chunk holding it and, through that chunk's timestamps,
+the moment it starts being spoken.
+
+**The sentence, not the word.** A click is a rough gesture at a place in the
+page, and what the listener is pointing at is a thought rather than the fifth
+word of one. Starting mid-clause reads back as a fragment — "restraint. There is
+no reservoir" — where the sentence from its beginning is what they were asking
+to hear. It also agrees with everything else here: the tint covers a sentence,
+[stepping](#stepping-a-sentence-at-a-time) lands on sentence starts, and chunks
+are cut on [sentence boundaries](#where-a-sentence-ends) — so the start of a
+sentence is very often a place this tab already has audio for, which makes the
+commonest jump free as well as correct.
 
 What happens next depends on what audio is already in hand.
 
-| Where the word is | What it costs |
+| Where the sentence starts | What it costs |
 | --- | --- |
 | In the chunk playing now | A seek. No request, no wait. |
-| In any chunk this page has already fetched | Load it and start at that word's own timestamp. No request. See [Audio already paid for](#audio-already-paid-for). |
-| Anywhere else | One request, for a chunk that *begins* at the clicked word. |
+| In any chunk this page has already fetched | Load it and start at that sentence's own timestamp. No request. See [Audio already paid for](#audio-already-paid-for). |
+| Anywhere else | One request, for a chunk that *begins* at that sentence. |
 
 That last row is the interesting one, because the obvious alternative is to
-fetch the chunk the word happens to fall inside and then seek within it. That
-costs more on both counts that matter: the request carries the text before the
-clicked word, which is billed and then skipped, and the audio takes longer to
-synthesise and transfer for the same reason. So the chunk list is re-cut with a
-forced boundary at the clicked word first. Cutting is greedy from the start of
-each piece, so everything more than one chunk ahead of the click comes out
-exactly as it would have anyway — including the chunk being played, whose audio
-survives the re-cut because the cache is keyed by character range rather than by
-chunk number. Jumping into the end of a 1200-character chunk therefore asks for
-the tail it is about to speak, not the 1100 characters it would have thrown
-away.
+fetch the chunk the sentence happens to fall inside and then seek within it.
+That costs more on both counts that matter: the request carries the text before
+it, which is billed and then skipped, and the audio takes longer to synthesise
+and transfer for the same reason. So the chunk list is re-cut with a forced
+boundary at the sentence first. Cutting is greedy from the start of each piece,
+so everything more than one chunk ahead of the click comes out exactly as it
+would have anyway — including the chunk being played, whose audio survives the
+re-cut because the cache is keyed by character range rather than by chunk
+number. Jumping into the end of a 1200-character chunk therefore asks for the
+tail it is about to speak, not the 1100 characters it would have thrown away.
 
 Requests the jump has made pointless are cancelled rather than left to land.
 The page can only ask: the worker holds the key and therefore the `fetch`, so it
 holds the `AbortController` too, and the page names the request it no longer
 wants.
+
+**Only while there is a read to move.** The listeners go on when a read starts
+and come off when it ends, rather than sitting in every page the extension has
+ever been invoked on: with nothing being read there is nothing for a click to
+do, so there is no reason to be in the page's click path at all. `emit` is the
+single place every state change passes through, so the listeners follow the
+state instead of being switched on by hand at each of the half-dozen places a
+read starts or stops. Turning the setting off mid-read takes them off too.
+
+**The cue.** While a read is running, the cursor over the text being read is a
+pointer. It is one `data-read-aloud-jump` attribute on the single element the
+text was taken from, which `content/highlight.css` turns into a `cursor` rule —
+so it inherits across the article and stops at its edges, and links, buttons and
+fields keep the cursor they set for themselves. That attribute is the one thing
+in here that touches the page rather than painting over it, which is why it is an
+attribute rather than a node, why it is on one element rather than on the words,
+and why it comes off the moment the read ends. A selection read gets no cue: the
+clickable text is the selection, and marking the element it happens to sit
+inside would promise the rest of that element too.
 
 Only plain clicks on read text count. Clicks on links, buttons, inputs,
 editable regions, anything with an interactive ARIA role, clicks carrying a
@@ -945,7 +984,7 @@ a whole-page read writes down where its playhead is — every five seconds, at
 each chunk boundary, when it is paused, when the tab goes away, and when a
 request fails — and the next read of that page continues from there.
 
-Continuing is the same move as [clicking a word](#jumping-to-a-clicked-word):
+Continuing is the same move as [clicking a sentence](#jumping-to-a-clicked-sentence):
 the position is a character index, a chunk boundary is forced at it, and the
 first request comes back *beginning* on the word about to be spoken rather than
 carrying the part of the page already heard.
@@ -1169,15 +1208,26 @@ explaining.
 
 `tools/e2e.js` drives a real Chrome over the DevTools Protocol and asserts that
 the highlight walks the article in order, in time with the audio, and that
-clicking a word moves playback to it — with the clicks dispatched through the
+clicking a sentence moves playback to it — with the clicks dispatched through the
 input pipeline, so the reader resolves real coordinates against real layout
 rather than being handed an answer. It uses `tools/mock-api.js`, a stand-in for
 the xAI API that mirrors the real endpoints, CORS headers and response envelope
 but synthesises a placeholder tone — so the whole pipeline can be exercised
 without spending a key. The mock also keeps a log of what it was asked to
 synthesise, at `GET /debug/requests`, which is how the jump checks assert that a
-jump cost one request starting on the clicked word rather than several, or one
-beginning earlier.
+jump cost one request beginning at the clicked sentence rather than several, or
+one beginning earlier.
+
+The checks for [jumping to a clicked
+sentence](#jumping-to-a-clicked-sentence) click the fifth word of "What remains
+interesting is the engineering restraint." — once into text nothing has been
+fetched for, and once back into audio already in hand — and assert each time
+that the request begins `What remains interesting`, that the highlight reaches
+`What` before it reaches `engineering`, and that the tint is on that whole
+sentence. All three are false of a jump that went to the word rather than to the
+sentence. The cue is checked as a computed `cursor`: a pointer over the article
+while a read is running, not a pointer over the navigation, and gone from both
+when the read stops or the setting is turned off.
 
 The checks for [picking up where you left off](#picking-up-where-you-left-off)
 reload the page between the two reads, so the content scripts, the chunk list
