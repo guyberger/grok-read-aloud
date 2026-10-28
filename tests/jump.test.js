@@ -4,7 +4,8 @@ import { Browser, contentBundle, findChrome, fixtureUrl } from "./headless.js";
 import { fakeTimestamps, loadContentNamespace } from "./load-content.js";
 
 const ns = loadContentNamespace();
-const { chunkRanges, wordStartAt, chunkIndexFor, timeForCharIndex, buildChunkTimeline } = ns.align;
+const { chunkRanges, wordStartAt, chunkIndexFor, timeForCharIndex, buildChunkTimeline, sentences, sentenceStartFrom } =
+  ns.align;
 
 const PARAGRAPH =
   "A tide mill is a water mill that runs on the rise and fall of the sea. " +
@@ -107,6 +108,94 @@ test("a clicked character maps through to a chunk and a time within it", () => {
   const time = timeForCharIndex(timeline, wordStart);
   assert.ok(Math.abs(time - (wordStart - chunk.start) * 0.05) < 1e-6, `got ${time}`);
   assert.ok(time > 0 && time < duration);
+});
+
+// ---------------------------------------------------------------------------
+// From the clicked character to the sentence it is in.
+//
+// A click is a rough gesture at a place in the page, and what the listener is
+// pointing at is a sentence rather than the fifth word of one — so the jump
+// snaps back to where that sentence starts. This is the same move stepping
+// back makes, and it is why the audio a jump needs is so often audio the tab
+// already has: chunks are cut on sentence boundaries too.
+// ---------------------------------------------------------------------------
+
+/** What clicking the character at `index` reads from. */
+const jumpTarget = (text, index) => {
+  const target = sentenceStartFrom(sentences(text), index, 0);
+  return target < 0 ? index : target;
+};
+
+/** The sentence a jump to `index` would begin with. */
+const spokenFrom = (text, index) => {
+  const start = jumpTarget(text, index);
+  const span = sentences(text).find((sentence) => sentence.start === start);
+  return span ? text.slice(span.start, span.end).trim() : text.slice(start);
+};
+
+test("a click anywhere in a sentence reads from the start of that sentence", () => {
+  const second = PARAGRAPH.indexOf("The builders");
+
+  for (const needle of ["builders", "dammed", "creek", "holding pond."]) {
+    const at = PARAGRAPH.indexOf(needle, second);
+    assert.equal(
+      jumpTarget(PARAGRAPH, at),
+      second,
+      `clicking "${needle}" should read from "The builders", not from "${spokenFrom(PARAGRAPH, at)}"`,
+    );
+  }
+});
+
+test("the word clicked is not where the read starts, unless it opens the sentence", () => {
+  const first = PARAGRAPH.indexOf("A tide mill");
+  const mid = PARAGRAPH.indexOf("water mill");
+
+  assert.equal(jumpTarget(PARAGRAPH, first), first, "the first word of a sentence is its own start");
+  assert.equal(jumpTarget(PARAGRAPH, mid), first);
+  assert.notEqual(wordStartAt(PARAGRAPH, mid), jumpTarget(PARAGRAPH, mid), "the word is not the sentence");
+});
+
+test("each sentence of a paragraph is reachable, and no other point is", () => {
+  const starts = sentences(PARAGRAPH).map((span) => span.start);
+  assert.equal(starts.length, 3, `expected three sentences, got ${starts.length}`);
+
+  const reached = new Set();
+  for (let i = 0; i < PARAGRAPH.length; i += 1) reached.add(jumpTarget(PARAGRAPH, i));
+  // Copied out of the sandboxed realm the content scripts were loaded in, so
+  // the comparison is about the numbers rather than about which Array made them.
+  assert.deepEqual(
+    [...reached].sort((a, b) => a - b),
+    Array.from(starts),
+  );
+});
+
+test("a click lands on a sentence an abbreviation does not end", () => {
+  // The same rule the tint and the chunker use, so a click cannot start a read
+  // on "Mair of the institute" with the title left behind.
+  const text = "The survey was led by Dr. Mair of the institute. It found nothing.";
+  const at = text.indexOf("institute");
+
+  assert.equal(jumpTarget(text, at), 0);
+  assert.equal(spokenFrom(text, at), "The survey was led by Dr. Mair of the institute.");
+});
+
+test("a click in the whitespace between two sentences takes the one that follows", () => {
+  const text = "One. Two.";
+  assert.equal(jumpTarget(text, text.indexOf(" Two")), text.indexOf("Two"));
+});
+
+test("the sentence a click lands in survives the chunk it is cut into", () => {
+  // The economy of a jump rests on this: the audio asked for begins at the
+  // sentence, so a chunk forced to start there carries no text that is
+  // synthesised only to be skipped.
+  const text = `${PARAGRAPH}\n`.repeat(6);
+  const at = text.indexOf("drained back", 500);
+  const target = jumpTarget(text, at);
+  const ranges = chunkRanges(text, 400, { boundaries: [target] });
+  const index = chunkIndexFor(ranges, target);
+
+  assert.equal(ranges[index].start, target);
+  assert.ok(text.slice(target).startsWith("The trapped water drained"), text.slice(target, target + 30));
 });
 
 // ---------------------------------------------------------------------------
@@ -339,7 +428,9 @@ async function clickGate(page) {
   await page.evaluate(`
     (() => {
       window.accepted = [];
-      globalThis.__readAloud.pointer.watch((event) => window.accepted.push(event.target.nodeName));
+      window.unwatch = globalThis.__readAloud.pointer.watch(
+        (event) => window.accepted.push(event.target.nodeName),
+      );
       return true;
     })()
   `);
@@ -459,4 +550,74 @@ test("a drag, and the click that ends a selection, are not jumps", { skip }, asy
     })()
   `;
   assert.equal(await dispatch(afterSelection), false, "a click that leaves a selection behind");
+});
+
+test("the reader leaves the page's click path when it stops listening", { skip }, async () => {
+  const { page } = await read("article.html");
+  const dispatch = await clickGate(page);
+
+  const clickText = `
+    (() => {
+      const element = document.querySelector("article p");
+      element.scrollIntoView({ block: "center" });
+      const rect = element.getBoundingClientRect();
+      element.dispatchEvent(new MouseEvent("click", {
+        bubbles: true, cancelable: true, button: 0, detail: 1,
+        clientX: rect.left + 10, clientY: rect.top + 5,
+      }));
+      return true;
+    })()
+  `;
+
+  assert.equal(await dispatch(clickText), true, "while listening");
+  await page.evaluate(`(() => { window.unwatch(); return true; })()`);
+  assert.equal(await dispatch(clickText), false, "after it stopped");
+
+  // And it can be listened to again, which is what a second read is.
+  await page.evaluate(`
+    (() => {
+      window.unwatch = globalThis.__readAloud.pointer.watch(
+        (event) => window.accepted.push(event.target.nodeName),
+      );
+      return true;
+    })()
+  `);
+  assert.equal(await dispatch(clickText), true, "on a second read");
+});
+
+test("a press left over from the last read does not make the next click a drag", { skip }, async () => {
+  const { page } = await read("article.html");
+  const dispatch = await clickGate(page);
+
+  // A press at one end of the paragraph, then the read stops before the
+  // release. The press is further than the drag slop from where the next read's
+  // first click lands, and it must not be measured against it.
+  await page.evaluate(`
+    (() => {
+      const element = document.querySelector("article p");
+      element.scrollIntoView({ block: "center" });
+      const rect = element.getBoundingClientRect();
+      element.dispatchEvent(new PointerEvent("pointerdown", {
+        bubbles: true, clientX: rect.left + 200, clientY: rect.top + 5,
+      }));
+      window.unwatch();
+      window.unwatch = globalThis.__readAloud.pointer.watch(
+        (event) => window.accepted.push(event.target.nodeName),
+      );
+      return true;
+    })()
+  `);
+
+  const click = `
+    (() => {
+      const element = document.querySelector("article p");
+      const rect = element.getBoundingClientRect();
+      element.dispatchEvent(new MouseEvent("click", {
+        bubbles: true, cancelable: true, button: 0, detail: 1,
+        clientX: rect.left + 10, clientY: rect.top + 5,
+      }));
+      return true;
+    })()
+  `;
+  assert.equal(await dispatch(click), true);
 });

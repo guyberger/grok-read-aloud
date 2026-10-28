@@ -76,20 +76,34 @@
     return true;
   }
 
-  /** Calls `handler(event)` for every plain text click on the document. */
+  /**
+   * Calls `handler(event)` for every plain text click on the document, until
+   * the function it returns is called.
+   *
+   * Listening is tied to a read rather than to the page: with nothing being
+   * read there is nothing for a click to move, so there is no reason for the
+   * extension to be in the page's click path at all.
+   */
   function watch(handler) {
     // Capture, so a page that swallows its own pointer events still tells us
     // where the press began and a drag is not mistaken for a click.
-    document.addEventListener(
-      "pointerdown",
-      (event) => {
-        pressedAt = { x: event.clientX, y: event.clientY };
-      },
-      true,
-    );
-    document.addEventListener("click", (event) => {
+    const onPointerDown = (event) => {
+      pressedAt = { x: event.clientX, y: event.clientY };
+    };
+    const onClick = (event) => {
       if (isPlainTextClick(event)) handler(event);
-    });
+    };
+
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("click", onClick);
+
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("click", onClick);
+      // The next read starts without a press behind it, so a first click must
+      // not be measured against where a pointer went down during the last one.
+      pressedAt = null;
+    };
   }
 
   ns.pointer = { isPlainTextClick, watch };
