@@ -533,39 +533,14 @@ async function main() {
     await sleep(250);
   }
 
-  // 9a. A word in the chunk already playing: a seek, no new request. The
-  // opening chunk is deliberately short, so this is a word inside the first
-  // sentence rather than at the end of the paragraph.
-  const near = await wordPoint("article p", 0, "river.");
-  const beforeNear = await page.evaluate(probe, world);
-  const requestsBeforeNear = (await synthesised()).length;
-  await clickAt(near);
-  const nearJump = await awaitHighlight(near.word);
-  const afterNear = await page.evaluate(probe, world);
-  const requestsAfterNear = (await synthesised()).length;
-  check(
-    "clicking a word in the chunk being read jumps to it",
-    nearJump.matched,
-    `clicked "${near.word}", saw ${nearJump.seen.slice(-4).join(" ") || "nothing"}`,
-  );
-  check(
-    "a jump inside the chunk does not change chunk",
-    afterNear.chunkIndex === beforeNear.chunkIndex,
-    `chunk ${beforeNear.chunkIndex} → ${afterNear.chunkIndex}`,
-  );
-  check(
-    "a jump inside the chunk moves the playhead forward",
-    afterNear.progress > beforeNear.progress,
-    `${beforeNear.progress.toFixed(3)} → ${afterNear.progress.toFixed(3)}`,
-  );
-  check(
-    "a jump inside the chunk costs no request",
-    requestsAfterNear === requestsBeforeNear,
-    `${requestsBeforeNear} → ${requestsAfterNear} requests`,
-  );
-
-  // 9b. A word in a chunk that has not been fetched, from a paused read:
-  // the jump crosses chunks and playback resumes on its own.
+  // 9a. A word in a chunk that has not been fetched, from a paused read: the
+  // jump crosses chunks and playback resumes on its own — and it is the
+  // *sentence* the click landed in that is read, from its first word.
+  //
+  // "engineering" is the fifth word of "What remains interesting is the
+  // engineering restraint.", so a request beginning "What" and a highlight
+  // reaching "What" before "engineering" are both only true of a jump that
+  // snapped back to the sentence.
   const held = await control("pause");
   check("paused before the cross-chunk jump", held?.state?.status === "paused", held?.state?.status);
   await page.evaluate(`window.showElement("article p", 4)`, world);
@@ -582,18 +557,88 @@ async function main() {
     `clicked "${far.word}", saw ${farJump.seen.slice(-4).join(" ") || "nothing"}`,
   );
   check(
+    "the clicked sentence is read from its first word, not from the word clicked",
+    farJump.seen.indexOf("What") >= 0 && farJump.seen.indexOf("What") < farJump.seen.indexOf(far.word),
+    `saw ${farJump.seen.join(" ")}`,
+  );
+  check(
     "the jump crossed into a later chunk",
     afterFar.chunkIndex > beforeFar.chunkIndex,
     `chunk ${beforeFar.chunkIndex} → ${afterFar.chunkIndex} of ${afterFar.chunkCount}`,
   );
   check("a jump from paused resumes playing", afterFar.status === "playing", afterFar.status);
   check(
-    "the audio fetched for the jump starts on the clicked word",
-    newRequests[0]?.head.startsWith(far.word),
+    "the audio fetched for the jump starts on the first word of that sentence",
+    newRequests[0]?.head.startsWith("What remains interesting"),
     newRequests.map((entry) => `${entry.chars} chars: ${JSON.stringify(entry.head.slice(0, 24))}`).join(", "),
+  );
+  check(
+    "the tint covers the sentence the click landed in",
+    afterFar.sentence?.startsWith("What remains interesting"),
+    JSON.stringify(afterFar.sentence),
   );
   check("the jump kept timestamp alignment", afterFar.aligned !== false);
   check("no error during the jumps", !afterFar.error, afterFar.error);
+
+  // The cue: while the read is running, the words of it are something to
+  // click, and the cursor over them says so. It is one attribute on the
+  // element the text came out of, and `highlight.css` does the rest.
+  const cue = JSON.parse(
+    await page.evaluate(`
+      (() => {
+        const marked = [...document.querySelectorAll("[data-read-aloud-jump]")];
+        return JSON.stringify({
+          marked: marked.map((element) => element.tagName.toLowerCase()),
+          overText: getComputedStyle(document.querySelector("article p")).cursor,
+          overFurniture: getComputedStyle(document.querySelector("nav")).cursor,
+        });
+      })()
+    `),
+  );
+  check(
+    "the text being read shows a pointer cursor while it is being read",
+    cue.marked.length === 1 && cue.overText === "pointer",
+    `${cue.marked.join(", ") || "nothing marked"}, cursor ${cue.overText}`,
+  );
+  check(
+    "the cue stops where the text being read stops",
+    cue.overFurniture !== "pointer",
+    `over the navigation: ${cue.overFurniture}`,
+  );
+
+  // 9b. A sentence inside the audio already in hand, behind the playhead: a
+  // seek, no new request, and the same sentence from its first word again.
+  // Letting the read run on past the clicked sentence first is what makes the
+  // jump visible as a jump — the playhead has to come back for it.
+  const movedOn = await awaitHighlight("reservoir", { timeoutMs: 20000 });
+  check("the read carried on past the sentence it jumped to", movedOn.matched, movedOn.seen.slice(-3).join(" "));
+
+  const beforeNear = await page.evaluate(probe, world);
+  const requestsBeforeNear = (await synthesised()).length;
+  await clickAt(far);
+  const nearJump = await awaitHighlight(far.word, { timeoutMs: 10000 });
+  const afterNear = await page.evaluate(probe, world);
+  const requestsAfterNear = (await synthesised()).length;
+  check(
+    "clicking a sentence inside the audio in hand goes back to it",
+    nearJump.matched && afterNear.progress < beforeNear.progress,
+    `clicked "${far.word}", progress ${beforeNear.progress.toFixed(3)} → ${afterNear.progress.toFixed(3)}`,
+  );
+  check(
+    "it starts that sentence from its first word too",
+    nearJump.seen.indexOf("What") >= 0 && nearJump.seen.indexOf("What") < nearJump.seen.indexOf(far.word),
+    `saw ${nearJump.seen.join(" ")}`,
+  );
+  check(
+    "a jump inside the chunk does not change chunk",
+    afterNear.chunkIndex === beforeNear.chunkIndex,
+    `chunk ${beforeNear.chunkIndex} → ${afterNear.chunkIndex}`,
+  );
+  check(
+    "a jump inside the chunk costs no request",
+    requestsAfterNear === requestsBeforeNear,
+    `${requestsBeforeNear} → ${requestsAfterNear} requests`,
+  );
 
   // The highlight and the scroll follow the jump rather than the old position.
   await sleep(1200);
@@ -634,7 +679,7 @@ async function main() {
     await page.evaluate(`location.hash`),
   );
 
-  // 9d. The setting turns it off.
+  // 9d. The setting turns it off, mid-read, listeners and cursor and all.
   await ui.evaluate(`chrome.storage.local.set({ clickToJump: false }).then(() => true)`);
   await sleep(600);
   await page.evaluate(`window.showElement("article p", 3)`, world);
@@ -650,11 +695,23 @@ async function main() {
       Math.abs(afterDisabled.progress - beforeDisabled.progress) < 1e-6,
     `${afterDisabled.status}, chunk ${beforeDisabled.chunkIndex} → ${afterDisabled.chunkIndex}`,
   );
+  check(
+    "and the cursor stops saying the text is clickable",
+    (await page.evaluate(`document.querySelectorAll("[data-read-aloud-jump]").length`)) === 0,
+    await page.evaluate(`getComputedStyle(document.querySelector("article p")).cursor`),
+  );
   await ui.evaluate(`chrome.storage.local.set({ clickToJump: true }).then(() => true)`);
+  await sleep(600);
 
-  // 9e. With nothing playing, a click is just a click.
+  // 9e. With nothing playing, a click is just a click — and the extension is
+  // not in the page's click path at all.
   await control("stop");
   await sleep(300);
+  check(
+    "stopping takes the cue off the page",
+    (await page.evaluate(`document.querySelectorAll("[data-read-aloud-jump]").length`)) === 0,
+    await page.evaluate(`getComputedStyle(document.querySelector("article p")).cursor`),
+  );
   const idlePoint = await wordPoint("article p", 3, "arrived,");
   await clickAt(idlePoint);
   await sleep(600);
@@ -1585,7 +1642,7 @@ async function main() {
   const afterBack = await awaitStatus("playing", { timeoutMs: 10000 });
   const costOfGoingBack = (await synthesised()).length - fetchedByNow;
   check(
-    "clicking back into the opening of a read lands on the word asked for",
+    "clicking back into the opening of a read reaches the sentence asked for",
     wentBack.matched,
     `clicked "${backTo.word}", saw ${wentBack.seen.slice(-4).join(" ") || "nothing"}`,
   );

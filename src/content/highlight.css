@@ -52,3 +52,16 @@
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.32);
   pointer-events: none;
 }
+
+/**
+ * While a page is being read, the words of it are something to click: a click
+ * moves the read to the sentence it lands in. The cursor says so.
+ *
+ * Set on the one element the text was taken from, so it inherits across the
+ * article and stops at its edges, and only while a read is running. Links,
+ * buttons and fields set their own cursor and keep it, and text can still be
+ * selected by dragging — which is also the gesture that is never a jump.
+ */
+[data-read-aloud-jump] {
+  cursor: pointer;
+}

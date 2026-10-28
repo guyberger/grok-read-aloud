@@ -115,6 +115,9 @@
     // the same transitions, so the two can never disagree about whether this
     // page is talking.
     controls.update(state);
+    // And clicks belong to the reader on exactly the transitions where there
+    // is a read for one to move.
+    syncClicks();
     ext.runtime.sendMessage({ type: "stateChanged", state }).catch(() => {});
   }
 
@@ -171,6 +174,9 @@
     }
     highlight.configure(settings);
     player?.setRate(settings.rate);
+    // Turning the setting off mid-read takes the reader out of the page's
+    // click path, and the cursor back to what the page asked for.
+    syncClicks();
   }
 
   function ensurePlayer() {
@@ -745,14 +751,71 @@
     update();
   }
 
+  /**
+   * A click in the text being read moves the read to the sentence it landed
+   * in, and carries on from the start of that sentence.
+   *
+   * The sentence rather than the word: a click is a rough gesture at a place
+   * in the page, and the thing the listener is pointing at is a thought, not
+   * the fifth word of one. Starting mid-clause reads back as a fragment —
+   * "restraint. There is no reservoir" — where the sentence from its start is
+   * what they were asking to hear. It also agrees with everything else here:
+   * the tint covers a sentence, stepping lands on sentence starts, and chunks
+   * are cut on sentence boundaries, so the audio for a sentence start is
+   * usually audio this tab has already been billed for.
+   */
   function onTextClick(event) {
-    if (!settings.clickToJump) return;
     if (!doc || !ACTIVE.has(state.status)) return;
     const charIndex = extract.charIndexFromPoint(doc, event.clientX, event.clientY);
     // Outside the text being read — page furniture, or anywhere at all in a
     // selection read — and the click was never ours.
     if (charIndex < 0) return;
-    jumpToCharIndex(charIndex).catch(reportError);
+    sentences ??= align.sentences(doc.text);
+    const sentenceStart = align.sentenceStartFrom(sentences, charIndex, 0);
+    jumpToCharIndex(sentenceStart < 0 ? charIndex : sentenceStart).catch(reportError);
+  }
+
+  /**
+   * Whether clicks are the reader's, right now.
+   *
+   * Only while there is a read to move: a page with nothing being read has no
+   * use for a listener in its click path, and the cursor must not suggest
+   * otherwise. `emit` is the one place every status change passes through, so
+   * this follows the state rather than being switched on by hand at each of
+   * the half-dozen places a read starts or ends.
+   */
+  let unwatchClicks = null;
+  let markedRoot = null;
+
+  const CLICKABLE = "data-read-aloud-jump";
+
+  function syncClicks() {
+    const wanted = Boolean(settings.clickToJump && doc && ACTIVE.has(state.status));
+    if (wanted && !unwatchClicks) unwatchClicks = pointer.watch(onTextClick);
+    if (!wanted && unwatchClicks) {
+      unwatchClicks();
+      unwatchClicks = null;
+    }
+    markClickable();
+  }
+
+  /**
+   * The hover cue: one attribute on the element the text came out of, which
+   * `highlight.css` turns into a pointer cursor. An attribute rather than a
+   * node, and removed the moment the read ends — nothing of it survives a read
+   * — but it is still the page's own element, which is the one thing in here
+   * that touches the document rather than painting over it.
+   *
+   * A selection read gets no cue: the clickable text is the selection, not the
+   * element it happened to be inside, and marking that element would promise
+   * the rest of it too.
+   */
+  function markClickable() {
+    const wanted = unwatchClicks && doc?.scope === "page" ? doc.root : null;
+    if (markedRoot === wanted) return;
+    markedRoot?.removeAttribute?.(CLICKABLE);
+    wanted?.setAttribute?.(CLICKABLE, "");
+    markedRoot = wanted;
   }
 
   async function toggle(args) {
@@ -815,13 +878,14 @@
     refreshSettings();
   });
 
-  pointer.watch(onTextClick);
-
   // Closing the tab or following a link is an interrupted read, not a finished
   // one, so the position is kept rather than stopped away.
   window.addEventListener("pagehide", () => {
     rememberPosition({ force: true });
     reset();
+    // `reset` only announces a state it changed, and a tab leaving with
+    // nothing playing changes none — so the listeners come off here.
+    syncClicks();
     // Nothing can be read from this document again, so the audio kept for it
     // is so many megabytes with nowhere to go.
     cache.clear();

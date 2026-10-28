@@ -302,7 +302,7 @@
   /**
    * @param {"page"|"selection"} scope
    * @param {{readCodeBlocks?: boolean}} options
-   * @returns {{text, charNodes, charOffsets, slices, scope}|null}
+   * @returns {{text, charNodes, charOffsets, slices, root, scope}|null}
    */
   function extract(scope, { readCodeBlocks = false } = {}) {
     const options = { readCodeBlocks };
@@ -319,25 +319,32 @@
         root &&
         (buildFrom(root, range, null, new Map(), options) ??
           buildFrom(root, range, null, new Map(), { readCodeBlocks: true }));
-      return built ? { ...built, scope: "selection" } : null;
+      return built ? { ...built, root, scope: "selection" } : null;
     }
 
     const body = document.body;
     if (!body) return null;
 
     const cache = new Map();
-    const root = findMainContent(cache);
-    let built = root && root !== body ? buildFrom(root, null, CONTENT_CHROME_TAGS, cache, options) : null;
+    const main = findMainContent(cache);
+    let root = main && main !== body ? main : null;
+    let built = root ? buildFrom(root, null, CONTENT_CHROME_TAGS, cache, options) : null;
 
     // Picking the article body is a guess, and a guess that comes back nearly
     // empty is worth abandoning. Every visible word in the body minus the page
     // furniture reads worse than a clean article, and far better than silence.
     if (!built || built.text.trim().length < MIN_PAGE_CHARS) {
       const fallback = buildFrom(body, null, PAGE_CHROME_TAGS, cache, options);
-      if (fallback && fallback.text.trim().length > (built?.text.trim().length ?? 0)) built = fallback;
+      if (fallback && fallback.text.trim().length > (built?.text.trim().length ?? 0)) {
+        built = fallback;
+        root = body;
+      }
     }
 
-    return built ? { ...built, scope: "page" } : null;
+    // The element the text came out of, which is the region a click can land
+    // in. It is what the reader marks while a read is running, so the pointer
+    // can say the words under it are clickable.
+    return built ? { ...built, root: root ?? body, scope: "page" } : null;
   }
 
   /**
