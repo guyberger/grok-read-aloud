@@ -13,6 +13,7 @@ const CONTENT_FILES = [
   "content/positions.js",
   "content/handoff.js",
   "content/pace.js",
+  "content/audio-cache.js",
   "content/controls.js",
   "content/player.js",
   "content/reader.js",

@@ -17,6 +17,7 @@
     handoff,
     pace,
     controls,
+    audioCache,
     player: playerFactory,
   } = ns;
 
@@ -93,8 +94,9 @@
   let timeline = null;
   // Keyed by character range rather than chunk index, because clicking into
   // text nothing has been fetched for re-cuts the chunks and the audio already
-  // in hand must survive that.
-  let cache = new Map();
+  // in hand must survive that. It also outlives a read: a page read twice, or
+  // stepped back through, is audio already bought once.
+  const cache = audioCache.createAudioCache();
   let inflight = new Map();
   // What the API has said about how long its audio runs per character of this
   // read, which is what turns the characters left into minutes left.
@@ -203,26 +205,42 @@
     return player;
   }
 
-  const cacheKey = (chunk) => `${chunk.start}:${chunk.end}`;
+  /**
+   * What a chunk's audio is asked for and remembered under: the range, the
+   * text in it, and the voice and language it is to be spoken in. The settings
+   * are read once here rather than when the response arrives, so a voice
+   * changed mid-read cannot file audio under the new voice's name.
+   */
+  function audioRequest(index) {
+    const chunk = chunks[index];
+    if (!chunk) return null;
+    return {
+      voiceId: settings.voiceId,
+      language: settings.language,
+      start: chunk.start,
+      end: chunk.end,
+      text: doc.text.slice(chunk.start, chunk.end),
+    };
+  }
 
   function requestChunk(index) {
-    const chunk = chunks[index];
-    if (!chunk) return Promise.resolve();
-    const key = cacheKey(chunk);
-    if (cache.has(key)) return Promise.resolve();
+    const request = audioRequest(index);
+    if (!request) return Promise.resolve();
+    if (cache.get(request)) return Promise.resolve();
 
+    const key = cache.keyFor(request);
     const pending = inflight.get(key);
     if (pending) return pending.promise;
 
     const requestId = `${sessionId}-${nextRequestId++}`;
-    const text = doc.text.slice(chunk.start, chunk.end);
+    const text = request.text;
     const promise = (async () => {
       const response = await ext.runtime.sendMessage({
         type: "synthesize",
         requestId,
         text,
-        voiceId: settings.voiceId,
-        language: settings.language,
+        voiceId: request.voiceId,
+        language: request.language,
       });
       if (!response?.ok) throw new Error(response?.error || "Synthesis failed.");
       // The worker says here when it had to fall back from the xAI sign-in to
@@ -236,14 +254,14 @@
       // what the estimate of the time left is built from.
       pacing.record(text.length, response.duration);
 
-      cache.set(key, {
+      cache.set(request, {
         bytes: util.base64ToBytes(response.audio),
         contentType: response.contentType,
         timeline: align.buildChunkTimeline({
           text,
           graphChars: response.graphChars,
           graphTimes: response.graphTimes,
-          globalStart: chunk.start,
+          globalStart: request.start,
           duration: response.duration,
         }),
       });
@@ -270,18 +288,21 @@
   function neighbourKeys(index) {
     const keys = new Set();
     for (let i = index - 1; i <= index + PREFETCH_AHEAD; i += 1) {
-      if (chunks[i]) keys.add(cacheKey(chunks[i]));
+      const request = audioRequest(i);
+      if (request) keys.add(cache.keyFor(request));
     }
     return keys;
   }
 
+  /**
+   * Ask for the chunks after this one. Nothing is thrown away to make room:
+   * the audio behind the playhead is audio already bought, and a step back or
+   * a second read of the page is exactly when it is wanted again. The cache
+   * evicts on its own budget — see `audio-cache.js`.
+   */
   function prefetch(index) {
     for (let i = index + 1; i <= index + PREFETCH_AHEAD; i += 1) {
       requestChunk(i).catch(() => {});
-    }
-    const keep = neighbourKeys(index);
-    for (const key of cache.keys()) {
-      if (!keep.has(key)) cache.delete(key);
     }
   }
 
@@ -302,7 +323,8 @@
     await wanted;
     if (session !== sessionId) return;
 
-    const entry = cache.get(cacheKey(chunks[index]));
+    const request = audioRequest(index);
+    const entry = request && cache.get(request);
     if (!entry) return;
     timeline = entry.timeline;
     state.aligned = entry.timeline.aligned;
@@ -491,7 +513,9 @@
 
     sessionId += 1;
     abortRequests();
-    cache = new Map();
+    // The cache survives: a page read again, or started over, is mostly audio
+    // this tab has already been billed for, and serving it from memory is both
+    // free and instant.
     state.scope = doc.scope;
     state.chunkCount = chunks.length;
     state.error = "";
@@ -552,7 +576,6 @@
     highlight.clear();
     timeline = null;
     abortRequests();
-    cache = new Map();
     // The pace is measured per read: a voice or a language changed between two
     // reads speaks at its own rate, and carrying the old one over would make
     // the first minutes of the new read confidently wrong.
@@ -651,7 +674,7 @@
 
     let target = align.chunkIndexFor(chunks, wordStart);
     let startTime = 0;
-    const ready = cache.get(cacheKey(chunks[target]));
+    const ready = cache.get(audioRequest(target));
     if (ready) {
       startTime = align.timeForCharIndex(ready.timeline, wordStart);
     } else {
@@ -799,6 +822,9 @@
   window.addEventListener("pagehide", () => {
     rememberPosition({ force: true });
     reset();
+    // Nothing can be read from this document again, so the audio kept for it
+    // is so many megabytes with nowhere to go.
+    cache.clear();
     controls.detach();
     player?.destroy();
     player = null;

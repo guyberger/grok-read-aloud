@@ -24,6 +24,9 @@ dependencies — just the files in `src/` and a ~40-line copy script.
   actually returning rather than guessed from a word count — and in the time
   the speed you are reading at will take, not the length of the recording.
 - Jumps to any word you click while it is reading, and carries on from there.
+- Keeps the audio it has already fetched for as long as the page is open, so
+  going back through a page, or reading it again, replays what is in hand
+  instead of buying the same sentences twice.
 - Steps back and forward a sentence at a time, so a few words you missed take
   one key press to hear again — a sentence being a whole one, so `Dr. Mair` and
   `Sept. 1974` are not three of them.
@@ -445,6 +448,17 @@ checks cannot do
 - [ ] Selecting two paragraphs with the snippet between them reads the prose
       and skips the snippet.
 
+**Audio already paid for**
+- [ ] Read several parts into a page, then click a word in its first paragraph:
+      it starts speaking immediately, with none of the pause a fresh request
+      takes.
+- [ ] **Stop**, then read the same page again: it starts instantly and runs
+      through the parts you already heard without a gap at any boundary.
+- [ ] Change the voice and read again: it is the new voice from the first word,
+      and the part boundaries still run together.
+- [ ] Reload the page and read it again: that one does wait for a request, which
+      is the point at which the audio is let go.
+
 **Selection**
 - [ ] Select two sentences, choose **Selection**, read: only the selected text is
       spoken and highlighted.
@@ -517,7 +531,15 @@ node tools/mock-api.js --port 8443 --cert /tmp/cert.pem --key /tmp/key.pem \
   --latency-base 400 --latency-per-char 1.5 --latency-timestamps 150 &
 
 node tools/first-audio.js --extension "$PWD/dist/chrome-test" --runs 5
+
+# the same page read twice, the second time out of memory
+node tools/first-audio.js --extension "$PWD/dist/chrome-test" --runs 5 --second-read 1
 ```
+
+`--second-read 1` is the measurement behind [Audio already paid
+for](#audio-already-paid-for): with the latency model above, the first read
+waits about 800 ms for its opening chunk and the second waits about 12 ms for
+no requests at all.
 
 ### Layout
 
@@ -527,7 +549,7 @@ src/
   manifest.firefox.json   Firefox MV3: background.scripts + gecko id
   common/                 Settings, the API client, the xAI sign-in and the choice between credentials
   background/             Holds the credentials, makes every network call, injects content scripts
-  content/                Injected on demand; extraction, alignment, clicks, playback, highlighting, the cross-tab handoff, the browser's media controls
+  content/                Injected on demand; extraction, alignment, clicks, playback, the audio already fetched, highlighting, the cross-tab handoff, the browser's media controls
   popup/  options/        Extension UI
 tools/                    Build, icons, static checks, mock API, end-to-end and timing drivers
 tests/                    Unit tests and the fixture pages they read
@@ -679,7 +701,7 @@ What happens next depends on what audio is already in hand.
 | Where the word is | What it costs |
 | --- | --- |
 | In the chunk playing now | A seek. No request, no wait. |
-| In a chunk already fetched — the one just left, or the one prefetched ahead | Load it and start at that word's own timestamp. No request. |
+| In any chunk this page has already fetched | Load it and start at that word's own timestamp. No request. See [Audio already paid for](#audio-already-paid-for). |
 | Anywhere else | One request, for a chunk that *begins* at the clicked word. |
 
 That last row is the interesting one, because the obvious alternative is to
@@ -785,10 +807,10 @@ Two details are worth stating:
   clock, so it holds at any speed) steps to the one before it. Pressing back
   twice therefore always reaches the previous sentence.
 
-Stepping back over a chunk join can cost one request, for the same reason
-clicking far ahead can: the audio for the text behind the playhead may already
-have been dropped. Stepping within a chunk — which is most steps, since a chunk
-is several sentences — costs nothing at all.
+Stepping within a chunk — which is most steps, since a chunk is several
+sentences — costs nothing at all, and nor does stepping back over a chunk join
+into audio this page has already fetched. See [Audio already paid
+for](#audio-already-paid-for).
 
 ### Picking up where you left off
 
@@ -973,6 +995,51 @@ real tone to hold all of it down: the extension's own pause and resume are not
 reported, a pause on the element is, playing it again is, and running off the
 end is the chunk ending rather than an interruption.
 
+### Audio already paid for
+
+A chunk of audio is one billed request and one wait. Once it has arrived it is
+the most valuable thing a read owns — and the reader used to hold three of
+them: the chunk being spoken and its two neighbours. Everything else was dropped
+the moment the playhead moved on, so going back three paragraphs, or reading a
+page a second time, bought the same seconds of speech again, and waited for them
+again, when they had been in memory a moment earlier.
+
+Now it is kept until memory says otherwise. `content/audio-cache.js` is a
+least-recently-used store with its budget in bytes, because bytes are what the
+tab has to hold: 24 MB, which at the 64 kbps the extension asks the API for is
+a little under an hour of speech — more than any one page. A page that runs past
+it loses the chunk that has gone longest unplayed, never the one about to be
+spoken.
+
+Audio is identified by the voice, the language and the character range, and the
+text in that range is checked on the way back out. Each of those is there for a
+reason:
+
+- **The voice and the language**, because the same words in another voice are
+  different audio. Keying on the range alone meant a chunk prefetched before the
+  setting changed was played after it, so the next part of the page arrived in
+  the voice you had just stopped using. Now a changed voice is a miss: the part
+  being spoken finishes as it was synthesised, and the one after it is fetched
+  in the new voice.
+- **The character range rather than the chunk number**, because clicking into
+  text nothing has been fetched for re-cuts the chunk list, and audio in hand
+  has to survive the renumbering.
+- **The text itself**, because a range is only an address. A page that rewrites
+  itself under a read — a client-side route change, a comment thread that
+  finished loading — leaves the same address naming different words, and audio
+  that no longer matches is dropped rather than spoken over what is there now.
+
+The store outlives a read, which is what makes Start over, a second read of the
+same page, and a step back over a chunk join free rather than merely fast. It
+does not outlive the document: a page that has gone cannot be read again, and
+its audio is megabytes with nowhere to go.
+
+What it deliberately does not do is persist. Audio in `storage.local` would
+survive a reload and a browser restart, and it would also mean the extension
+keeping a recording of every page anyone has had read to them, on disk,
+indefinitely and silently. Memory for as long as the tab is open needs no such
+explaining.
+
 ### Running the end-to-end check
 
 `tools/e2e.js` drives a real Chrome over the DevTools Protocol and asserts that
@@ -1028,6 +1095,17 @@ and resuming move it, that the page is described once rather than at every
 state change, and that stopping hands the session back. The buttons themselves
 belong to the operating system and cannot be pressed over the DevTools
 Protocol, which is why pressing them is a unit test against a stand-in.
+
+The checks for [audio already paid for](#audio-already-paid-for) read several
+parts into the article, click back into its opening, and then read the whole
+page again from the top — asserting each time that the mock's request log grew
+by nothing at all, so the audio came out of memory rather than off the API.
+Changing the voice and reading again is the other half: those requests *must*
+be made, and the mock records the voice each one asked for, so a check can tell
+audio that had to be fetched again from audio that was merely replayed. Two
+sections elsewhere reload the page before their own reads, because "a chunk that
+has not been fetched" and "this request carried the OAuth token" are both claims
+about a read that has to ask for audio at all.
 
 The sign-in checks run against the same mock, which also stands in for the
 OAuth server and for the approval page on `accounts.x.ai` — approval in those
@@ -1163,12 +1241,17 @@ the driver loads the extension over the protocol instead.
   drifts — and the first second or two of a read, before any chunk has
   answered, assumes a rate rather than knowing one. It is rounded to the minute
   for that reason.
-- **Jumping far ahead can need a new request.** Clicking a word inside the audio
-  already fetched is instant. Clicking well beyond it costs one synthesis
+- **Jumping into text that has never been fetched needs a new request.**
+  Clicking a word whose audio this page has already fetched is instant, however
+  far back it is — see [Audio already paid for](#audio-already-paid-for).
+  Clicking well beyond the furthest the read has got costs one synthesis
   request — the same few seconds the first chunk costs — and re-cuts the chunks
-  from that word, so the "Part *n* of *m*" label in the popup renumbers. The
-  same is true of stepping back over a chunk join, though a step within the
-  chunk being read — most of them — costs nothing.
+  from that word, so the "Part *n* of *m*" label in the popup renumbers.
+- **The audio is kept in memory, and only in memory.** It is not written to
+  disk, on purpose, so a reload or a browser restart starts paying again — and
+  a page longer than the 24 MB budget drops the parts it has gone longest
+  without playing, so going back to the very top of one of those is a fresh
+  request.
 - **Speed above 1.5× is a playback-rate change**, not a re-synthesis. The API's
   own `speed` parameter tops out at 1.5× and would require re-fetching on every
   change, so the extension uses the audio element's rate, which preserves pitch.
@@ -1194,7 +1277,9 @@ the driver loads the extension over the protocol instead.
 - **Long pages cost real money.** Billing is per input character, and the whole
   page is sent in chunks. The API caps a single request at 60,000 characters;
   the extension stays far below that, but a very long article is still a lot of
-  characters.
+  characters. What it will not do is bill you for the same characters twice
+  within one visit to a page: everything already fetched is replayed from
+  memory.
 
 ## License
 

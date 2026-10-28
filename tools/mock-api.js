@@ -464,6 +464,9 @@ async function handle(request, response) {
       head: text.slice(0, 60),
       tail: text.slice(-30),
       receivedAt: Date.now(),
+      // Which voice it was asked in, so a test can tell audio that had to be
+      // fetched again from audio that was merely replayed.
+      voiceId: String(body.voice_id ?? ""),
       // Which credential carried it, so a test can assert the fallback
       // actually fell back rather than merely not erroring.
       auth: isOAuthToken(bearer) ? "oauth" : "apiKey",
