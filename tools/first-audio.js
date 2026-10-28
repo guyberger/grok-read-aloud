@@ -16,6 +16,12 @@
  * first request — the thing the extension controls — is reported with them.
  *
  *   node tools/first-audio.js --extension "$PWD/dist/chrome-test" --runs 5
+ *
+ * `--second-read 1` reads each page twice, the second time without reloading
+ * it, and reports that wait beside the first. The second read is the page's
+ * own audio played back out of memory — see "Audio already paid for" in the
+ * README — so the API should not be asked for anything at all, and the whole
+ * middle column of the breakdown above should be gone.
  */
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) {
@@ -28,6 +34,7 @@ const EXTENSION_DIR = args.get("extension") ?? new URL("../dist/chrome-test", im
 const RUNS = Number(args.get("runs") ?? 5);
 const CHUNK_CHARS = Number(args.get("chunk-chars") ?? 1200);
 const LABEL = args.get("label") ?? "";
+const SECOND_READ = args.get("second-read") === "1";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -171,21 +178,30 @@ async function main() {
       ),
     );
 
-  const samples = [];
-  for (let run = 0; run < RUNS; run += 1) {
-    // A fresh document every run: nothing cached, nothing injected, the
-    // content script not yet there — the state a first read actually starts in.
-    const page = await new Session(articleTarget.webSocketDebuggerUrl).open();
-    await page.send("Page.enable");
-    await page.send("Runtime.enable");
-    await page.send("Page.navigate", { url: PAGE_URL });
-    await sleep(1200);
-    await browser.send("Target.activateTarget", { targetId: articleTarget.id });
+  /** Wait until the mock has answered everything it has been asked for. */
+  const settle = async ({ timeoutMs = 10000 } = {}) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if ((await requests()).every((entry) => entry.respondedAt)) return;
+      await sleep(100);
+    }
+  };
 
+  const stop = () =>
+    ui.evaluate(
+      `new Promise((res) => chrome.runtime.sendMessage({ type: "control", action: "stop" }, res))`,
+    );
+
+  /**
+   * One press of read, timed from the press to the first audible moment.
+   *
+   * Both clocks are wall clock on one machine, so the page can be watched from
+   * the page and the press timed in the extension context. `world` is handed in
+   * for a second read of a document whose content script is already there.
+   */
+  const timeRead = async (page, { world = null } = {}) => {
     const before = (await requests()).length;
 
-    // Both clocks are wall clock on one machine, so the page can be watched
-    // from the page and the press timed in the extension context.
     const pressedAt = await ui.evaluate(`
       (() => {
         const pressedAt = Date.now();
@@ -202,7 +218,7 @@ async function main() {
 
     // The reader reports progress only once the playhead has actually moved,
     // which is the first moment there is something to hear.
-    const world = await page.isolatedContextId();
+    const context = world ?? (await page.isolatedContextId());
     const audibleAt = await page.evaluate(
       `
       new Promise((resolve, reject) => {
@@ -217,25 +233,57 @@ async function main() {
         tick();
       })
     `,
-      world,
+      context,
     );
 
-    const served = (await requests()).slice(before);
+    return { world: context, pressedAt, audibleAt, served: (await requests()).slice(before) };
+  };
+
+  const samples = [];
+  const replays = [];
+  for (let run = 0; run < RUNS; run += 1) {
+    // A fresh document every run: nothing cached, nothing injected, the
+    // content script not yet there — the state a first read actually starts in.
+    const page = await new Session(articleTarget.webSocketDebuggerUrl).open();
+    await page.send("Page.enable");
+    await page.send("Runtime.enable");
+    await page.send("Page.navigate", { url: PAGE_URL });
+    await sleep(1200);
+    await browser.send("Target.activateTarget", { targetId: articleTarget.id });
+
+    const cold = await timeRead(page);
+    const served = cold.served;
     const first = served[0];
     if (!first) throw new Error("the API was never asked for anything");
 
     samples.push({
-      total: audibleAt - pressedAt,
-      toRequest: first.receivedAt - pressedAt,
+      total: cold.audibleAt - cold.pressedAt,
+      toRequest: first.receivedAt - cold.pressedAt,
       api: first.respondedAt - first.receivedAt,
-      toAudible: audibleAt - first.respondedAt,
+      toAudible: cold.audibleAt - first.respondedAt,
       chars: first.chars,
-      requestsBeforeAudible: served.filter((entry) => entry.receivedAt <= audibleAt).length,
+      requestsBeforeAudible: served.filter((entry) => entry.receivedAt <= cold.audibleAt).length,
     });
 
-    await ui.evaluate(
-      `new Promise((res) => chrome.runtime.sendMessage({ type: "control", action: "stop" }, res))`,
-    );
+    // The same page again, on the same document: everything it needs to start
+    // speaking is audio this tab has already been billed for.
+    if (SECOND_READ) {
+      // The audio the first read has already asked for is let in before the
+      // read is stopped: a request cancelled in flight is audio nobody was
+      // billed for and nothing kept, which is not the state a listener who
+      // actually read the page would come back to.
+      await settle();
+      await stop();
+      await sleep(300);
+      const again = await timeRead(page, { world: cold.world });
+      replays.push({
+        total: again.audibleAt - again.pressedAt,
+        requests: again.served.length,
+        chars: again.served.reduce((total, entry) => total + entry.chars, 0),
+      });
+    }
+
+    await stop();
     page.close();
     await sleep(400);
   }
@@ -250,6 +298,17 @@ async function main() {
   console.log(`  response → audible   ${ms(field("toAudible").median)} median  (${ms(field("toAudible").min)}–${ms(field("toAudible").max)})`);
   console.log(`  total                ${ms(total.median)} median  (${ms(total.min)}–${ms(total.max)}, mean ${ms(total.mean)})`);
   console.log(`\n  runs: ${samples.map((sample) => ms(sample.total)).join(", ")}`);
+
+  if (replays.length) {
+    const repeat = summarise(replays.map((sample) => sample.total));
+    const asked = replays.reduce((total, sample) => total + sample.requests, 0);
+    const chars = replays.reduce((total, sample) => total + sample.chars, 0);
+    console.log(`\nreading the same page again, without reloading it\n`);
+    console.log(`  requests             ${asked} (${chars} characters)`);
+    console.log(`  total                ${ms(repeat.median)} median  (${ms(repeat.min)}–${ms(repeat.max)}, mean ${ms(repeat.mean)})`);
+    console.log(`  against the first read ${ms(total.median)} median — ${(total.median / Math.max(1, repeat.median)).toFixed(1)}x`);
+    console.log(`\n  runs: ${replays.map((sample) => ms(sample.total)).join(", ")}`);
+  }
 
   ui.close();
   browser.close();

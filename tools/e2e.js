@@ -412,8 +412,13 @@ async function main() {
   // reader sees exactly what a user produces: a trusted pointerdown, mouseup
   // and click at real viewport coordinates, resolved through
   // `caretPositionFromPoint` against whatever is actually laid out there.
-  await page.evaluate(
-    `
+  /**
+   * Helpers the click checks need, installed into the page. A navigation keeps
+   * none of them, so every section that navigates installs them again.
+   */
+  const installPointHelpers = () =>
+    page.evaluate(
+      `
     (() => {
       /**
        * Viewport centre of one word of an element, picked by its text so the
@@ -440,8 +445,10 @@ async function main() {
       return true;
     })()
   `,
-    world,
-  );
+      world,
+    );
+
+  await installPointHelpers();
 
   const wordPoint = async (selector, elementIndex, needle) => {
     const point = JSON.parse(
@@ -506,7 +513,18 @@ async function main() {
     `${afterOutside.status}, progress ${beforeOutside.progress.toFixed(3)} → ${afterOutside.progress.toFixed(3)}`,
   );
 
+  // A fresh document, so "a chunk that has not been fetched" is true of the
+  // read below rather than merely of this tab's history: the full read in
+  // section 4 left the audio for this page in hand, and a reader holding it
+  // replays it instead of asking — see
+  // [Audio already paid for](#audio-already-paid-for).
   await control("stop");
+  await page.send("Page.navigate", { url: PAGE_URL });
+  await sleep(1500);
+  await tabState();
+  world = await page.isolatedContextId();
+  await installPointHelpers();
+
   await control("start", { scope: "page" });
   await control("setRate", { rate: 0.5 });
   for (let i = 0; i < 80; i += 1) {
@@ -941,6 +959,13 @@ async function main() {
   approval.close();
 
   // 11c. From here the API is reached with the sign-in, not the key.
+  //
+  // On a fresh document, because a reader that still holds the audio for this
+  // page replays it rather than asking for it — see
+  // [Audio already paid for](#audio-already-paid-for) — and what is being
+  // asserted here is which credential a request carries.
+  await page.send("Page.navigate", { url: PAGE_URL });
+  await sleep(1500);
   const beforeSignedInRead = (await synthesised()).length;
   await control("start", { scope: "page" });
   await sleep(2500);
@@ -1519,6 +1544,101 @@ async function main() {
     afterStop.state === "none" && afterStop.title === null,
     `${afterStop.state}, ${JSON.stringify(afterStop.title)}`,
   );
+
+  // 18. Audio already paid for.
+  //
+  // Every chunk is one billed request and a second or two of waiting, so the
+  // audio a read has fetched is the most valuable thing it holds. These checks
+  // go back through a read and then read the whole page again, and assert that
+  // the API was not asked for a single character of it twice.
+  await page.send("Page.navigate", { url: PAGE_URL });
+  await sleep(1500);
+  await tabState();
+  world = await page.isolatedContextId();
+  await installPointHelpers();
+
+  await control("setRate", { rate: 3 });
+  await control("start", { scope: "page", from: "start" });
+  await awaitStatus("playing", { timeoutMs: 20000 });
+
+  // Several parts in, because the part immediately behind the one playing was
+  // kept even before any of this — a check that only went back one would pass
+  // either way.
+  let advanced = null;
+  for (let i = 0; i < 200; i += 1) {
+    advanced = await page.evaluate(probe, world);
+    if (advanced.chunkIndex >= 3 || advanced.error) break;
+    await sleep(250);
+  }
+  check(
+    "the read moved several parts past the opening",
+    advanced.chunkIndex >= 3 && !advanced.error,
+    advanced.error || `part ${advanced.chunkIndex + 1} of ${advanced.chunkCount}`,
+  );
+
+  const fetchedByNow = (await synthesised()).length;
+  await control("pause");
+  await page.evaluate(`window.showElement("article p", 0)`, world);
+  const backTo = await wordPoint("article p", 0, "dammed");
+  await clickAt(backTo);
+  const wentBack = await awaitHighlight(backTo.word, { timeoutMs: 15000 });
+  const afterBack = await awaitStatus("playing", { timeoutMs: 10000 });
+  const costOfGoingBack = (await synthesised()).length - fetchedByNow;
+  check(
+    "clicking back into the opening of a read lands on the word asked for",
+    wentBack.matched,
+    `clicked "${backTo.word}", saw ${wentBack.seen.slice(-4).join(" ") || "nothing"}`,
+  );
+  check(
+    "going back crossed more than one part",
+    afterBack.chunkIndex <= advanced.chunkIndex - 2,
+    `part ${advanced.chunkIndex + 1} → ${afterBack.chunkIndex + 1}`,
+  );
+  check(
+    "audio from earlier in the read is still in hand, so going back costs nothing",
+    costOfGoingBack === 0,
+    `${costOfGoingBack} request(s) for audio this tab already had`,
+  );
+
+  // Reading the page again is the same characters in the same voice, and this
+  // tab already has every one of them.
+  await control("stop");
+  await sleep(400);
+  const fetchedBeforeSecondRead = (await synthesised()).length;
+  await control("start", { scope: "page", from: "start" });
+  const secondRead = await awaitStatus("playing", { timeoutMs: 20000 });
+  await sleep(1200);
+  const secondReadCost = (await synthesised()).length - fetchedBeforeSecondRead;
+  check(
+    "reading the page a second time starts at the top and plays",
+    secondRead.status === "playing" && secondRead.chunkIndex === 0,
+    `${secondRead.status || secondRead.error}, part ${secondRead.chunkIndex + 1}`,
+  );
+  check(
+    "reading the page a second time is not paid for a second time",
+    secondReadCost === 0,
+    `${secondReadCost} request(s)`,
+  );
+
+  // A voice is part of what audio is: the same range in another voice is not
+  // this audio, however much of it is in hand.
+  await control("stop");
+  await ui.evaluate(`chrome.storage.local.set({ voiceId: "rex" }).then(() => true)`);
+  await sleep(600);
+  const fetchedBeforeVoiceChange = (await synthesised()).length;
+  await control("start", { scope: "page", from: "start" });
+  const inNewVoice = await awaitStatus("playing", { timeoutMs: 20000 });
+  const newVoiceRequests = (await synthesised()).slice(fetchedBeforeVoiceChange);
+  check(
+    "changing the voice fetches the page again rather than replaying the old voice",
+    newVoiceRequests.length > 0 && newVoiceRequests.every((entry) => entry.voiceId === "rex"),
+    newVoiceRequests.map((entry) => entry.voiceId).join(", ") || "no requests",
+  );
+  check("the read in the new voice plays", inNewVoice.status === "playing", inNewVoice.status || inNewVoice.error);
+
+  await control("stop");
+  await ui.evaluate(`chrome.storage.local.set({ voiceId: "eve" }).then(() => true)`);
+  await control("setRate", { rate: 1 });
 
   ui.close();
   page.close();
