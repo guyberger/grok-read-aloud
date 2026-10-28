@@ -4,12 +4,6 @@ A personal browser extension that reads the current page — or just the text yo
 selected — out loud using xAI's Grok text-to-speech API, highlighting each word
 as it is spoken.
 
-![The extension reading an article: the spoken word is highlighted in solid amber and the current sentence carries a lighter tint](docs/reading.png)
-
-One source tree builds an unpacked extension for both Chrome (Manifest V3) and
-Firefox (Manifest V3). There is no backend, no build toolchain, and no runtime
-dependencies — just the files in `src/` and a ~40-line copy script.
-
 ## Install in 60 seconds
 
 [![Installing Read Aloud: clone and build it, load dist/chrome as an unpacked extension, pin it, save a key, press Read page and watch the highlight follow the voice](docs/install.gif)](docs/install.mp4)
@@ -43,6 +37,12 @@ the tests use, not a real one.*
    **Read page**. The spoken word is highlighted as you hear it.
 
 Firefox, and what each of the three build folders is for: [Install](#install).
+
+![The extension reading an article: the spoken word is highlighted in solid amber and the current sentence carries a lighter tint](docs/reading.png)
+
+One source tree builds an unpacked extension for both Chrome (Manifest V3) and
+Firefox (Manifest V3). There is no backend, no build toolchain, and no runtime
+dependencies — just the files in `src/` and a ~40-line copy script.
 
 ## What it does
 
