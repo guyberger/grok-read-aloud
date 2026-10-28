@@ -1640,6 +1640,161 @@ async function main() {
   await ui.evaluate(`chrome.storage.local.set({ voiceId: "eve" }).then(() => true)`);
   await control("setRate", { rate: 1 });
 
+  // 19. The panel before it has been told anything.
+  //
+  // Opening the popup on a page already being read used to mean "Checking…"
+  // over a dead transport until the reader answered, which on a page whose
+  // main thread is busy is over a second. The worker writes down what it last
+  // knew per tab, and the panel paints that on the way up — so these checks
+  // are about what is on the *first* render, not what it settles on.
+  const remembered = async (tabId) =>
+    JSON.parse(
+      await ui.evaluate(
+        `chrome.storage.session.get("panel:tab:${tabId}")
+           .then((held) => JSON.stringify(held["panel:tab:${tabId}"] ?? null))`,
+      ),
+    );
+
+  // The worker's own name for the tab, which is what the entry is keyed by —
+  // a CDP target id is a different thing entirely.
+  const articleTabId = (await tabState()).tabId;
+
+  await control("start", { scope: "page", from: "start" });
+  const reading = await awaitStatus("playing", { timeoutMs: 20000 });
+  check("a read is under way before the panel is opened", reading.status === "playing", reading.status || reading.error);
+
+  const kept = await remembered(articleTabId);
+  check(
+    "the worker remembers what it last knew about the tab being read",
+    kept?.state?.status === "playing" && kept.state.chunkCount > 0,
+    kept ? `${kept.state.status}, ${kept.state.chunkCount} part(s)` : "nothing remembered",
+  );
+
+  /**
+   * Opens `popup/popup.html` and reports the very first state it rendered.
+   *
+   * The popup marks where what is on screen came from, and a watcher installed
+   * at document-start catches the first render rather than whatever the panel
+   * has settled on by the time anything can be asked.
+   */
+  const openPanel = async () => {
+    const { targetId } = await browser.send("Target.createTarget", { url: "about:blank", background: true });
+    await browser.send("Target.activateTarget", { targetId: articleTarget.id });
+    const target = await findTarget((entry) => entry.id === targetId, { label: "popup page" });
+    const panel = await new Session(target.webSocketDebuggerUrl).open();
+    await panel.send("Page.enable");
+    await panel.send("Runtime.enable");
+    await panel.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+    await panel.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `
+        (() => {
+          window.__first = null;
+          const note = () => {
+            const status = document.getElementById("status");
+            if (window.__first || !status?.dataset.state) return;
+            window.__first = {
+              at: performance.now(),
+              status: status.textContent.trim(),
+              source: status.dataset.source,
+              action: document.getElementById("toggle-label")?.textContent?.trim(),
+              stopDisabled: document.getElementById("stop")?.disabled,
+            };
+          };
+          const observer = new MutationObserver(note);
+          const start = () => {
+            if (!document.documentElement) return false;
+            observer.observe(document.documentElement, {
+              subtree: true, childList: true, attributes: true, attributeFilter: ["data-state", "data-source"],
+            });
+            note();
+            return true;
+          };
+          if (!start()) {
+            const retry = setInterval(() => { if (start()) clearInterval(retry); }, 1);
+          }
+        })()
+      `,
+    });
+    await panel.send("Page.navigate", { url: `chrome-extension://${extensionId}/popup/popup.html` });
+    const first = JSON.parse(
+      await panel.evaluate(`
+        new Promise((resolve) => {
+          const deadline = performance.now() + 10000;
+          const poll = () => {
+            if (window.__first) return resolve(JSON.stringify(window.__first));
+            if (performance.now() > deadline) return resolve("null");
+            setTimeout(poll, 5);
+          };
+          poll();
+        })
+      `),
+    );
+    const settled = JSON.parse(
+      await panel.evaluate(`
+        new Promise((resolve) => {
+          const deadline = performance.now() + 10000;
+          const poll = () => {
+            const status = document.getElementById("status");
+            if (status?.dataset.source === "live") {
+              return resolve(JSON.stringify({ status: status.textContent.trim(), source: "live" }));
+            }
+            if (performance.now() > deadline) return resolve("null");
+            setTimeout(poll, 20);
+          };
+          poll();
+        })
+      `),
+    );
+    panel.close();
+    await browser.send("Target.closeTarget", { targetId });
+    return { first, settled };
+  };
+
+  const onAReadyPage = await openPanel();
+  check(
+    "the panel's first render shows the read in progress, not Checking…",
+    onAReadyPage.first?.status === "Playing" && onAReadyPage.first?.action === "Pause",
+    `"${onAReadyPage.first?.status} / ${onAReadyPage.first?.action}" from ${onAReadyPage.first?.source ?? "nothing"}`,
+  );
+
+  // The whole point of remembering: a page whose main thread is tied up cannot
+  // be injected into or answer a message until it frees up, so the reader is
+  // seconds away. Nothing is awaited on the busy loop — it has to still be
+  // running when the panel opens.
+  page.evaluate(`{ const end = Date.now() + 2500; while (Date.now() < end); }`).catch(() => {});
+  await sleep(100);
+  const onABusyPage = await openPanel();
+  check(
+    "on a page that cannot answer, the panel's first render still shows the read",
+    onABusyPage.first?.status === "Playing" && onABusyPage.first.source === "cache",
+    `"${onABusyPage.first?.status} / ${onABusyPage.first?.action}" from ${onABusyPage.first?.source ?? "nothing"}`,
+  );
+  check(
+    "the transport is live on that first render",
+    onABusyPage.first?.stopDisabled === false,
+    onABusyPage.first?.stopDisabled === false ? "Stop enabled" : "Stop still disabled",
+  );
+  check(
+    "the reader's own answer replaces it once the page frees up",
+    onABusyPage.settled?.status === "Playing" && onABusyPage.settled.source === "live",
+    `${onABusyPage.settled?.status} from ${onABusyPage.settled?.source}`,
+  );
+
+  // A tab that has gone somewhere else is a tab whose remembered read is a
+  // lie, and a panel that painted it would be promising a read that is over.
+  await control("stop");
+  await page.send("Page.navigate", { url: PAGE_URL });
+  await sleep(1500);
+  const forgotten = await remembered(articleTabId);
+  check("a tab that navigates is forgotten", forgotten === null, JSON.stringify(forgotten));
+
+  const onAFreshPage = await openPanel();
+  check(
+    "with no read remembered the panel renders at once and claims no read",
+    onAFreshPage.first?.at < 1000 && onAFreshPage.first?.status !== "Playing",
+    `"${onAFreshPage.first?.status}" from ${onAFreshPage.first?.source} at ${onAFreshPage.first?.at?.toFixed(1)}ms`,
+  );
+
   ui.close();
   page.close();
   browser.close();

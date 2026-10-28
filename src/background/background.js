@@ -1,5 +1,6 @@
 import { ext } from "../common/browser.js";
 import { withCredential } from "../common/credentials.js";
+import { forgetTabState, rememberAuth, rememberTabState } from "../common/panel-cache.js";
 import { DEFAULT_SETTINGS, getPublicSettings, getSettings } from "../common/settings.js";
 import { API_BASE, listVoices, synthesizeWithRetry } from "../common/tts-client.js";
 import * as xaiAuth from "../common/xai-auth.js";
@@ -207,11 +208,21 @@ async function cancelSignIn() {
  */
 async function authState() {
   const [status, stored] = await Promise.all([xaiAuth.getStatus(), xaiAuth.readPendingFlow()]);
-  if (stored && !signInFlow) {
-    await xaiAuth.clearPendingFlow();
-    return { ok: true, status, flow: null, pending: false, abandoned: true };
-  }
-  return { ok: true, status, flow: stored, pending: Boolean(stored) };
+  const abandoned = Boolean(stored) && !signInFlow;
+  if (abandoned) await xaiAuth.clearPendingFlow();
+  const answer = abandoned
+    ? { ok: true, status, flow: null, pending: false, abandoned: true }
+    : { ok: true, status, flow: stored, pending: Boolean(stored) };
+  // Which credential is in play is the panel's slowest answer on a worker that
+  // has to boot for it, and it is the same answer in every tab.
+  const { apiKey } = await getSettings();
+  rememberAuth({
+    signedIn: Boolean(status.signedIn),
+    tierDenied: Boolean(status.tierDenied),
+    hasApiKey: Boolean(apiKey),
+    pending: answer.pending,
+  });
+  return answer;
 }
 
 async function handleMessage(message, sender) {
@@ -251,6 +262,9 @@ async function handleMessage(message, sender) {
       await xaiAuth.signOut();
       cachedSettings = null;
       announce({ type: "xaiAuthChanged", state: "signedOut" });
+      // Re-read rather than patch the remembered row: `authState` is the one
+      // place that decides what the credential row says.
+      await authState();
       return { ok: true, status: await xaiAuth.getStatus() };
     }
 
@@ -260,17 +274,22 @@ async function handleMessage(message, sender) {
       warmUp();
       const tabId = message.tabId ?? (await activeTabId());
       const state = await sendToTab(tabId, { type: "getState" });
+      rememberTabState(tabId, state);
       return { ok: true, tabId, state };
     }
 
     case "control": {
       const tabId = message.tabId ?? (await activeTabId());
       const state = await sendToTab(tabId, { type: message.action, ...message.args });
+      rememberTabState(tabId, state);
       return { ok: true, tabId, state };
     }
 
     // Content scripts broadcast progress so an open popup can follow along.
     case "stateChanged":
+      // And so the next popup to open has something to paint before it has
+      // asked anyone anything. See `common/panel-cache.js`.
+      rememberTabState(sender?.tab?.id, message.state);
       ext.runtime
         .sendMessage({ type: "tabStateChanged", tabId: sender?.tab?.id, state: message.state })
         .catch(() => {});
@@ -294,6 +313,17 @@ ext.storage.onChanged.addListener((changes, area) => {
   // would put extension storage back in front of the next synthesis.
   if (area !== "local") return;
   if (Object.keys(changes).some((key) => key in DEFAULT_SETTINGS)) cachedSettings = null;
+});
+
+/**
+ * A tab that has gone, or gone somewhere else, is a tab whose remembered
+ * transport is a lie. The reader announces its own reset on `pagehide`, but
+ * only when it was in the page to begin with — a tab navigated before any read
+ * started has nothing to announce, and a crashed one never gets the chance.
+ */
+ext.tabs.onRemoved.addListener((tabId) => forgetTabState(tabId));
+ext.tabs.onUpdated.addListener((tabId, changes) => {
+  if (changes.status === "loading") forgetTabState(tabId);
 });
 
 ext.commands.onCommand.addListener(async (command) => {

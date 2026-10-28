@@ -83,6 +83,10 @@ h1 {
   border-color: color-mix(in srgb, var(--danger) 45%, transparent);
 }
 
+/**
+ * One line, always, whether or not the title of the page is known yet: a panel
+ * the browser has already sized must not grow a line when the answer arrives.
+ */
 .page-title {
   margin: -4px 0 0;
   font-size: 12px;
@@ -90,6 +94,7 @@ h1 {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-height: 18px;
 }
 
 .progress {
@@ -292,10 +297,21 @@ select {
   background: var(--surface);
 }
 
+/**
+ * The row before anyone has said what is in it: laid out, so it holds the
+ * height it will have once filled, and invisible, so it says nothing it does
+ * not know. A popup the browser has already shown must not change size.
+ */
+.auth[data-state="unknown"] {
+  visibility: hidden;
+}
+
 .auth__label {
   font-size: 11px;
   font-weight: 600;
   color: var(--muted);
+  /** The height of its own line, so an empty row is as tall as a filled one. */
+  min-height: 17px;
 }
 
 .auth[data-state="signedIn"] .auth__label {
