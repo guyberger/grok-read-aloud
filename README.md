@@ -15,7 +15,7 @@ dependencies — just the files in `src/` and a ~40-line copy script.
 [![Installing Read Aloud: clone and build it, load dist/chrome as an unpacked extension, pin it, save a key, press Read page and watch the highlight follow the voice](docs/install.gif)](docs/install.mp4)
 
 *The same take at full size and full speed: [docs/install.mp4](docs/install.mp4)
-(1:23). It is recorded against this repository's own mock API —
+(1:29). It is recorded against this repository's own mock API —
 `tools/mock-api.js` — so the key typed into the options page is the placeholder
 the tests use, not a real one.*
 
