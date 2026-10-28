@@ -10,6 +10,40 @@ One source tree builds an unpacked extension for both Chrome (Manifest V3) and
 Firefox (Manifest V3). There is no backend, no build toolchain, and no runtime
 dependencies — just the files in `src/` and a ~40-line copy script.
 
+## Install in 60 seconds
+
+[![Installing Read Aloud: clone and build it, load dist/chrome as an unpacked extension, pin it, save a key, press Read page and watch the highlight follow the voice](docs/install.gif)](docs/install.mp4)
+
+*The same take at full size and full speed: [docs/install.mp4](docs/install.mp4)
+(1:29). It is recorded against this repository's own mock API —
+`tools/mock-api.js` — so the key typed into the options page is the placeholder
+the tests use, not a real one.*
+
+1. **Clone it and build it.** The build copies `src/` into one folder per
+   browser, so git, Node and npm are the whole of what it needs.
+
+   ```bash
+   git clone https://github.com/guyberger/grok-read-aloud.git read-aloud
+   cd read-aloud
+   npm ci          # a no-op — the lockfile describes an empty dependency tree
+   npm run build   # writes dist/chrome, dist/firefox and dist/chrome-test
+   ```
+
+2. **Open `chrome://extensions`** and turn on **Developer mode**, top right.
+3. **Click Load unpacked** and choose the **`dist/chrome`** folder — that one,
+   not `dist/chrome-test`, which is the same build with `<all_urls>` held
+   outright for the end-to-end driver.
+4. **Pin it.** Click the puzzle-piece icon in the toolbar, then the pin beside
+   **Read Aloud (Grok TTS)**.
+5. **Give it a credential.** The options page opens by itself on first install:
+   either click **Sign in with xAI**, or paste a key from
+   [console.x.ai](https://console.x.ai), click **Save key**, then
+   **Test & load voices** — which reports how many voices are available.
+6. **Read something.** Open an article, click the toolbar icon, press
+   **Read page**. The spoken word is highlighted as you hear it.
+
+Firefox, and what each of the three build folders is for: [Install](#install).
+
 ## What it does
 
 - Reads the readable body of a page, skipping navigation, sidebars, footers,
@@ -106,24 +140,41 @@ which is the only thing this extension asks for.
 
 ## Install
 
-Build the two unpacked extensions first:
+[Install in 60 seconds](#install-in-60-seconds) is the Chrome path end to end,
+in six steps and a video. This is the same ground with the parts a video cannot
+hold still for.
+
+Either browser starts with the same three commands:
 
 ```bash
+git clone https://github.com/guyberger/grok-read-aloud.git read-aloud
+cd read-aloud
 npm run build
 ```
 
-This writes `dist/chrome/` and `dist/firefox/`. Nothing is downloaded; the
-script only copies `src/` and swaps in the right `manifest.json`.
+Nothing is downloaded and nothing is installed first: the committed
+`package-lock.json` describes an empty dependency tree, so `npm ci` succeeds as
+a no-op and can be skipped entirely. The build copies `src/` and swaps in the
+right `manifest.json`, which it does three times:
+
+| Folder | What it is |
+| --- | --- |
+| `dist/chrome` | The Chrome build — **this is the one to load.** |
+| `dist/firefox` | The Firefox build: `background.scripts` and a gecko id. |
+| `dist/chrome-test` | The Chrome build with `<all_urls>` held outright, for `tools/e2e.js` and nothing else — see [Running the end-to-end check](#running-the-end-to-end-check). |
 
 ### Chrome
 
-1. Open `chrome://extensions`.
-2. Turn on **Developer mode** (top right).
-3. Click **Load unpacked** and choose the `dist/chrome` folder.
-4. The options page opens automatically on first install. If it does not, click
-   the extension's **Details → Extension options**.
-5. Optional but convenient: click the puzzle-piece icon in the toolbar and pin
-   **Read Aloud** so its icon is always visible.
+The steps are the ones in the video above. Two things it does not hold still
+long enough to say:
+
+- The options page opens by itself on first install, and only then — it is the
+  install with no key and no sign-in already in the profile that opens it. If it
+  does not appear, reach it from the extension's **Details → Extension
+  options**.
+- A loaded unpacked extension survives restarting Chrome, so this is a one-time
+  install rather than something to redo each session. Rebuilding over the same
+  folder needs the card's **Reload** on `chrome://extensions` to take effect.
 
 ### Firefox
 
@@ -500,6 +551,10 @@ npm run icons     # regenerate the PNG icons from tools/make-icons.js
 There is nothing to install: the committed `package-lock.json` describes an
 empty dependency tree, and exists only so that `npm ci` succeeds as a no-op
 instead of failing for want of a lockfile.
+
+Everything here is checked on Node 22. `npm run build` is plain ESM and
+`fs.cpSync`, so Node 18 is enough to install the extension; `npm test` hands
+`node --test` a glob, which wants Node 21 or newer to expand.
 
 `npm test` covers chunking, timestamp alignment, the API client's error
 handling, content extraction, the mapping from a click to a word, a chunk and a
