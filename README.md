@@ -602,7 +602,7 @@ no requests at all.
 src/
   manifest.chrome.json    Chrome MV3: service_worker background
   manifest.firefox.json   Firefox MV3: background.scripts + gecko id
-  common/                 Settings, the API client, the xAI sign-in and the choice between credentials
+  common/                 Settings, the API client, the xAI sign-in, the choice between credentials, and what the panel last knew
   background/             Holds the credentials, makes every network call, injects content scripts
   content/                Injected on demand; extraction, alignment, clicks, playback, the audio already fetched, highlighting, the cross-tab handoff, the browser's media controls
   popup/  options/        Extension UI
@@ -670,7 +670,68 @@ list and the reader's state are fetched afterwards and written into the panel
 as each arrives. Reaching the reader is the slow part — it can mean starting
 the background worker, injecting the content scripts, and waiting for a page
 whose main thread is busy — and none of that is allowed between the click and
-the panel. `tools/popup-paint.js` measures it.
+the panel.
+
+`tools/popup-paint.js` measures it, and it measures two different things.
+
+`--through-chrome 1` times the whole click: an extension page calls
+`chrome.action.openPopup()`, which is what the toolbar button does, and the
+clock runs from that call to the paint. Measured over 6 runs, median, in
+headless Chrome 156:
+
+| | Browser, before our document exists | Our paint | Click → paint |
+| --- | ---: | ---: | ---: |
+| This extension | 263 ms | 36 ms | **299 ms** |
+| An extension whose entire popup is `<p>Control</p>` — no CSS, no script | 263 ms | 36 ms | **299 ms** |
+
+The second row is `--control 1`, and it is the answer to "is the popup slow
+because of us?". It is not. Nearly nine tenths of the wait is over before this
+code exists: the browser has to build a popup window and a renderer to put the
+document in, and it takes the same quarter of a second whether that document is
+this panel or one line of HTML. The 36 ms after it is the paint pipeline, which
+is also identical. Our own share — parsing `popup.html`, applying `popup.css`,
+fetching and running `popup.js` — is the difference between the two load events,
+about **3 ms**. Shutting the MV3 background worker down before every open
+(`--cold 1`) changes none of it, because nothing is awaited on the worker before
+the paint.
+
+So the remaining work was never about milliseconds to paint; it was about what
+the panel paints. The default mode measures that, and `--busy-page 1500` is the
+case that shows it: a page whose main thread is tied up cannot be injected into
+or answer a message, so the reader is a second and a half away.
+
+| On a page that cannot answer for 1.5 s | Before | After |
+| --- | ---: | ---: |
+| First paint (within the document) | 84 ms | 80 ms |
+| Popup shown (load event) | 11 ms | 12 ms |
+| A state the panel was *told* on screen | 1498 ms | **15 ms** |
+| The reader's own state on screen | 1498 ms | 1499 ms |
+| Panel height moved after being shown | 5 runs of 5 | **never** |
+
+Two changes got there.
+
+**The panel opens on what was last known.** The worker writes the reader's
+state down per tab, and which credential is in play once, in `storage.session`
+— see `common/panel-cache.js`. The popup reads both on the way up, and neither
+read touches the worker: `tabs.query` is answered by the browser itself and
+session storage is held in memory, so they land in a millisecond or two. A
+popup opened on a page already being read therefore says Playing, with a live
+transport, instead of "Checking…" over four disabled buttons. `#status` carries
+a `data-source` saying which of the two is on screen, and a remembered state can
+never paint over the reader's own: the live answer wins whenever it arrives,
+however late. The shelf is the right one for it — `storage.session` is cleared
+when the browser closes, which is also when every remembered read stops being
+true — and within a session the worker drops a tab's entry as soon as that tab
+navigates, which is the other way a remembered read becomes a lie. Nothing
+remembered is older than half a day, a read still `loading` is remembered as the
+pause it will look like, and the text of an error is not remembered at all: it
+was about one request at one moment.
+
+**The panel is the size it will be.** A popup that grows after the browser has
+sized its window appears and then moves. The credential row and the page title
+are laid out from the first paint whether or not their content is known yet —
+the row invisible until it has something to say, the title holding its one line
+— so filling them in cannot resize a window that is already on screen.
 
 ### Highlighting without touching the page
 
@@ -1161,6 +1222,16 @@ audio that had to be fetched again from audio that was merely replayed. Two
 sections elsewhere reload the page before their own reads, because "a chunk that
 has not been fetched" and "this request carried the OAuth token" are both claims
 about a read that has to ask for audio at all.
+
+The checks for [why the popup paints before it knows
+anything](#why-the-popup-paints-before-it-knows-anything) open the panel while
+the article is being read and assert on its *first* render rather than on what
+it settles down to, with a watcher installed at document-start to catch it. One
+of them ties the article's main thread up in a busy loop first, so the reader
+cannot answer and the first render can only have come from what the worker
+remembered — the panel says which, and the check asserts that too. The rest are
+about the ways a remembered read stops being true: a tab that navigates is
+forgotten, and a panel with nothing to go on renders at once and claims no read.
 
 The sign-in checks run against the same mock, which also stands in for the
 OAuth server and for the approval page on `accounts.x.ai` — approval in those

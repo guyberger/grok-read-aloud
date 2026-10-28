@@ -376,7 +376,21 @@ async function loadRemembered() {
       show(state, "cache");
       if (state.scope) setScope(state.scope);
     }
-    if (auth) renderAuth(auth, "cache");
+    if (auth) {
+      renderAuth(auth, "cache");
+      // Whether there is any way to read at all is the one thing the panel
+      // says that is about the credentials rather than about the reader, so
+      // the remembered credentials answer it without the reader.
+      show(
+        {
+          ...current,
+          hasApiKey: auth.hasApiKey,
+          signedIn: auth.signedIn,
+          hasCredential: (auth.signedIn && !auth.tierDenied) || auth.hasApiKey,
+        },
+        "cache",
+      );
+    }
   } catch {
     // Nothing remembered, or no session storage to remember it in. The markup's
     // own default state is already on screen.
