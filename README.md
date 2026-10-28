@@ -406,6 +406,15 @@ checks cannot do
       falls back to the key with nothing to explain.
 - [ ] With both signed out and no key, the popup says what is missing.
 
+**Opening the popup**
+- [ ] It appears straight away, complete, with no part of it blank and no
+      moment where the panel is one size and then another.
+- [ ] Opened while a page is being read — and especially on a heavy page — it
+      says **Playing** with a live transport from the moment it is on screen,
+      rather than **Checking…** over four dead buttons.
+- [ ] Opened on a tab that has since been reloaded, it never claims a read that
+      is over.
+
 **Reading a page**
 - [ ] Clicking **Read page** starts audio in about a second.
 - [ ] The first sentence or two run into the rest without a gap.
