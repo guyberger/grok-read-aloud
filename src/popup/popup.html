@@ -108,11 +108,14 @@
       </fieldset>
 
       <!--
-        Hidden until the popup knows which credentials exist, because guessing
+        Blank until the popup knows which credentials exist, because guessing
         either way would flash the wrong thing: the button when already signed
-        in, or nothing when there is no way to read at all.
+        in, or nothing when there is no way to read at all. Blank rather than
+        absent, though — the row holds its own height from the first paint, so
+        filling it in cannot resize a popup the browser has already put on
+        screen. See the `data-state="unknown"` rule in `popup.css`.
       -->
-      <div id="auth" class="auth" hidden>
+      <div id="auth" class="auth" data-state="unknown">
         <span id="auth-label" class="auth__label"></span>
         <button id="sign-in" class="link" type="button" hidden>Sign in with xAI</button>
       </div>

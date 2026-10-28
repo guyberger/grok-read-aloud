@@ -11,7 +11,15 @@
  * settings module is pulled in dynamically rather than widening the module
  * graph the browser must finish before the document loads.
  *
- * `tools/popup-paint.js` measures what this is worth.
+ * What the panel shows in the meantime is the last thing anyone was told about
+ * this tab, read out of `storage.session` — see `common/panel-cache.js`. It
+ * arrives in a millisecond or two where the reader can take a second and a
+ * half, so a popup opened on a page already being read shows the read rather
+ * than "Checking…" over a dead transport. The live answer replaces it either
+ * way, and `#status` says which of the two is on screen.
+ *
+ * `tools/popup-paint.js` measures all of it, and splits what this code costs
+ * from what the browser spends opening a popup window at all.
  */
 const ext = globalThis.browser ?? globalThis.chrome;
 
@@ -23,6 +31,9 @@ const ext = globalThis.browser ?? globalThis.chrome;
  */
 let settingsModule = null;
 const settingsApi = () => (settingsModule ??= import("../common/settings.js"));
+
+let cacheModule = null;
+const cacheApi = () => (cacheModule ??= import("../common/panel-cache.js"));
 
 const el = {
   status: document.getElementById("status"),
@@ -54,6 +65,20 @@ let scope = "page";
 // Matches what the markup already shows, so the first render is a no-op
 // rather than a flash of different text.
 let current = { status: "pending" };
+
+/**
+ * Where what is on screen came from: the markup's own default, the state
+ * remembered for this tab, or the reader itself. Once the reader has answered
+ * nothing remembered may paint over it, however late the read arrives.
+ */
+let stateSource = "markup";
+let authSource = "markup";
+
+function show(state, source) {
+  if (source === "cache" && stateSource === "live") return;
+  stateSource = source;
+  render(state);
+}
 
 const LABELS = {
   pending: { status: "Checking…", action: "Read" },
@@ -118,6 +143,7 @@ function render(state) {
 
   el.status.textContent = label.status;
   el.status.dataset.state = current.status;
+  el.status.dataset.source = stateSource;
 
   // Where this page was left off, when the reader found one worth continuing
   // from. Only a whole-page read has one, and only with nothing playing is
@@ -167,8 +193,10 @@ function render(state) {
  * The flow itself belongs to the worker. This panel closes the moment the
  * approval tab takes focus, and the sign-in has to survive that.
  */
-function renderAuth({ signedIn, tierDenied, hasApiKey, pending }) {
-  el.auth.hidden = false;
+function renderAuth({ signedIn, tierDenied, hasApiKey, pending }, source = "live") {
+  if (source === "cache" && authSource === "live") return;
+  authSource = source;
+  el.auth.dataset.source = source;
   if (pending) {
     el.auth.dataset.state = "pending";
     el.authLabel.textContent = "Waiting for xAI approval — see Settings";
@@ -213,6 +241,7 @@ async function loadAuth() {
 }
 
 el.signIn.addEventListener("click", async () => {
+  authSource = "live";
   el.signIn.disabled = true;
   el.authLabel.textContent = "Asking xAI for a sign-in code…";
   try {
@@ -251,9 +280,9 @@ async function control(action, args = {}) {
   try {
     const response = await ext.runtime.sendMessage({ type: "control", action, args });
     if (!response?.ok) throw new Error(response?.error || "Something went wrong.");
-    render(response.state);
+    show(response.state, "live");
   } catch (error) {
-    render({ status: "error", error: error.message, chunkCount: current.chunkCount ?? 0 });
+    show({ status: "error", error: error.message, chunkCount: current.chunkCount ?? 0 }, "live");
   }
 }
 
@@ -322,9 +351,37 @@ el.openOptions.addEventListener("click", () => {
 });
 
 ext.runtime.onMessage.addListener((message) => {
-  if (message?.type === "tabStateChanged") render(message.state);
+  if (message?.type === "tabStateChanged") show(message.state, "live");
   if (message?.type === "xaiAuthChanged") loadAuth();
 });
+
+/**
+ * The last thing anyone knew about this tab, painted into the panel if the
+ * reader has not answered yet.
+ *
+ * Two reads, both cheap: which tab the panel is acting on, and what was
+ * remembered about it. Neither touches the background worker — `tabs.query`
+ * is answered by the browser itself and `storage.session` is held in memory —
+ * so this lands in a millisecond or two where the reader can take a second and
+ * a half. Nothing is awaited before the panel is on screen either way.
+ */
+async function loadRemembered() {
+  try {
+    const [{ readAuth, readTabState }, [tab]] = await Promise.all([
+      cacheApi(),
+      ext.tabs.query({ active: true, currentWindow: true }),
+    ]);
+    const [state, auth] = await Promise.all([readTabState(tab?.id), readAuth()]);
+    if (state) {
+      show(state, "cache");
+      if (state.scope) setScope(state.scope);
+    }
+    if (auth) renderAuth(auth, "cache");
+  } catch {
+    // Nothing remembered, or no session storage to remember it in. The markup's
+    // own default state is already on screen.
+  }
+}
 
 /**
  * Reader state and stored settings are fetched side by side, and each is
@@ -343,14 +400,17 @@ function load() {
     .sendMessage({ type: "getTabState" })
     .then((response) => {
       if (!response?.ok) throw new Error(response?.error || "Something went wrong.");
-      render(response.state);
+      show(response.state, "live");
       if (response.state?.scope) setScope(response.state.scope);
       return response.state;
     })
     .catch((error) => {
-      render({ status: "error", error: error.message });
+      show({ status: "error", error: error.message }, "live");
       return null;
     });
+
+  // Started alongside it, and much the quicker of the two.
+  loadRemembered();
 
   // Fetching and compiling the settings module is work for this thread, so it
   // waits until a frame has been handed over. The speed and voice controls
@@ -374,7 +434,7 @@ function load() {
       if ((await reader) === null && stored) {
         const auth = await ext.runtime.sendMessage({ type: "xaiAuthState" }).catch(() => null);
         const signedIn = Boolean(auth?.ok && auth.status.signedIn && !auth.status.tierDenied);
-        render({ ...current, hasCredential: Boolean(stored.apiKey) || signedIn });
+        show({ ...current, hasCredential: Boolean(stored.apiKey) || signedIn }, "live");
       }
       await credentials;
     }, 0),
