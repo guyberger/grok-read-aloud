@@ -88,13 +88,37 @@
     overlayRoot = null;
   }
 
+  /**
+   * The band a following read keeps the spoken word in: clear of the top
+   * quarter of the viewport and of its bottom quarter or so, which is where
+   * text sits while it is being read rather than where it has to be dragged
+   * back from. It is also what says whether a listener who scrolled away has
+   * come back to the read — see `follow.js`.
+   */
+  const BAND_TOP = 0.25;
+  const BAND_BOTTOM = 0.72;
+
+  /** The range's box, or null when it has none worth measuring. */
+  function boxOf(range) {
+    const rect = range?.getBoundingClientRect?.();
+    if (!rect || (rect.width === 0 && rect.height === 0)) return null;
+    return rect;
+  }
+
+  function withinBand(rect) {
+    return rect.top >= window.innerHeight * BAND_TOP && rect.bottom <= window.innerHeight * BAND_BOTTOM;
+  }
+
+  /** Whether `range` is already where a following read would keep it. */
+  function inBand(range) {
+    const rect = boxOf(range);
+    return Boolean(rect) && withinBand(rect);
+  }
+
   /** Keep the spoken word inside a comfortable band in the viewport. */
   function scrollTo(range) {
-    const rect = range?.getBoundingClientRect?.();
-    if (!rect || (rect.width === 0 && rect.height === 0)) return;
-    const topBand = window.innerHeight * 0.25;
-    const bottomBand = window.innerHeight * 0.72;
-    if (rect.top >= topBand && rect.bottom <= bottomBand) return;
+    const rect = boxOf(range);
+    if (!rect || withinBand(rect)) return;
     window.scrollBy({
       top: rect.top - window.innerHeight * 0.38,
       behavior: "smooth",
@@ -126,6 +150,7 @@
       paintOverlay(WORD_KEY, wordRange);
     },
     clear,
+    inBand,
     scrollTo,
     notify,
   };

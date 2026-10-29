@@ -1852,6 +1852,166 @@ async function main() {
     `"${onAFreshPage.first?.status}" from ${onAFreshPage.first?.source} at ${onAFreshPage.first?.at?.toFixed(1)}ms`,
   );
 
+  // 20. Scrolling away from a read.
+  //
+  // Following the voice is what makes a read hands-free, and it is also what
+  // puts the rest of the page out of reach while one is running: the next word
+  // lands a fraction of a second later and takes the view straight back. So a
+  // wheel of the listener's own ends the following, the read carries on
+  // without it, and either scrolling back to the voice or naming a sentence
+  // picks it up again.
+  //
+  // The wheel here is a real one — `Input.dispatchMouseEvent` through the
+  // browser's own input pipeline — because what the reader has to tell apart
+  // is a scroll someone asked for from the smooth scroll it is doing itself.
+  await page.send("Page.navigate", { url: PAGE_URL });
+  await sleep(1500);
+  // The fixture is about one screen of prose. Room above and below it is what
+  // makes "the view stayed where it was put" a statement about the reader
+  // rather than about how far this page happens to scroll.
+  await page.evaluate(`(() => { document.body.style.padding = "100vh 0"; return true; })()`);
+  await tabState();
+  world = await page.isolatedContextId();
+
+  const viewProbe = `
+    (() => {
+      const snapshot = globalThis.__readAloud?.reader?.snapshot?.() ?? {};
+      let box = null;
+      for (const range of CSS.highlights.get("read-aloud-word") ?? []) {
+        const rect = range.getBoundingClientRect();
+        box = { top: Math.round(rect.top), word: range.toString().trim() };
+        break;
+      }
+      return { scrollY: Math.round(window.scrollY), innerHeight: window.innerHeight, box,
+               following: snapshot.following, status: snapshot.status, error: snapshot.error,
+               progress: snapshot.progress };
+    })()
+  `;
+
+  const view = () => page.evaluate(viewProbe, world);
+
+  /** A real wheel over the middle of the page, settled before it is measured. */
+  const wheelBy = async (deltaY) => {
+    await page.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: 500,
+      y: 400,
+      deltaX: 0,
+      deltaY,
+    });
+    await sleep(500);
+    return view();
+  };
+
+  /**
+   * The view once a following scroll has finished with it.
+   *
+   * Following scrolls smoothly, so a wheel dispatched into the middle of one
+   * says nothing about anything: the animation carries on to a target the
+   * listener never asked for, and lands the word wherever it was going anyway.
+   */
+  const atRest = async () => {
+    let previous = null;
+    for (let i = 0; i < 80; i += 1) {
+      const sample = await view();
+      if (sample.error) return sample;
+      if (previous && sample.box && sample.scrollY > 0 && sample.scrollY === previous.scrollY) return sample;
+      previous = sample;
+      await sleep(400);
+    }
+    return previous;
+  };
+
+  /**
+   * A wheel up, far enough to drop the spoken word out of the band below it.
+   *
+   * Up rather than down: from there the word goes on falling as the read
+   * advances, where a word scrolled off the top drifts back towards the band
+   * on its own and would be caught by it.
+   */
+  const scrollAway = async (from) => wheelBy(-Math.min(Math.round(from.innerHeight * 0.6), from.scrollY - 20));
+
+  await control("setRate", { rate: 1 });
+  await control("start", { scope: "page", from: "start" });
+  await awaitStatus("playing", { timeoutMs: 20000 });
+
+  // The premise: the view is the read's, and the read is moving it.
+  const followed = await atRest();
+  check(
+    "a read brings the page to the word being spoken",
+    followed.scrollY > 0 && followed.following === true && followed.box !== null,
+    followed.error ||
+      `"${followed.box?.word}" at ${followed.box?.top}px of ${followed.innerHeight}, scrollY ${followed.scrollY}, following ${followed.following}`,
+  );
+
+  // A wheel of the listener's own, and the view is theirs from then on.
+  const heldBack = await scrollAway(followed);
+  check(
+    "a wheel of the listener's own ends the following",
+    heldBack.following === false && heldBack.scrollY < followed.scrollY,
+    `scrollY ${followed.scrollY} → ${heldBack.scrollY}, word at ${heldBack.box?.top}px of ${heldBack.innerHeight}, following ${heldBack.following}`,
+  );
+
+  await sleep(2500);
+  const stillHeld = await view();
+  check(
+    "the view stays where the listener put it while the read goes on",
+    stillHeld.scrollY === heldBack.scrollY && stillHeld.status === "playing",
+    `scrollY ${heldBack.scrollY} → ${stillHeld.scrollY}, ${stillHeld.status}`,
+  );
+  check(
+    "the read carries on reading without the view",
+    stillHeld.progress > heldBack.progress && !stillHeld.error,
+    stillHeld.error || `progress ${heldBack.progress.toFixed(3)} → ${stillHeld.progress.toFixed(3)}`,
+  );
+
+  // Naming a sentence is asking to be taken to it, so the view comes back
+  // with the playhead rather than being left behind.
+  await control("skipSentence", { delta: 1 });
+  await sleep(900);
+  const stepped = await view();
+  check(
+    "stepping to a sentence takes the view back",
+    stepped.following === true && stepped.box !== null && stepped.box.top > 0 && stepped.box.top < stepped.innerHeight,
+    `following ${stepped.following}, word ${JSON.stringify(stepped.box?.word)} at ${stepped.box?.top}px of ${stepped.innerHeight}`,
+  );
+
+  // And scrolling back to where the voice is picks the following up again, on
+  // the same gesture that ended it. Aimed at the middle of the band, so the
+  // word is inside it however far the read has moved on in the meantime.
+  const leftAgain = await scrollAway(await atRest());
+  check(
+    "a second wheel ends it again",
+    leftAgain.following === false,
+    `word at ${leftAgain.box?.top}px of ${leftAgain.innerHeight}, following ${leftAgain.following}`,
+  );
+
+  const backToTheVoice = await wheelBy(Math.round(leftAgain.box.top - leftAgain.innerHeight * 0.55));
+  check(
+    "scrolling back to the voice picks the following up again",
+    backToTheVoice.following === true,
+    `word at ${backToTheVoice.box?.top}px of ${backToTheVoice.innerHeight}, following ${backToTheVoice.following}`,
+  );
+
+  // Following again means the view moves again, once the word it is following
+  // reaches the edge of the band. Read fast, so that is seconds rather than a
+  // paragraph's worth of waiting.
+  await control("setRate", { rate: 3 });
+  let movedOnAgain = backToTheVoice;
+  for (let i = 0; i < 80; i += 1) {
+    movedOnAgain = await view();
+    if (movedOnAgain.scrollY !== backToTheVoice.scrollY || movedOnAgain.error) break;
+    await sleep(250);
+  }
+  check(
+    "and the view follows the word down the page again",
+    movedOnAgain.scrollY > backToTheVoice.scrollY && !movedOnAgain.error,
+    movedOnAgain.error || `scrollY ${backToTheVoice.scrollY} → ${movedOnAgain.scrollY}`,
+  );
+
+  await control("stop");
+  await control("setRate", { rate: 1 });
+
   ui.close();
   page.close();
   browser.close();
