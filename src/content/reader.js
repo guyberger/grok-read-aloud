@@ -10,6 +10,7 @@
     ext,
     util,
     extract,
+    docs,
     align,
     highlight,
     pointer,
@@ -472,6 +473,9 @@
     const storedReady = from === "resume" ? positions.load() : Promise.resolve(null);
     if (from !== "resume") forgetPosition();
     reset();
+    // `reset` retires the read before this one, so a start that waits on the
+    // network can tell a second start from its own.
+    const session = sessionId;
 
     // Reading the settings is a round trip to the worker and extraction is a
     // walk of the document; neither needs the other, so they overlap.
@@ -500,6 +504,27 @@
       );
       return snapshot();
     }
+
+    // Google Docs paints the document onto a canvas, so the walk above found
+    // the menus and nothing else. Its text has to be fetched, which is a round
+    // trip — the transport says Loading while that happens, and nothing about
+    // opening the popup waited for any of it.
+    if (docs.isDocument() && doc?.scope !== "selection") {
+      state.status = "loading";
+      emit();
+      const body = await docs.read({ readCodeBlocks: settings.readCodeBlocks });
+      if (session !== sessionId) return snapshot();
+      // Everything the walk found is the menu bar, the sharing row and the
+      // comment sidebar. Reading that aloud would be worse than saying so.
+      if (!body) {
+        reportError(
+          "Could not read this Google Doc. Its text comes from Google, which needs you online and signed in to an account that can open the document.",
+        );
+        return snapshot();
+      }
+      doc = body;
+    }
+
     if (!doc) {
       reportError("Could not find readable text on this page.");
       return snapshot();
@@ -542,7 +567,9 @@
     state.scope = doc.scope;
     state.chunkCount = chunks.length;
     state.error = "";
-    state.notice = "";
+    // Text fetched from outside the page says so — on Google Docs, that the
+    // words being spoken are nowhere in the page to be highlighted.
+    state.notice = doc.notice ?? "";
     playChunk(first).catch(reportError);
     return snapshot();
   }
@@ -816,7 +843,10 @@
   const CLICKABLE = "data-read-aloud-jump";
 
   function syncClicks() {
-    const wanted = Boolean(settings.clickToJump && doc && ACTIVE.has(state.status));
+    // Only where the words are in the page. Text fetched from elsewhere has
+    // nothing on screen for a click to land on, and a cursor promising
+    // otherwise over a canvas would be a lie.
+    const wanted = Boolean(settings.clickToJump && doc?.mapped && ACTIVE.has(state.status));
     if (wanted && !unwatchClicks) unwatchClicks = pointer.watch(onTextClick);
     if (!wanted && unwatchClicks) {
       unwatchClicks();
@@ -835,7 +865,9 @@
   let unwatchScroll = null;
 
   function syncScrollWatch() {
-    const wanted = Boolean(settings.autoScroll && doc && ACTIVE.has(state.status));
+    // As above: with nothing in the page to follow, there is nothing for a
+    // scroll to mean either.
+    const wanted = Boolean(settings.autoScroll && doc?.mapped && ACTIVE.has(state.status));
     if (wanted && !unwatchScroll) unwatchScroll = view.watch();
     if (!wanted && unwatchScroll) {
       unwatchScroll();

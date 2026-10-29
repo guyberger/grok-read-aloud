@@ -301,13 +301,22 @@
 
   /**
    * @param {"page"|"selection"} scope
-   * @param {{readCodeBlocks?: boolean}} options
-   * @returns {{text, charNodes, charOffsets, slices, root, scope}|null}
+   * @param {{readCodeBlocks?: boolean, root?: Element}} options
+   *   `root` names the container to read, for a caller that already knows
+   *   where the text is — the Google Docs editor, say. Nothing is guessed and
+   *   nothing falls back to the body: a named container that holds no text is
+   *   an answer, and its caller has somewhere else to look.
+   * @returns {{text, charNodes, charOffsets, slices, root, scope, mapped}|null}
    */
-  function extract(scope, { readCodeBlocks = false } = {}) {
+  function extract(scope, { readCodeBlocks = false, root: given = null } = {}) {
     const options = { readCodeBlocks };
     const range = scope === "selection" ? activeSelectionRange() : null;
     if (scope === "selection" && !range) return null;
+
+    if (given && !range) {
+      const built = buildFrom(given, null, CONTENT_CHROME_TAGS, new Map(), options);
+      return built ? { ...built, root: given, scope: "page", mapped: true } : null;
+    }
 
     if (range) {
       let root = range.commonAncestorContainer;
@@ -319,7 +328,7 @@
         root &&
         (buildFrom(root, range, null, new Map(), options) ??
           buildFrom(root, range, null, new Map(), { readCodeBlocks: true }));
-      return built ? { ...built, root, scope: "selection" } : null;
+      return built ? { ...built, root, scope: "selection", mapped: true } : null;
     }
 
     const body = document.body;
@@ -344,7 +353,11 @@
     // The element the text came out of, which is the region a click can land
     // in. It is what the reader marks while a read is running, so the pointer
     // can say the words under it are clickable.
-    return built ? { ...built, root: root ?? body, scope: "page" } : null;
+    //
+    // `mapped` says every character has a text node behind it, which is true
+    // of anything that came out of this walk and false of text fetched from
+    // elsewhere — see `docs.js`.
+    return built ? { ...built, root: root ?? body, scope: "page", mapped: true } : null;
   }
 
   /**
@@ -379,7 +392,7 @@
    * node is not part of what is being read.
    */
   function charIndexAt(doc, node, offset) {
-    if (!doc || !node) return -1;
+    if (!doc?.slices?.length || !node) return -1;
     const { spans, byNode } = reverseIndex(doc);
     const sliceIndex = byNode.get(node);
     const span = sliceIndex === undefined ? null : spans.get(sliceIndex);
@@ -429,8 +442,13 @@
     return charIndexAt(doc, caret.node, caret.offset);
   }
 
-  /** DOM Range covering global character indices [start, end). */
+  /**
+   * DOM Range covering global character indices [start, end), or null when
+   * those characters are in no node of the page — text fetched from somewhere
+   * else, which is how a canvas-drawn Google Doc is read.
+   */
   function rangeFor(doc, start, end) {
+    if (!doc?.slices?.length) return null;
     const { charNodes, charOffsets, slices } = doc;
     let from = start;
     while (from < end && charNodes[from] < 0) from += 1;

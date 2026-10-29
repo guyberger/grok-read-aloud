@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Notes on the stone bridge at Clun - Google Docs</title>
+    <style>
+      body { font: 14px system-ui; margin: 0; background: #f9fbfd; }
+      .docs-chrome { padding: 8px 16px; background: #fff; border-bottom: 1px solid #dadce0; }
+      .docs-menubar span { margin-right: 12px; }
+      .kix-appview-editor { padding: 24px; display: flex; justify-content: center; }
+      .kix-page { position: relative; width: 816px; height: 420px; background: #fff; }
+      .kix-page svg { position: absolute; inset: 0; }
+      .docs-sidebar { padding: 8px 16px; }
+    </style>
+  </head>
+  <!--
+    A Google Doc as the editor actually serves one: the words are painted into
+    a canvas, so the only text in the DOM is the furniture around it. The
+    invisible <rect aria-label="…"> layer is how Docs hands the drawn text to
+    assistive technology, and it covers only the first two paragraphs — the
+    part of the document that has been drawn.
+  -->
+  <body>
+    <header class="docs-chrome">
+      <div class="docs-title">Notes on the stone bridge at Clun</div>
+      <nav class="docs-menubar">
+        <span>File</span><span>Edit</span><span>View</span><span>Insert</span><span>Format</span>
+        <span>Tools</span><span>Extensions</span><span>Help</span>
+      </nav>
+    </header>
+
+    <div class="docs-toolbar">
+      <button>Share</button>
+      <span>Last edit was 3 minutes ago</span>
+    </div>
+
+    <div class="kix-appview-editor" role="region" aria-label="Document content">
+      <div class="kix-page">
+        <canvas width="816" height="420"></canvas>
+        <svg class="kix-canvas-tile-content" width="816" height="420">
+          <g role="paragraph">
+            <rect role="img" aria-label="The bridge has stood since the fourteenth century," x="72" y="96" width="672" height="20" fill="none"></rect>
+            <rect role="img" aria-label="and it has been rebuilt at least four times without ever being replaced." x="72" y="120" width="672" height="20" fill="none"></rect>
+          </g>
+          <g role="paragraph">
+            <rect role="img" aria-label="Each of the cutwaters is a different shape, because each was cut" x="72" y="168" width="672" height="20" fill="none"></rect>
+            <rect role="img" aria-label="by a different mason working from a different drawing." x="72" y="192" width="672" height="20" fill="none"></rect>
+          </g>
+        </svg>
+      </div>
+    </div>
+
+    <div class="docs-sidebar">
+      <p>Comment history. No open comments on this document.</p>
+      <p>Suggestions are hidden while the document is being viewed.</p>
+    </div>
+  </body>
+</html>

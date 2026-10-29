@@ -49,6 +49,10 @@ dependencies — just the files in `src/` and a ~40-line copy script.
 - Reads the readable body of a page, skipping navigation, sidebars, footers,
   forms, code blocks and anything hidden with CSS.
 - Reads just the current selection instead, when you ask it to.
+- Reads a Google Doc, which no amount of walking the page can do: Docs paints
+  the document onto a canvas, so the text is fetched from the same place File →
+  Download → Plain text comes from. There is nothing on screen to highlight, and
+  the popup says so.
 - Reads the code written into a sentence — a setting name, a flag, a file path
   — because a sentence without it says something else. Whole snippets are
   skipped by default, and there is a setting for those.
@@ -141,6 +145,13 @@ The `Authorization: Bearer …` header is the same either way: an API key and an
 OAuth access token from a sign-in go in the same place, so nothing below the
 choice between them has to know which one it was handed. That includes TTS,
 which is the only thing this extension asks for.
+
+The one other request the extension ever makes is on a Google Doc, and it is
+not made from the worker at all: the content script fetches the document's own
+text from the page it is already running in, same-origin, carrying the session
+cookie the tab already has. That is why reading a doc needs no host permission
+for `docs.google.com` and no credential of any kind beyond the one the user is
+already signed in with. See [Google Docs](#google-docs).
 
 ## Install
 
@@ -539,6 +550,26 @@ checks cannot do
 - [ ] Selecting two paragraphs with the snippet between them reads the prose
       and skips the snippet.
 
+**Google Docs** — the part the automated checks can only mock, because they
+cannot sign into a Google account
+- [ ] Open a document of your own at `docs.google.com/document/…` and press
+      **Read page**: it speaks the document from its first line, not the
+      menus — this is the one case where the extension works on
+      `activeTab` alone on a page it has never seen.
+- [ ] The popup says the words are drawn on a canvas and cannot be highlighted,
+      and nothing in the page shows a pointer cursor.
+- [ ] The part count is in the region the length of the document implies, and
+      the estimate agrees.
+- [ ] A document shared with you read-only reads the same way.
+- [ ] A document you are not signed in for says it could not be read, rather
+      than reading a sign-in page or the menu bar aloud.
+- [ ] Pause, close the tab, reopen the document: it offers to continue from
+      where it stopped.
+- [ ] A published copy (`/document/d/e/…/pub`) is read out of the page itself,
+      highlight and clicks included.
+- [ ] A Google Sheet or a Slides deck is unaffected — whatever they did before,
+      they still do.
+
 **Audio already paid for**
 - [ ] Read several parts into a page, then click a word in its first paragraph:
       it starts speaking immediately, with none of the pause a fresh request
@@ -649,7 +680,7 @@ src/
   manifest.firefox.json   Firefox MV3: background.scripts + gecko id
   common/                 Settings, the API client, the xAI sign-in, the choice between credentials, and what the panel last knew
   background/             Holds the credentials, makes every network call, injects content scripts
-  content/                Injected on demand; extraction, alignment, clicks, playback, the audio already fetched, highlighting, the cross-tab handoff, the browser's media controls
+  content/                Injected on demand; extraction, Google Docs, alignment, clicks, playback, the audio already fetched, highlighting, the cross-tab handoff, the browser's media controls
   popup/  options/        Extension UI
 tools/                    Build, icons, static checks, mock API, end-to-end and timing drivers
 tests/                    Unit tests and the fixture pages they read
@@ -671,6 +702,92 @@ hidden nodes.
 rather than by `Element.checkVisibility`, which reports anything without a
 layout box as invisible — including `display: contents` wrappers, whose
 children render perfectly well and which component frameworks emit freely.
+
+### Google Docs
+
+A Google Doc has no text in it.
+
+Docs stopped laying documents out as HTML years ago and now paints them into a
+`<canvas>`, a tile at a time. Every walk of the page in this repository is
+therefore correct and useless on `docs.google.com/document/…`: it finds the
+menu bar, the sharing row and the comment sidebar, and not one word of what is
+written. Pressing Read on a doc used to read you its own title and the word
+*Extensions*.
+
+The text has to come from somewhere else, and there are three places it could:
+
+1. **The accessibility layer over the canvas.** Docs can draw an invisible
+   `<rect aria-label="…">` over each run of text so that assistive technology
+   has something to read, which is what
+   `document.documentElement.setAttribute("_docs_annotate_canvas_by_ext", id)`
+   asks for. Docs honours that attribute for an allowlist of extension ids —
+   Grammarly's and a handful of others — so a general-purpose extension cannot
+   turn it on, and it is not worth pretending to be one that can. It also only
+   covers the tiles Docs has drawn, so on a long document it is the first few
+   pages rather than the document.
+2. **The DOM, when Docs is not painting.** A published copy, and the older
+   renderer where it still appears, put the lines in the page as text.
+3. **The export endpoint** — `…/export?format=txt`, which is what File →
+   Download → Plain text fetches. It is the whole document, in order, as
+   Google itself renders it to text.
+
+So the extension asks in that order, cheapest and best first:
+
+- **Text that is really in the page** wins outright, because every character
+  then has a node behind it: the word being spoken is highlighted and a
+  sentence can be clicked, exactly as on any other page. A `<canvas>` inside
+  the editor is what rules this out — not a character count, because Docs keeps
+  a line or two in the DOM for assistive technology and reading *that* as the
+  document would be the quietest possible way for this to go wrong.
+- **The export**, fetched by the content script from the page it is already
+  running in. Same origin, so it carries the user's own session cookie and
+  needs no host permission of any kind: this is the page asking
+  `docs.google.com` for the document it is already showing. A document the
+  session cannot see answers with a sign-in page rather than an error, so what
+  comes back is looked at before any of it is spoken.
+- **The accessibility layer**, if something else has turned it on — another
+  extension, or Docs' own screen reader support. It is the last resort because
+  it is the part of the document on screen rather than the document, and the
+  reader says so.
+
+#### The trade-off
+
+Text fetched from the export endpoint is in no node of the page, so there is
+nothing to paint a highlight on and nothing for a click to land in. The word
+being spoken genuinely is nowhere on screen: the pixels under it were drawn by
+Docs out of its own model, and the extension can no more highlight them than it
+could highlight a word inside a video.
+
+The alternative would be an overlay of the extension's own — a panel of text
+beside the canvas, highlighted as it is read. That reads the document twice, in
+two different layouts, and the thing the user is looking at is then not their
+document. Reading the document and saying plainly that there is no highlight is
+the smaller of the two.
+
+So on a canvas-drawn doc the reader turns the rest of it off rather than
+leaving it half-working:
+
+- No highlight, and no tint.
+- No click-to-jump, and no pointer cursor over the page promising one.
+- No scroll following, since there is nothing to follow.
+- The popup carries a notice saying why, rather than leaving someone wondering
+  why the highlight never moved.
+
+Everything that does not depend on the words being on screen works as usual:
+the chunking, the estimate of how long is left, stepping a sentence at a time,
+the media keys, the cross-tab handoff, and picking up where you left off —
+which works particularly well here, since the exported text of a document is
+stable and the anchor is matched against it the same way as on any page.
+
+A read starts at the top of the document rather than at the cursor. Docs'
+cursor and selection live in its own model, not in a DOM selection, so there is
+nothing to read them from without the allowlisted annotation layer. Continuing
+from where a previous read stopped is the answer to the same need, and that
+does work.
+
+The export is fetched once per read rather than cached for the tab, which is
+deliberate: a document is edited while it is open, and a second read should be
+of what the document says now.
 
 ### Code in a page
 
@@ -1350,6 +1467,25 @@ sections elsewhere reload the page before their own reads, because "a chunk that
 has not been fetched" and "this request carried the OAuth token" are both claims
 about a read that has to ask for audio at all.
 
+The checks for [Google Docs](#google-docs) run against a document the mock
+serves at `docs.google.com`, because the thing that makes Docs hard is not
+something a fixture file can have: the words are painted into a `<canvas>`, so
+the page itself holds the menus and nothing else. The mock serves that shape —
+chrome in the DOM, a canvas where the text should be, an accessibility layer
+over the part of it that is "on screen", and the `export?format=txt` endpoint —
+and `POST /debug/docs/export?on=0` makes it answer with a sign-in page the way
+the real one does for a document the session cannot see. The checks assert that
+the read begins at the first line of the document, that no word of the Docs
+chrome is ever sent to the API, that the estimate of how long is left is in the
+region the length of the document implies rather than the length of the menus,
+that nothing is highlighted or offered as clickable, and that the popup is told
+why. Then with the export refused, that the fallback reads what has been drawn
+and stops at the end of it; that with no export and no layer either, the reader
+says so rather than reading the menu bar aloud; and on the same document drawn
+the old way, that it is read out of the page with the highlight and the click
+cue back, and without a single request to the network for text the page already
+had.
+
 The checks for [who the view belongs to](#who-the-view-belongs-to) scroll the
 article with a real wheel dispatched through the browser's own input pipeline,
 because the one thing the reader has to tell apart is a scroll someone asked
@@ -1382,10 +1518,10 @@ that works against the real API, and `GET /debug/oauth` reports what it has
 issued so a check can assert a refresh happened without reading a token.
 
 ```bash
-# 1. one certificate for all three hostnames the mock answers as
+# 1. one certificate for every hostname the mock answers as
 openssl req -x509 -newkey rsa:2048 -keyout /tmp/key.pem -out /tmp/cert.pem \
   -days 2 -nodes -subj "/CN=api.x.ai" \
-  -addext "subjectAltName=DNS:api.x.ai,DNS:auth.x.ai,DNS:accounts.x.ai"
+  -addext "subjectAltName=DNS:api.x.ai,DNS:auth.x.ai,DNS:accounts.x.ai,DNS:docs.google.com"
 SPKI=$(openssl x509 -in /tmp/cert.pem -pubkey -noout \
   | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | openssl enc -base64)
 
@@ -1393,11 +1529,11 @@ SPKI=$(openssl x509 -in /tmp/cert.pem -pubkey -noout \
 node tools/mock-api.js --port 8443 --cert /tmp/cert.pem --key /tmp/key.pem &
 (cd tests/fixtures && python3 -m http.server 8777 --bind 127.0.0.1) &
 
-# 3. Chrome, with all three xAI hosts pointed at the mock. Drop --headless=new
-#    to watch.
+# 3. Chrome, with the three xAI hosts and docs.google.com pointed at the mock.
+#    Drop --headless=new to watch.
 google-chrome --headless=new --window-size=1000,800 \
   --user-data-dir=/tmp/ra-profile --enable-unsafe-extension-debugging \
-  --host-resolver-rules="MAP api.x.ai 127.0.0.1:8443,MAP auth.x.ai 127.0.0.1:8443,MAP accounts.x.ai 127.0.0.1:8443" \
+  --host-resolver-rules="MAP api.x.ai 127.0.0.1:8443,MAP auth.x.ai 127.0.0.1:8443,MAP accounts.x.ai 127.0.0.1:8443,MAP docs.google.com 127.0.0.1:8443" \
   --ignore-certificate-errors-spki-list="$SPKI" \
   --remote-debugging-port=9333 --autoplay-policy=no-user-gesture-required \
   http://127.0.0.1:8777/article.html &
@@ -1473,6 +1609,24 @@ the driver loads the extension over the protocol instead.
   turn **Follow the spoken word** off. The reverse would be worse: treating
   every `scroll` event as the listener's would have a read let go of the view
   the moment it scrolled itself.
+- **A Google Doc is read without a highlight.** Docs paints the document into
+  a `<canvas>`, so the words being spoken are in no node of the page and there
+  is nothing to paint on or click. The extension fetches the text and says so
+  in the popup; the tint, the click-to-jump and the scroll following all turn
+  themselves off for that read. See [Google Docs](#google-docs) for why an
+  overlay of the extension's own is not the answer. A read also starts at the
+  top of the document rather than at the cursor, since Docs' cursor is in its
+  own model rather than in a DOM selection — continuing from where the last
+  read stopped does work, and is the answer to the same need.
+- **A Google Doc needs the network and your own view access.** The text comes
+  from the same endpoint File → Download → Plain text uses, as the session in
+  the tab, so a document you can open you can read. Offline, or signed out, all
+  that is left is whatever Docs has drawn an accessibility layer over — the
+  part of the document on screen, and only if something has turned that layer
+  on. Docs honours the `_docs_annotate_canvas_by_ext` attribute that asks for
+  it only for an allowlist of extension ids, which this is not. With neither,
+  the popup says the document could not be read rather than reading the menu
+  bar aloud.
 - **Readable-content detection is heuristic.** It looks for `<article>`,
   `[role=main]` and `<main>` first, then falls back to scoring text density,
   and if the winner yields almost nothing it reads the visible body instead,

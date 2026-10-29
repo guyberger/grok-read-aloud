@@ -10,9 +10,16 @@
  * Point a browser at it by mapping the hostnames, for example:
  *   --host-resolver-rules="MAP api.x.ai 127.0.0.1:8443,MAP auth.x.ai 127.0.0.1:8443,MAP accounts.x.ai 127.0.0.1:8443"
  *
- * One process answers for all three because the paths do not collide: the TTS
- * API lives under /v1, the OAuth server under /oauth2 and /.well-known, and the
- * approval page the user sees is the one HTML page at /oauth2/device.
+ * It also stands in for `docs.google.com`, serving one Google Doc: a page whose
+ * text is painted onto a canvas the way the real editor paints it, and the
+ * `export?format=txt` endpoint the extension reads that text from.
+ *
+ *   --host-resolver-rules="…,MAP docs.google.com 127.0.0.1:8443"
+ *
+ * One process answers for all four because the paths do not collide: the TTS
+ * API lives under /v1, the OAuth server under /oauth2 and /.well-known, the
+ * approval page the user sees is the one HTML page at /oauth2/device, and the
+ * document is under /document.
  *
  * A synthesis request can be made to take as long as a real one would, so
  * time-to-first-audio means something:
@@ -398,6 +405,220 @@ async function handleOAuth(request, response, url) {
   return false;
 }
 
+/* ----------------------------------------------------------- Google Docs --- */
+
+/**
+ * A stand-in for a Google Doc, because the thing that makes Docs hard is not
+ * something a fixture file can have: the document is painted onto a canvas, so
+ * the only text in the page is the menus around it. This serves the same
+ * shape — chrome in the DOM, a canvas where the words should be, an
+ * accessibility layer over the part of it that is "on screen", and the
+ * `export?format=txt` endpoint that File → Download → Plain text uses.
+ *
+ * Point a browser at it with `MAP docs.google.com 127.0.0.1:8443`.
+ */
+const DOC_ID = "1mockTideMillDocumentForEndToEndChecks";
+const DOC_TITLE = "Keeping a tide mill in repair";
+
+const DOC_PARAGRAPHS = [
+  "The mill at Blackwater has run on the tide for four hundred years, and every part of it that still moves is made of wood. Twice a day the pond fills through the sluice and empties again through the wheel, so the frame is wet while it is working and drying while it is idle.",
+  "A wheel left dry for a whole season opens at its joints, and a wheel that is never dry goes soft at the heart. Choosing between the two, morning after morning, is the whole of the keeper's art.",
+  "Nothing in the frame is glued. Every joint is pegged, and every peg can be driven out with a mallet and a patient hour, which is why a mill of this age is mostly made of replacements.",
+  "When a bucket splits, the wheelwright cuts a new one from elm that has lain under water since the spring. Elm kept wet is elm that will not shrink, and a bucket that shrinks will rattle itself to pieces within a winter.",
+  "The ironwork is simpler and less forgiving. A gudgeon that has worn oval cannot be packed out; it has to be drawn, heated, upset and set true again, and until then the wheel must not be allowed to turn under load.",
+  "The ledger in the office goes back to 1761, and nearly every page of it is somebody saying the same thing in different handwriting: grease the bearings, clear the sluice, watch the pegs, and never let a spring tide find a loose brake.",
+  "What the ledger leaves out, because everyone who wrote in it already knew, is that none of this is restoration. The mill was never finished and never will be. Each keeper mends what the last one could not reach, and the mill is handed on in better repair than it was found.",
+];
+
+/**
+ * How many paragraphs the accessibility layer covers. Docs only annotates the
+ * tiles it has drawn, so a long document is partly annotated at best — which
+ * is exactly why the export is tried first.
+ */
+const ANNOTATED_PARAGRAPHS = 2;
+
+/** The document as it reads once an extension has tidied the export up. */
+const docText = () => [DOC_TITLE, ...DOC_PARAGRAPHS].join("\n\n");
+
+/** The part of it the accessibility layer covers: the tiles Docs has drawn. */
+const annotatedDocText = () => DOC_PARAGRAPHS.slice(0, ANNOTATED_PARAGRAPHS).join("\n");
+
+/** The plain-text export: the title, then the body, with CRLF and a BOM. */
+const exportText = () => `\uFEFF${docText().replace(/\n/g, "\r\n")}\r\n`;
+
+const docs = {
+  /** Flipped by /debug/docs/export to stand in for a doc the session cannot see. */
+  exportAllowed: true,
+  exports: 0,
+  pages: 0,
+};
+
+const escapeHtml = (text) =>
+  String(text).replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]);
+
+/**
+ * The accessibility layer: one `<rect aria-label="…">` per line of text, the
+ * way Docs annotates the canvas for assistive technology. The labels carry the
+ * words; nothing in the layer is a text node.
+ */
+function annotationLayer() {
+  const tiles = DOC_PARAGRAPHS.slice(0, ANNOTATED_PARAGRAPHS).map((paragraph, index) => {
+    const lines = paragraph.match(/.{1,90}(\s|$)/g) ?? [paragraph];
+    const rects = lines
+      .map(
+        (line, row) =>
+          `<rect role="img" aria-label="${escapeHtml(line.trim())}" x="72" y="${
+            96 + row * 24
+          }" width="672" height="20" fill="none"></rect>`,
+      )
+      .join("");
+    return `<g role="paragraph" aria-level="0">${rects}</g>`;
+  });
+  return `<svg class="kix-canvas-tile-content" width="816" height="1056" aria-hidden="false">${tiles.join(
+    "",
+  )}</svg>`;
+}
+
+/** The lines of the document as real text, the way the old renderer drew it. */
+function domLines() {
+  return [DOC_TITLE, ...DOC_PARAGRAPHS]
+    .map((paragraph) => `<div class="kix-lineview"><span class="kix-wordhtmlgenerator-word-node">${escapeHtml(
+      paragraph,
+    )}</span></div>`)
+    .join("");
+}
+
+/**
+ * The editor page. `render=dom` serves the old renderer, whose text really is
+ * in the page; `annotated=0` takes the accessibility layer away, leaving a
+ * canvas with nothing readable near it at all.
+ */
+function docPage({ render = "canvas", annotated = true } = {}) {
+  const body =
+    render === "dom"
+      ? `<div class="kix-page">${domLines()}</div>`
+      : `<div class="kix-page"><canvas id="kix-canvas" width="816" height="1056"></canvas>${
+          annotated ? annotationLayer() : ""
+        }</div>`;
+  // The words really are painted, so what is on screen and what is in the DOM
+  // differ the way they do in Docs itself. Nothing reads them back out: this
+  // is what the extension has to work around, not a place to cheat from.
+  const paint =
+    render === "dom"
+      ? ""
+      : `<script>
+  (() => {
+    const canvas = document.getElementById("kix-canvas");
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#202124";
+    let y = 96;
+    const draw = (text, font, gap) => {
+      context.font = font;
+      let line = "";
+      for (const word of text.split(" ")) {
+        const next = line ? line + " " + word : word;
+        if (context.measureText(next).width > 672) {
+          context.fillText(line, 72, y);
+          y += gap;
+          line = word;
+        } else {
+          line = next;
+        }
+      }
+      if (line) context.fillText(line, 72, y);
+      y += gap * 1.8;
+    };
+    draw(${JSON.stringify(DOC_TITLE)}, "600 22px Georgia, serif", 30);
+    for (const paragraph of ${JSON.stringify(DOC_PARAGRAPHS)}) draw(paragraph, "16px Georgia, serif", 26);
+  })();
+</script>`;
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(DOC_TITLE)} - Google Docs</title>
+<style>
+  body { font: 14px system-ui; margin: 0; background: #f9fbfd; }
+  .docs-chrome { padding: 8px 16px; background: #fff; border-bottom: 1px solid #dadce0; }
+  .docs-title { font-size: 18px; }
+  .docs-menubar span { margin-right: 12px; }
+  .kix-appview-editor { padding: 40px; display: flex; justify-content: center; }
+  .kix-page { position: relative; width: 816px; background: #fff; box-shadow: 0 0 4px rgba(0,0,0,.2); }
+  .kix-page svg { position: absolute; inset: 0; }
+  .kix-lineview { padding: 0 72px; line-height: 1.6; }
+</style></head>
+<body>
+  <header class="docs-chrome">
+    <div class="docs-title">${escapeHtml(DOC_TITLE)}</div>
+    <nav class="docs-menubar">
+      <span>File</span><span>Edit</span><span>View</span><span>Insert</span><span>Format</span>
+      <span>Tools</span><span>Extensions</span><span>Help</span>
+    </nav>
+    <div class="docs-sharebar"><button>Share</button><span>Last edit was seconds ago</span></div>
+  </header>
+  <div class="kix-appview-editor" role="region" aria-label="Document content">${body}</div>
+  ${paint}
+</body></html>`;
+}
+
+/**
+ * The Docs surface. Returns true when it answered, like the OAuth handler:
+ * none of it is subject to the bearer check below.
+ */
+function handleDocs(request, response, url) {
+  const match = /^\/document\/(?:u\/\d+\/)?d\/([^/]+)\/(edit|export)$/.exec(url.pathname);
+  if (!match) {
+    if (url.pathname === "/debug/docs" && request.method === "GET") {
+      send(response, 200, {
+        ...docs,
+        id: DOC_ID,
+        // What the whole document is worth, and what the part the
+        // accessibility layer covers is worth, so a check can tell which of
+        // the two was read without reading it back character by character.
+        chars: docText().length,
+        annotatedChars: annotatedDocText().length,
+      });
+      return true;
+    }
+    if (url.pathname === "/debug/docs/export" && request.method === "POST") {
+      docs.exportAllowed = url.searchParams.get("on") !== "0";
+      console.log(`docs: export ${docs.exportAllowed ? "allowed" : "refused"}`);
+      send(response, 200, { exportAllowed: docs.exportAllowed });
+      return true;
+    }
+    return false;
+  }
+
+  const [, , action] = match;
+  if (action === "edit") {
+    docs.pages += 1;
+    sendHtml(
+      response,
+      200,
+      docPage({
+        render: url.searchParams.get("render") ?? "canvas",
+        annotated: url.searchParams.get("annotated") !== "0",
+      }),
+    );
+    return true;
+  }
+
+  docs.exports += 1;
+  // A document the session cannot see is answered with the sign-in page, not
+  // with an error — which is why the extension looks at what came back.
+  if (!docs.exportAllowed) {
+    console.log("docs: export refused, serving the sign-in page");
+    sendHtml(response, 200, "<!DOCTYPE html><html><body><h1>Sign in</h1><p>to continue to Google Docs</p></body></html>");
+    return true;
+  }
+  const text = exportText();
+  console.log(`docs: exported ${text.length} characters as ${url.searchParams.get("format")}`);
+  response.writeHead(200, {
+    ...corsHeaders(),
+    "content-type": "text/plain; charset=UTF-8",
+    "content-length": Buffer.byteLength(text),
+  });
+  response.end(text);
+  return true;
+}
+
 async function handle(request, response) {
   if (request.method === "OPTIONS") {
     response.writeHead(200, { ...corsHeaders(), "content-length": 0 });
@@ -412,6 +633,7 @@ async function handle(request, response) {
   }
 
   if (await handleOAuth(request, response, url)) return;
+  if (handleDocs(request, response, url)) return;
 
   if (!request.headers.authorization?.startsWith("Bearer ")) {
     send(response, 400, {
