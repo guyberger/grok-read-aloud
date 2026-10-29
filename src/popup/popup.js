@@ -23,6 +23,10 @@
  */
 const ext = globalThis.browser ?? globalThis.chrome;
 
+// TEMPORARY DIAGNOSTIC — read by tools/popup-phases.js. Remove before merging.
+const mark = (name) => performance.mark(`popup:${name}`);
+mark("module-start");
+
 /**
  * The settings module, fetched on first use rather than imported at the top.
  * A static import would put it, and everything it imports, in the graph the
@@ -228,6 +232,7 @@ async function loadAuth() {
       ext.runtime.sendMessage({ type: "xaiAuthState" }),
       ext.storage.local.get("apiKey"),
     ]);
+    mark("auth-answered");
     if (!auth?.ok) return;
     renderAuth({
       signedIn: auth.status.signedIn,
@@ -366,12 +371,15 @@ ext.runtime.onMessage.addListener((message) => {
  * a half. Nothing is awaited before the panel is on screen either way.
  */
 async function loadRemembered() {
+  mark("remembered-start");
   try {
     const [{ readAuth, readTabState }, [tab]] = await Promise.all([
       cacheApi(),
       ext.tabs.query({ active: true, currentWindow: true }),
     ]);
+    mark("remembered-module-and-tab");
     const [state, auth] = await Promise.all([readTabState(tab?.id), readAuth()]);
+    mark("remembered-read");
     if (state) {
       show(state, "cache");
       if (state.scope) setScope(state.scope);
@@ -395,6 +403,7 @@ async function loadRemembered() {
     // Nothing remembered, or no session storage to remember it in. The markup's
     // own default state is already on screen.
   }
+  mark("remembered-end");
 }
 
 /**
@@ -408,17 +417,20 @@ async function loadRemembered() {
  * text in place when it answers.
  */
 function load() {
+  mark("load-start");
   // Pure message passing, so starting it now costs the renderer nothing, and
   // it is much the slowest answer to come back.
   const reader = ext.runtime
     .sendMessage({ type: "getTabState" })
     .then((response) => {
+      mark("reader-answered");
       if (!response?.ok) throw new Error(response?.error || "Something went wrong.");
       show(response.state, "live");
       if (response.state?.scope) setScope(response.state.scope);
       return response.state;
     })
     .catch((error) => {
+      mark("reader-answered");
       show({ status: "error", error: error.message }, "live");
       return null;
     });
@@ -429,14 +441,19 @@ function load() {
   // Fetching and compiling the settings module is work for this thread, so it
   // waits until a frame has been handed over. The speed and voice controls
   // show their defaults in the meantime.
-  requestAnimationFrame(() =>
+  requestAnimationFrame(() => {
+    mark("raf");
     setTimeout(async () => {
+      mark("deferred-start");
       let stored = null;
       try {
         const { getSettings } = await settingsApi();
+        mark("settings-module");
         stored = await getSettings();
+        mark("settings-read");
         setRateUi(stored.rate);
         await loadVoices(stored.voiceId);
+        mark("voices-rendered");
       } catch {
         // Leave the controls on their defaults.
       }
@@ -451,10 +468,12 @@ function load() {
         show({ ...current, hasCredential: Boolean(stored.apiKey) || signedIn }, "live");
       }
       await credentials;
-    }, 0),
-  );
+      mark("deferred-end");
+    }, 0);
+  });
 }
 
 // Safe to start straight away: the panel is already on screen from its own
 // markup, and nothing above occupies this thread long enough to hold a frame.
 load();
+mark("module-end");
