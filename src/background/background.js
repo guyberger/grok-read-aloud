@@ -8,6 +8,7 @@ import * as xaiAuth from "../common/xai-auth.js";
 const CONTENT_FILES = [
   "content/util.js",
   "content/extract.js",
+  "content/docs.js",
   "content/align.js",
   "content/highlight.js",
   "content/pointer.js",
