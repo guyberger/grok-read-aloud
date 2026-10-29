@@ -202,9 +202,14 @@
   }
 
   /**
-   * The document's own text, or null when this is not a Google Doc or nothing
-   * could be read out of one — in which case the caller is left with whatever
-   * the normal walk found, which on a canvas-drawn doc is the menus.
+   * The document's own text: the page itself first, where that is where the
+   * text is, then the export, then whatever has been drawn an accessibility
+   * layer over.
+   *
+   * Null when this is not a Google Doc, and null when it is one that could not
+   * be read at all — offline, or signed out of the account that can open it.
+   * The caller says so rather than falling back to the walk, because on a
+   * canvas-drawn document the walk is the menu bar.
    */
   async function read({ href, readCodeBlocks = false, fetchImpl, timeoutMs } = {}) {
     const target = documentAt(href);
