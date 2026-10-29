@@ -2012,6 +2012,203 @@ async function main() {
   await control("stop");
   await control("setRate", { rate: 1 });
 
+  // 21. A document Google Docs paints onto a canvas.
+  //
+  // Docs draws the text of a document into a `<canvas>`, so a walk of the DOM
+  // finds the menus and the sidebar and not one word of what is written. The
+  // extension asks the same endpoint File → Download → Plain text uses, from
+  // the page itself, so the request carries the user's own session.
+  //
+  // The mock serves a document of that shape — chrome in the DOM, a canvas
+  // where the words should be, an accessibility layer over the part of it
+  // that is "on screen", and the export endpoint — at docs.google.com, which
+  // `--host-resolver-rules` points here along with the xAI hosts.
+  const DOCS_URL = "https://docs.google.com/document/d/1mockTideMillDocumentForEndToEndChecks/edit";
+
+  const docsState = async () => {
+    try {
+      return JSON.parse(
+        await ui.evaluate(
+          `fetch("https://docs.google.com/debug/docs").then((r) => r.json()).then((b) => JSON.stringify(b))`,
+        ),
+      );
+    } catch (error) {
+      return { error: error.message };
+    }
+  };
+
+  const allowExport = (on) =>
+    ui.evaluate(
+      `fetch("https://docs.google.com/debug/docs/export?on=${on ? 1 : 0}", { method: "POST" }).then(() => true)`,
+    );
+
+  const docs = await docsState();
+  check(
+    "the Google Docs mock is reachable",
+    Number(docs?.chars) > 0,
+    docs?.error
+      ? `${docs.error} — add "MAP docs.google.com 127.0.0.1:8443" to --host-resolver-rules`
+      : `${docs?.chars} characters in the document`,
+  );
+
+  /** Opens the mocked document fresh, with the content scripts injected. */
+  const openDoc = async (query = "") => {
+    await page.send("Page.navigate", { url: `${DOCS_URL}${query}` });
+    await sleep(1500);
+    await tabState();
+    world = await page.isolatedContextId();
+  };
+
+  const docProbe = `
+    (() => {
+      const snapshot = globalThis.__readAloud?.reader?.snapshot?.() ?? {};
+      let word = null;
+      for (const range of CSS.highlights.get("read-aloud-word") ?? []) { word = range.toString().trim(); break; }
+      return { status: snapshot.status, notice: snapshot.notice, error: snapshot.error,
+               chunkCount: snapshot.chunkCount, remainingSeconds: snapshot.remainingSeconds,
+               word, marked: document.querySelectorAll("[data-read-aloud-jump]").length,
+               domText: document.body.innerText.replace(/\\s+/g, " ").trim() };
+    })()
+  `;
+
+  await control("setRate", { rate: 1 });
+  await openDoc();
+
+  const beforeDoc = (await synthesised()).length;
+  const exportsBefore = docs.exports ?? 0;
+  const onlyChrome = await page.evaluate(docProbe, world);
+  check(
+    "the document's words are in no node of the page",
+    !onlyChrome.domText.includes("Blackwater") && onlyChrome.domText.includes("Extensions"),
+    `${onlyChrome.domText.slice(0, 60)}…`,
+  );
+
+  await control("start", { scope: "page", from: "start" });
+  const speaking = await awaitStatus("playing", { timeoutMs: 25000 });
+  const docRequests = (await synthesised()).slice(beforeDoc);
+  const afterExport = await docsState();
+
+  check("a Google Doc is read aloud", speaking.status === "playing", speaking.status || speaking.error);
+  check(
+    "its text came from the export endpoint, with the page's own session",
+    afterExport.exports > exportsBefore,
+    `${exportsBefore} → ${afterExport.exports} exports`,
+  );
+  check(
+    "the read begins at the top of the document, not at the menus",
+    docRequests[0]?.head.startsWith("Keeping a tide mill in repair"),
+    JSON.stringify(docRequests[0]?.head.slice(0, 40) ?? "no request"),
+  );
+  check(
+    "no part of the Docs chrome is spoken",
+    docRequests.every((entry) => !/Extensions|Last edit was|Share/.test(`${entry.head}${entry.tail}`)),
+    docRequests.map((entry) => JSON.stringify(entry.head.slice(0, 20))).join(", "),
+  );
+  // The estimate is the characters left times the seconds a character takes,
+  // so it is the cheapest way to say *how much* was read: the whole document
+  // is worth some eighty seconds of the mock's audio, the chrome around it
+  // about eight.
+  check(
+    "the whole document is what is queued up, not the page furniture",
+    speaking.remainingSeconds > docs.chars * 0.055 * 0.6,
+    `${Math.round(speaking.remainingSeconds)}s for ${docs.chars} characters of document`,
+  );
+
+  // Nothing on screen holds those characters, so there is nothing to paint on
+  // and nothing to click — and the panel says so rather than leaving a
+  // listener wondering why the highlight never moved.
+  await sleep(1500);
+  const unpainted = await page.evaluate(docProbe, world);
+  check("no highlight is painted over the canvas", unpainted.word === null, JSON.stringify(unpainted.word));
+  check(
+    "the text being read is not advertised as clickable",
+    unpainted.marked === 0,
+    `${unpainted.marked} element(s) marked`,
+  );
+  check(
+    "the panel is told why there is no highlight",
+    /canvas/i.test(unpainted.notice ?? ""),
+    JSON.stringify(unpainted.notice ?? ""),
+  );
+  check("no error while reading the document", !unpainted.error, unpainted.error);
+
+  await control("stop");
+
+  // 21a. A document this session cannot see. The endpoint answers with a
+  // sign-in page rather than an error, so the fallback turns on noticing that
+  // what came back is HTML — and all that is left is the accessibility layer
+  // over the tiles Docs has actually drawn, which is the first part of it.
+  await allowExport(false);
+  await openDoc();
+  const beforeDenied = (await synthesised()).length;
+  await control("start", { scope: "page", from: "start" });
+  await control("setRate", { rate: 3 });
+  const denied = await awaitStatus("playing", { timeoutMs: 25000 });
+  check(
+    "a document that will not export is still read from what is on screen",
+    denied.status === "playing",
+    denied.status || denied.error,
+  );
+
+  let finished = denied;
+  for (let i = 0; i < 120; i += 1) {
+    finished = await page.evaluate(docProbe, world);
+    if (finished.status === "idle" || finished.error) break;
+    await sleep(250);
+  }
+  const deniedRequests = (await synthesised()).slice(beforeDenied);
+  check(
+    "the fallback reads the document, not the menus",
+    deniedRequests[0]?.head.startsWith("The mill at Blackwater"),
+    JSON.stringify(deniedRequests[0]?.head.slice(0, 40) ?? "no request"),
+  );
+  check(
+    "it stops at the end of what has been drawn, and claims no more",
+    deniedRequests.at(-1)?.tail.trimEnd().endsWith("whole of the keeper's art."),
+    JSON.stringify(deniedRequests.at(-1)?.tail ?? "no request"),
+  );
+  check(
+    "and says that it is only reading what is on screen",
+    /on screen/i.test(denied.notice ?? ""),
+    JSON.stringify(denied.notice ?? ""),
+  );
+  await control("stop");
+  await control("setRate", { rate: 1 });
+  await allowExport(true);
+
+  // 21b. The same document drawn the old way, with its lines in the DOM. That
+  // text belongs to the page like any other page's, so it is read like any
+  // other page's — highlight, click cue and no network call at all.
+  const exportsBeforeDom = (await docsState()).exports;
+  await openDoc("?render=dom");
+  await control("start", { scope: "page", from: "start" });
+  await awaitStatus("playing", { timeoutMs: 25000 });
+
+  let painted = null;
+  for (let i = 0; i < 60; i += 1) {
+    painted = await page.evaluate(docProbe, world);
+    if (painted.word || painted.error) break;
+    await sleep(250);
+  }
+  check(
+    "a document whose text is really in the page is highlighted as it is read",
+    Boolean(painted?.word) && !painted.error,
+    painted?.error || `highlighted "${painted?.word}"`,
+  );
+  check(
+    "and its words are offered as something to click",
+    painted?.marked === 1,
+    `${painted?.marked} element(s) marked`,
+  );
+  check(
+    "nothing is fetched for text the page already has",
+    (await docsState()).exports === exportsBeforeDom,
+    `${exportsBeforeDom} → ${(await docsState()).exports} exports`,
+  );
+  check("no notice is needed when the highlight works", !painted?.notice, JSON.stringify(painted?.notice ?? ""));
+
+  await control("stop");
+
   ui.close();
   page.close();
   browser.close();
