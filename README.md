@@ -189,7 +189,9 @@ long enough to say:
   options**.
 - A loaded unpacked extension survives restarting Chrome, so this is a one-time
   install rather than something to redo each session. Rebuilding over the same
-  folder needs the card's **Reload** on `chrome://extensions` to take effect.
+  folder needs the card's **Reload** on `chrome://extensions` to take effect —
+  unless the build being loaded is a dev one, which reloads itself; see
+  [Auto-update while developing](#auto-update-while-developing).
 
 ### Firefox
 
@@ -614,13 +616,34 @@ cannot sign into a Google account
 - [ ] On `chrome://extensions` or another internal page, the popup explains that
       the page cannot be read instead of appearing to hang.
 
+**Auto-update** — see [Auto-update while
+developing](#auto-update-while-developing). The reload is the one thing the
+headless driver cannot watch all the way through, because an extension loaded
+over the DevTools Protocol does not come back from `chrome.runtime.reload()`.
+- [ ] With `dist/chrome` loaded unpacked from a dev build, save a file under
+      `src/` while `npm run dev` is running: within half a minute the card on
+      `chrome://extensions` shows the new build next to the version, and the
+      service worker's console has one line naming the build it reloaded for.
+- [ ] The extension still works after that reload — open the popup and read a
+      page — rather than needing **Reload** pressed to come back.
+- [ ] Read a page, then save a file: the tab reloads and the read ends. A tab in
+      another window, not the active one, is left alone.
+- [ ] Open the popup and save a file while it is on screen: the panel stays up
+      and keeps working, and the reload happens once it is closed.
+- [ ] `tools/auto-update.sh` with a dirty tree logs `status=skipped-dirty` and
+      leaves the change alone; on `main` and clean, behind `origin/main`, it logs
+      `status=updated` and Chrome reloads itself a moment later.
+- [ ] After `tools/auto-update-uninstall.sh`, `launchctl list | grep
+      grok-read-aloud` finds nothing.
+
 ## Development
 
 ```bash
 npm run build     # write dist/chrome, dist/firefox and dist/chrome-test
+npm run dev       # rebuild dist/chrome on every change, and reload Chrome into it
 npm run check     # parse every script, validate manifests, scan for secrets
 npm test          # unit tests for chunking and timestamp alignment
-npm run verify    # all three
+npm run verify    # check, test and build
 npm run icons     # regenerate the PNG icons from tools/make-icons.js
 ```
 
@@ -638,8 +661,12 @@ time, the device-code sign-in, the rule for which credential a request goes
 out with, finding a remembered position again in a page that has changed under
 it, the claim that keeps one tab reading at a time, the line between code
 written into a sentence and a snippet, the arithmetic behind how long a read
-has left, what the read looks like on the browser's own media controls, and the
-line between a pause the extension asked for and one that came from outside it.
+has left, what the read looks like on the browser's own media controls, the
+line between a pause the extension asked for and one that came from outside it,
+the rule that decides whether a dev build has been rebuilt under it, and the
+rules that stop the hourly pull touching a checkout that is mid-change — those
+last against real checkouts with a bare repository standing in for the remote,
+so nothing in `npm test` needs the network.
 The extraction, click, media-control and playback tests drive a headless
 Chrome, because what counts as rendered, what is under a given pixel, which
 media actions a browser has and when an audio element fires `pause` are the
@@ -672,6 +699,98 @@ for](#audio-already-paid-for): with the latency model above, the first read
 waits about 800 ms for its opening chunk and the second waits about 12 ms for
 no requests at all.
 
+### Auto-update while developing
+
+A loaded unpacked extension is a folder Chrome read once. Change the folder and
+nothing happens; you have to press **Reload** on its card. This section is how
+to stop doing that — and, with the hourly pull below, how a merge to `main`
+reaches a Chrome that is already open without anybody touching it.
+
+**One-time setup**
+
+1. Start `npm run dev` and, while it is running, load `dist/chrome` unpacked
+   from `chrome://extensions` as in [Install](#chrome). It matters that it is a
+   *dev* build being loaded: the dev build is the one carrying the watcher, and
+   what Chrome keeps is whatever was in that folder at that moment. If the card
+   is already there from a production build, remove it and add it again.
+2. Run `tools/auto-update-install.sh` once, from this checkout. It writes a
+   LaunchAgent that runs `tools/auto-update.sh` now and then every hour, logging
+   to `~/Library/Logs/grok-read-aloud-auto-update.log`.
+3. Nothing else. `npm run dev` can be stopped and started as you like; the
+   LaunchAgent runs its own build and does not need the watcher.
+
+```bash
+npm run dev                          # terminal 1, while you load dist/chrome
+tools/auto-update-install.sh         # once
+tail -f ~/Library/Logs/grok-read-aloud-auto-update.log
+tools/auto-update-uninstall.sh       # when you want it gone
+```
+
+**`npm run dev`** rebuilds `dist/chrome` on every change under `src/`,
+debounced, in about 10 ms. A rebuild is still a directory copy — there is no
+bundler here and a dev build adds none — so a change rebuilds everything rather
+than working out what depends on what. Each build writes a `build-id.json` and
+stamps the same id into the manifest's `version_name`.
+
+**The reload** is those two ids compared, in `src/dev/`. `version_name` is the
+build whose code is *running*: Chrome reads the manifest when the extension is
+loaded and keeps that copy until the extension is reloaded. `build-id.json` is
+the build that is *on disk*, fetched through `chrome.runtime.getURL`. An
+unpacked extension's fetch of its own file does reach the disk rather than a
+snapshot taken at load time — that was worth checking before building anything
+on it, and it is why there is no localhost server here and no dev-only host
+permission to go with one. When the two ids differ the worker reloads the active
+tab, if the content scripts are in it, and then calls `chrome.runtime.reload()`.
+After that the extension is running the build it just read, so the next
+comparison comes out equal: the loop cannot chase its own tail.
+
+A `build-id.json` that is missing or half-written is read as "no answer" rather
+than as a change, which is what makes it safe to read one mid-rebuild and safe
+to run `npm run build` over the folder while Chrome holds a dev build — the
+extension carries on with what it has until the next `npm run dev` gives it a
+build to move to.
+
+The worker doing the comparing is one Chrome stops when it is idle, so a dev
+build adds `chrome.alarms` to wake it — the one permission any of this needs,
+and the reason `npm run check` compares the two manifests the build produces and
+fails if a production one ever grows it. Thirty seconds is the floor Chrome
+clamps an alarm to, so that is the worst case between a build landing and Chrome
+running it; while the worker is awake a plain two-second poll makes it quicker
+than that. None of it is on the path the popup opens through — the worker checks
+on its own schedule, never in answer to a message — and a check that lands while
+the panel is on screen postpones itself rather than closing it.
+
+**The hourly pull**, `tools/auto-update.sh`, is deliberately timid. It fetches,
+and fast-forwards only when the checkout is on `main`, the working tree is
+clean, and `origin/main` is strictly ahead. Anything else — a branch, an
+uncommitted change, an untracked file, a local commit `origin/main` has not
+got — is logged and skipped. It never resets, stashes, cleans or merges
+anything but a fast-forward, and `tests/auto-update.test.js` asserts the skips
+by what is still there afterwards. When it does pull it runs the dev build, and
+the extension picks that up on its own. launchd hands an agent a PATH of almost
+nothing, which is why the installer resolves `node` at install time and writes
+it into the plist: Homebrew's `node` and an nvm one are both somewhere launchd
+would never look.
+
+**The production build is untouched by all of it.** `npm run build` copies no
+`src/dev/`, writes no `build-id.json`, adds no permission and names no build —
+`npm run check` asserts each of those by asking `tools/build.js` for the
+production and dev manifests and comparing them, and `node tools/dev-reload.js`
+asserts it in a browser by loading the production build alongside the dev one,
+rebuilding both, and watching one reload itself while the other sits through it.
+
+```bash
+node tools/dev-reload.js    # headless Chrome: a rebuild, and the reload it causes
+```
+
+That check needs no mock API and no credentials; it builds both extensions into
+a temp directory and never touches `dist/`. The last thing it can see is the dev
+build taking itself down, because an extension loaded over the DevTools Protocol
+does not come back from `chrome.runtime.reload()` — Chrome drops it, and neither
+a second `Extensions.loadUnpacked` nor any amount of waiting brings it back. The
+coming back is true of a `chrome://extensions` unpacked install, which is the one
+this is for; the manual checklist is where that is confirmed.
+
 ### Layout
 
 ```
@@ -681,8 +800,9 @@ src/
   common/                 Settings, the API client, the xAI sign-in, the choice between credentials, and what the panel last knew
   background/             Holds the credentials, makes every network call, injects content scripts
   content/                Injected on demand; extraction, Google Docs, alignment, clicks, playback, the audio already fetched, highlighting, the cross-tab handoff, the browser's media controls
+  dev/                    Dev builds only: notices a rebuild and reloads the extension into it
   popup/  options/        Extension UI
-tools/                    Build, icons, static checks, mock API, end-to-end and timing drivers
+tools/                    Build, dev watch, icons, static checks, mock API, end-to-end and timing drivers
 tests/                    Unit tests and the fixture pages they read
 ```
 
@@ -1703,6 +1823,15 @@ the driver loads the extension over the protocol instead.
   Two tabs can still be paused mid-read at once, each holding its own place.
 - **Pages the browser protects** — `chrome://`, `about:`, the Web Store, other
   extensions' pages — cannot be read, and the popup says so.
+- **The auto-update is Chrome, macOS, and development only.** The reload rests
+  on `chrome.runtime.reload()` reloading an *unpacked* extension from disk,
+  which is a thing a development install does and a Web Store install does not;
+  `--dev` refuses the Firefox target outright rather than guessing at an
+  equivalent, and a temporary add-on is gone on restart anyway. The hourly pull
+  is a macOS LaunchAgent, so Linux would want a systemd timer and Windows a
+  scheduled task — `tools/auto-update.sh` itself is portable, only the thing
+  that runs it is not. None of this is in a production build at all; see
+  [Auto-update while developing](#auto-update-while-developing).
 - **Long pages cost real money.** Billing is per input character, and the whole
   page is sent in chunks. The API caps a single request at 60,000 characters;
   the extension stays far below that, but a very long article is still a lot of
