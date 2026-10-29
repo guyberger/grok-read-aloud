@@ -54,6 +54,9 @@ dependencies — just the files in `src/` and a ~40-line copy script.
   skipped by default, and there is a setting for those.
 - Highlights the spoken word, tints the sentence around it, and scrolls to keep
   up — driven by the per-character timestamps the API returns, not by guesswork.
+- Stops scrolling the moment you scroll yourself, so a read is something you
+  can look away from: the voice carries on and the page stays where you left
+  it. Scrolling back to where the voice is picks the following up again.
 - Says how long there is left to listen, measured against the audio the API is
   actually returning rather than guessed from a word count — and in the time
   the speed you are reading at will take, not the length of the recording.
@@ -346,6 +349,11 @@ different half of this, so `npm test` asserts both are still asked for.
 - **Continue page** — when a page was left part-read, the popup says how far in
   it got and the read button continues from there. **Start over** next to it
   goes back to the top.
+- **Scroll away whenever you like.** The page follows the spoken word until you
+  scroll it yourself — wheel, trackpad, touch, or the arrow and page keys —
+  and from then on it stays where you put it while the read carries on. Scroll
+  back to where the voice is and it follows again; so does clicking or stepping
+  to a sentence, or pressing play.
 
 Pressing back part-way through a sentence reads *that* sentence again, since
 that is where the words you missed are. Press it again at the start of one and
@@ -382,7 +390,7 @@ that requests the broader permission; **Revoke** takes it back.
 | Characters per request | 1200 | The size chunks settle at; the first one or two are smaller regardless, so a read starts quickly |
 | Click a sentence to read from it | on | Only plain clicks on the text being read, and only while one is running |
 | Read code blocks aloud | off | Whole snippets. Code inside a sentence is read either way |
-| Follow the spoken word | on | Scrolls only when the word leaves a comfortable band |
+| Follow the spoken word | on | Scrolls only when the word leaves a comfortable band, and not at all once you scroll yourself |
 | Tint the current sentence | on | |
 | Highlight colour | amber | Text colour adapts for contrast automatically |
 
@@ -426,12 +434,29 @@ checks cannot do
 - [ ] The first sentence or two run into the rest without a gap.
 - [ ] Exactly one word is highlighted at a time, and it matches what you hear.
 - [ ] The sentence around the spoken word carries a lighter tint.
-- [ ] The page scrolls to follow the highlight, without fighting you when you
-      scroll manually.
+- [ ] The page scrolls to follow the highlight, moving only when the word
+      leaves the middle of the window.
 - [ ] Navigation, sidebar and footer text is never read or highlighted.
 - [ ] Hidden (`display: none`) text is never read.
 - [ ] Audio continues smoothly across a chunk boundary — watch the "Part *n* of
       *m*" label in the popup tick over without a long gap.
+
+**Scrolling away from a read**
+- [ ] Scroll the page by hand while it is reading: it stays exactly where you
+      put it, and nothing drags it back on the next word.
+- [ ] The read carries on meanwhile — the audio plays and the highlight keeps
+      moving through text that is off screen.
+- [ ] The same is true of the trackpad, a touch drag, and the arrow, page,
+      home and end keys.
+- [ ] A space or an arrow typed into a field on the page does not count as
+      scrolling away.
+- [ ] Scroll back to the highlighted word and the page follows the voice again
+      from there.
+- [ ] Clicking a sentence, stepping to one, or pressing play after scrolling
+      away brings the view straight back to the read.
+- [ ] Stopping and reading again follows from the start, wherever the page was
+      left.
+- [ ] With **Follow the spoken word** off, nothing scrolls either way.
 
 **How long is left**
 - [ ] A read under way says *about n min left* next to the part count.
@@ -761,6 +786,49 @@ inserting a single node into the page. The rules come from
 Content-Security-Policy cannot suppress them. Where the Highlight API is
 unavailable, the extension falls back to absolutely positioned overlay boxes
 derived from the range's client rects — still without mutating the article.
+
+### Who the view belongs to
+
+Scrolling to keep up with the voice is most of what makes a read hands-free.
+It is also, while it is unconditional, the one thing standing between the
+listener and the rest of the page: reach for the wheel to look at the figure
+being described, or the paragraph just heard, and the next word lands a
+fraction of a second later and takes the view straight back. A read you have to
+pause in order to look at anything is a read that owns the window.
+
+So the view has an owner, and `content/follow.js` is the one thing that decides
+who it is. A read starts owning it. The listener owns it from the moment they
+scroll it themselves, and from then on the read carries on without it — the
+highlight still walks the words, the audio still plays, nothing moves under
+their hands. It goes back to the read on either of two things:
+
+- **The spoken word arrives back in the band.** The band is the same one the
+  scrolling already used — clear of the top quarter of the viewport and of
+  roughly its bottom quarter — so this is just the listener scrolling back to
+  where the voice is, which can only be a request to follow it again. It needs
+  no control of its own, and it is the same gesture they left with.
+- **The listener names a place in the text** — starting a read, clicking a
+  sentence, stepping to one, pressing play. Being taken there is the point of
+  asking.
+
+What counts as the listener scrolling is the *gestures*, not the `scroll`
+event: wheel, touch drag, and the keys that scroll a document. A smooth scroll
+of the read's own fires a stream of `scroll` events and nothing in one says who
+asked for it, so a reader listening to those would hear itself scroll and let
+go of the view it had just taken. The wheel and touch listeners are `passive`
+and on the capture phase, so a page that handles its own cannot hide them from
+the reader and the reader can never be why one of them was slow. A key press
+aimed at a field or an editor is a key press, not a page down.
+
+Like the [click-to-jump listeners](#jumping-to-a-clicked-sentence), none of this
+is in the page's scroll path unless there is a read running and following is
+turned on.
+
+`tests/follow.test.js` tests the decision against the module alone, and the
+band against an article a real Chrome has laid out. The end-to-end driver does
+the whole of it with a real wheel through the browser's input pipeline, which
+is the only way to be sure the reader tells a scroll someone asked for from the
+one it is doing itself.
 
 ### Time to first audio
 
@@ -1282,6 +1350,17 @@ sections elsewhere reload the page before their own reads, because "a chunk that
 has not been fetched" and "this request carried the OAuth token" are both claims
 about a read that has to ask for audio at all.
 
+The checks for [who the view belongs to](#who-the-view-belongs-to) scroll the
+article with a real wheel dispatched through the browser's own input pipeline,
+because the one thing the reader has to tell apart is a scroll someone asked
+for from the smooth scroll it is doing itself — and a synthetic `scroll` event
+would be neither. They assert that the view stays to the pixel where the wheel
+left it while the read goes on reading, that a step to a sentence brings it
+back, and that wheeling back to the voice makes it follow again. The fixture is
+about one screen of prose, so the driver pads a viewport's worth above and
+below it first; otherwise "the view stayed where it was put" would be a
+statement about how far this page scrolls.
+
 The checks for [why the popup paints before it knows
 anything](#why-the-popup-paints-before-it-knows-anything) open the panel while
 the article is being read and assert on its *first* render rather than on what
@@ -1383,6 +1462,17 @@ the driver loads the extension over the protocol instead.
   misread either way; the cost is a tint that covers too much or too little,
   and a step that moves by two sentences or by half of one. The list is
   English, and a language that abbreviates differently gets the naive answer.
+- **Scrolling the page by something other than a gesture is not noticed.**
+  [Who the view belongs to](#who-the-view-belongs-to) hears the wheel, a touch
+  drag and the scroll keys, which is how a listener scrolls while they are
+  listening. Dragging the scrollbar reaches the page as nothing but `scroll`
+  events, which the reader cannot tell from its own; find-in-page and a jump to
+  an anchor arrive the same way. The read keeps following in those cases, which
+  means it will take the view back on the next word — and the way out of that
+  is the same as the way out of anything else here: scroll with the wheel, or
+  turn **Follow the spoken word** off. The reverse would be worse: treating
+  every `scroll` event as the listener's would have a read let go of the view
+  the moment it scrolled itself.
 - **Readable-content detection is heuristic.** It looks for `<article>`,
   `[role=main]` and `<main>` first, then falls back to scoring text density,
   and if the winner yields almost nothing it reads the visible body instead,

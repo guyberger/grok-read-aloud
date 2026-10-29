@@ -11,6 +11,7 @@ const CONTENT_FILES = [
   "content/align.js",
   "content/highlight.js",
   "content/pointer.js",
+  "content/follow.js",
   "content/positions.js",
   "content/handoff.js",
   "content/pace.js",

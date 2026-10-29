@@ -13,6 +13,7 @@
     align,
     highlight,
     pointer,
+    follow,
     positions,
     handoff,
     pace,
@@ -66,6 +67,13 @@
   let rememberedAt = 0;
   let everPlayed = false;
 
+  /**
+   * Whether the view still belongs to the read. A listener who scrolls away
+   * keeps it until the voice catches up with where they went, or until they
+   * ask for a place in the text themselves — see `follow.js`.
+   */
+  const view = follow.createFollow();
+
   const BLOCKED_NOTICE = "Audio is blocked until you interact with this page — click anywhere to start.";
   const HANDOFF_NOTICE = "Paused — a read started in another tab.";
 
@@ -118,6 +126,7 @@
     // And clicks belong to the reader on exactly the transitions where there
     // is a read for one to move.
     syncClicks();
+    syncScrollWatch();
     ext.runtime.sendMessage({ type: "stateChanged", state }).catch(() => {});
   }
 
@@ -131,6 +140,9 @@
           ? util.clamp((state.chunkIndex + chunkProgress) / state.chunkCount, 0, 1)
           : 0,
       remainingSeconds: remainingSeconds(),
+      // Whether the view is still the read's, or the listener has scrolled
+      // away and is being left where they put it.
+      following: view.following,
       rate: settings.rate,
       voiceId: settings.voiceId,
       hasApiKey: settings.hasApiKey,
@@ -177,6 +189,9 @@
     // Turning the setting off mid-read takes the reader out of the page's
     // click path, and the cursor back to what the page asked for.
     syncClicks();
+    // And turning off following takes it out of the page's scroll path, where
+    // it has nothing left to decide.
+    syncScrollWatch();
   }
 
   function ensurePlayer() {
@@ -434,7 +449,9 @@
     if (wordIndex !== lastWord || needsRepaint) highlight.setWord(wordRange);
 
     if (moved && wordIndex !== lastWord && settings.autoScroll && wordRange) {
-      highlight.scrollTo(wordRange);
+      // Only while the view is the read's. A listener who has scrolled away
+      // keeps it until the word they scrolled to is the word being spoken.
+      if (view.wants(highlight.inBand(wordRange))) highlight.scrollTo(wordRange);
     }
     lastWord = wordIndex;
     lastSentence = sentenceIndex;
@@ -543,8 +560,10 @@
   async function resume() {
     if (state.status !== "paused") return snapshot();
     // Resuming is this tab asking for the read back, so the explanation for
-    // why it stopped is no longer true.
+    // why it stopped is no longer true — and so is a view left somewhere else
+    // while it was quiet.
     if (state.notice === HANDOFF_NOTICE) state.notice = "";
+    view.claim();
     state.status = "playing";
     emit();
     handoff.take();
@@ -579,6 +598,9 @@
     sessionId += 1;
     stopLoop();
     player?.stop();
+    // A read that is starting, or one that is over, both leave the next one
+    // following: where the last listener scrolled to says nothing about it.
+    view.claim();
     highlight.clear();
     timeline = null;
     abortRequests();
@@ -659,6 +681,10 @@
   async function jumpToCharIndex(charIndex) {
     if (!doc || !chunks.length || charIndex < 0) return snapshot();
     if (!ACTIVE.has(state.status)) return snapshot();
+
+    // Naming a sentence — by clicking it, or by stepping to it — is asking to
+    // be taken there, so the view comes back to the read with the playhead.
+    view.claim();
 
     const wordStart = align.wordStartAt(doc.text, charIndex);
     // While a chunk is still loading, `timeline` still describes the previous
@@ -800,6 +826,24 @@
   }
 
   /**
+   * Whether the reader is listening for the page being scrolled, right now.
+   *
+   * On the same terms as the clicks above, and for the same reason: with
+   * nothing being read, or with following turned off, there is nothing for a
+   * scroll to mean and no reason to be in the page's scroll path at all.
+   */
+  let unwatchScroll = null;
+
+  function syncScrollWatch() {
+    const wanted = Boolean(settings.autoScroll && doc && ACTIVE.has(state.status));
+    if (wanted && !unwatchScroll) unwatchScroll = view.watch();
+    if (!wanted && unwatchScroll) {
+      unwatchScroll();
+      unwatchScroll = null;
+    }
+  }
+
+  /**
    * The hover cue: one attribute on the element the text came out of, which
    * `highlight.css` turns into a pointer cursor. An attribute rather than a
    * node, and removed the moment the read ends — nothing of it survives a read
@@ -886,6 +930,7 @@
     // `reset` only announces a state it changed, and a tab leaving with
     // nothing playing changes none — so the listeners come off here.
     syncClicks();
+    syncScrollWatch();
     // Nothing can be read from this document again, so the audio kept for it
     // is so many megabytes with nowhere to go.
     cache.clear();
