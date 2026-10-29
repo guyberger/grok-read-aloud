@@ -2221,6 +2221,13 @@ async function main() {
 
   await control("stop");
 
+  // The tab goes back where the driver found it. Everything above assumes a
+  // tab on the fixture server exists when the run starts, and this is the one
+  // section that takes it to another origin — so without this, the browser
+  // these checks just finished in cannot be used to run them again.
+  await page.send("Page.navigate", { url: PAGE_URL });
+  await sleep(500);
+
   ui.close();
   page.close();
   browser.close();
