@@ -2174,6 +2174,18 @@ async function main() {
   );
   await control("stop");
   await control("setRate", { rate: 1 });
+
+  // 21a(ii). The same document with nothing to fall back on: no export, and no
+  // accessibility layer either. The menus are still there to be read, and
+  // reading them aloud would be worse than saying nothing.
+  await openDoc("?annotated=0");
+  const nothingToRead = await control("start", { scope: "page", from: "start" });
+  check(
+    "a document that cannot be read says so rather than reading the menus",
+    /Google Doc/i.test(nothingToRead?.state?.error ?? ""),
+    JSON.stringify(nothingToRead?.state?.error ?? nothingToRead?.state?.status),
+  );
+  await control("stop");
   await allowExport(true);
 
   // 21b. The same document drawn the old way, with its lines in the DOM. That

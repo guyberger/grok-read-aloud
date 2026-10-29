@@ -146,6 +146,13 @@ OAuth access token from a sign-in go in the same place, so nothing below the
 choice between them has to know which one it was handed. That includes TTS,
 which is the only thing this extension asks for.
 
+The one other request the extension ever makes is on a Google Doc, and it is
+not made from the worker at all: the content script fetches the document's own
+text from the page it is already running in, same-origin, carrying the session
+cookie the tab already has. That is why reading a doc needs no host permission
+for `docs.google.com` and no credential of any kind beyond the one the user is
+already signed in with. See [Google Docs](#google-docs).
+
 ## Install
 
 [Install in 60 seconds](#install-in-60-seconds) is the Chrome path end to end,
@@ -554,8 +561,8 @@ cannot sign into a Google account
 - [ ] The part count is in the region the length of the document implies, and
       the estimate agrees.
 - [ ] A document shared with you read-only reads the same way.
-- [ ] A document you are not signed in for says it could not find readable
-      text, rather than reading a sign-in page aloud.
+- [ ] A document you are not signed in for says it could not be read, rather
+      than reading a sign-in page or the menu bar aloud.
 - [ ] Pause, close the tab, reopen the document: it offers to continue from
       where it stopped.
 - [ ] A published copy (`/document/d/e/…/pub`) is read out of the page itself,
@@ -1473,9 +1480,11 @@ chrome is ever sent to the API, that the estimate of how long is left is in the
 region the length of the document implies rather than the length of the menus,
 that nothing is highlighted or offered as clickable, and that the popup is told
 why. Then with the export refused, that the fallback reads what has been drawn
-and stops at the end of it; and on the same document drawn the old way, that it
-is read out of the page with the highlight and the click cue back, and without
-a single request to the network for text the page already had.
+and stops at the end of it; that with no export and no layer either, the reader
+says so rather than reading the menu bar aloud; and on the same document drawn
+the old way, that it is read out of the page with the highlight and the click
+cue back, and without a single request to the network for text the page already
+had.
 
 The checks for [who the view belongs to](#who-the-view-belongs-to) scroll the
 article with a real wheel dispatched through the browser's own input pipeline,
@@ -1616,8 +1625,8 @@ the driver loads the extension over the protocol instead.
   part of the document on screen, and only if something has turned that layer
   on. Docs honours the `_docs_annotate_canvas_by_ext` attribute that asks for
   it only for an allowlist of extension ids, which this is not. With neither,
-  the popup says it could not find readable text rather than reading the menus
-  aloud.
+  the popup says the document could not be read rather than reading the menu
+  bar aloud.
 - **Readable-content detection is heuristic.** It looks for `<article>`,
   `[role=main]` and `<main>` first, then falls back to scoring text density,
   and if the winner yields almost nothing it reads the visible body instead,

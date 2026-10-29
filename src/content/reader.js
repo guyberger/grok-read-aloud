@@ -514,7 +514,15 @@
       emit();
       const body = await docs.read({ readCodeBlocks: settings.readCodeBlocks });
       if (session !== sessionId) return snapshot();
-      if (body) doc = body;
+      // Everything the walk found is the menu bar, the sharing row and the
+      // comment sidebar. Reading that aloud would be worse than saying so.
+      if (!body) {
+        reportError(
+          "Could not read this Google Doc. Its text comes from Google, which needs you online and signed in to an account that can open the document.",
+        );
+        return snapshot();
+      }
+      doc = body;
     }
 
     if (!doc) {

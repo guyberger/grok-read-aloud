@@ -497,9 +497,41 @@ function docPage({ render = "canvas", annotated = true } = {}) {
   const body =
     render === "dom"
       ? `<div class="kix-page">${domLines()}</div>`
-      : `<div class="kix-page"><canvas width="816" height="1056"></canvas>${
+      : `<div class="kix-page"><canvas id="kix-canvas" width="816" height="1056"></canvas>${
           annotated ? annotationLayer() : ""
         }</div>`;
+  // The words really are painted, so what is on screen and what is in the DOM
+  // differ the way they do in Docs itself. Nothing reads them back out: this
+  // is what the extension has to work around, not a place to cheat from.
+  const paint =
+    render === "dom"
+      ? ""
+      : `<script>
+  (() => {
+    const canvas = document.getElementById("kix-canvas");
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#202124";
+    let y = 96;
+    const draw = (text, font, gap) => {
+      context.font = font;
+      let line = "";
+      for (const word of text.split(" ")) {
+        const next = line ? line + " " + word : word;
+        if (context.measureText(next).width > 672) {
+          context.fillText(line, 72, y);
+          y += gap;
+          line = word;
+        } else {
+          line = next;
+        }
+      }
+      if (line) context.fillText(line, 72, y);
+      y += gap * 1.8;
+    };
+    draw(${JSON.stringify(DOC_TITLE)}, "600 22px Georgia, serif", 30);
+    for (const paragraph of ${JSON.stringify(DOC_PARAGRAPHS)}) draw(paragraph, "16px Georgia, serif", 26);
+  })();
+</script>`;
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(DOC_TITLE)} - Google Docs</title>
 <style>
@@ -522,6 +554,7 @@ function docPage({ render = "canvas", annotated = true } = {}) {
     <div class="docs-sharebar"><button>Share</button><span>Last edit was seconds ago</span></div>
   </header>
   <div class="kix-appview-editor" role="region" aria-label="Document content">${body}</div>
+  ${paint}
 </body></html>`;
 }
 
