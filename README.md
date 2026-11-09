@@ -619,8 +619,8 @@ over the DevTools Protocol does not come back from `chrome.runtime.reload()`.
 - [ ] Open the popup and save a file while it is on screen: the panel stays up
       and keeps working, and the reload happens once it is closed.
 - [ ] `tools/auto-update.sh` with a dirty tree logs `status=skipped-dirty` and
-      leaves the change alone; on `main` and clean, behind `origin/main`, it logs
-      `status=updated` and Chrome reloads itself a moment later.
+      leaves the change alone; on `main` and clean, behind the `main` it
+      tracks, it logs `status=updated` and Chrome reloads itself a moment later.
 - [ ] After `tools/auto-update-uninstall.sh`, `launchctl list | grep
       grok-read-aloud` finds nothing.
 
@@ -748,11 +748,16 @@ than that. None of it is on the path the popup opens through — the worker chec
 on its own schedule, never in answer to a message — and a check that lands while
 the panel is on screen postpones itself rather than closing it.
 
-**The hourly pull**, `tools/auto-update.sh`, is deliberately timid. It fetches,
-and fast-forwards only when the checkout is on `main`, the working tree is
-clean, and `origin/main` is strictly ahead. Anything else — a branch, an
-uncommitted change, an untracked file, a local commit `origin/main` has not
-got — is logged and skipped. It never resets, stashes, cleans or merges
+**The hourly pull**, `tools/auto-update.sh`, is deliberately timid. It fetches
+the remote local `main` tracks — `main@{upstream}` names `<remote>/<branch>`,
+and `branch.main.remote` is that remote — and fast-forwards only when the
+checkout is on `main`, the working tree is clean, and that remote's `main` is
+strictly ahead. A plain clone tracks `origin`; a checkout whose `main` follows
+another remote fetches that one instead. A `main` with no upstream falls back
+to `origin`, and `--remote NAME` fetches that remote rather than the tracked
+one. Anything else — a branch, an uncommitted change, an untracked file, a
+local commit the remote `main` has not got — is logged and skipped, and the
+log names the remote it used. It never resets, stashes, cleans or merges
 anything but a fast-forward, and `tests/auto-update.test.js` asserts the skips
 by what is still there afterwards. When it does pull it runs the dev build, and
 the extension picks that up on its own. launchd hands an agent a PATH of almost

@@ -1,11 +1,16 @@
 #!/bin/bash
 #
-# Fast-forwards this checkout to origin/main and rebuilds the dev build, so the
-# copy of the extension loaded in Chrome reloads itself into it.
+# Fast-forwards this checkout to <remote>/main and rebuilds the dev build, so
+# the copy of the extension loaded in Chrome reloads itself into it.
+#
+# <remote> is the one local main tracks: `main@{upstream}` is
+# `<remote>/<branch>`, and `branch.main.remote` is that remote. A main with no
+# upstream falls back to origin. `--remote NAME` fetches that remote instead.
 #
 #   tools/auto-update.sh                 # this checkout
 #   tools/auto-update.sh --repo /path    # another one
 #   tools/auto-update.sh --no-build      # pull only
+#   tools/auto-update.sh --remote NAME   # that remote's main, not the tracked one
 #
 # It is deliberately timid. It never resets, never stashes, never cleans and
 # never merges anything but a fast-forward: if the tree is dirty, if HEAD is not
@@ -19,11 +24,13 @@ set -u -o pipefail
 
 REPO=""
 BUILD=1
+REMOTE_NAME=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; [ -n "$REPO" ] || { echo "--repo needs a path" >&2; exit 2; }; shift 2 ;;
     --no-build) BUILD=0; shift ;;
+    --remote) REMOTE_NAME="${2:-}"; [ -n "$REMOTE_NAME" ] || { echo "--remote needs a name" >&2; exit 2; }; shift 2 ;;
     -h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
@@ -66,22 +73,37 @@ if [ "$BRANCH" != "main" ]; then
   finish skipped-branch
 fi
 
+# Which remote's main to fetch. `--remote` wins. Otherwise the remote local
+# main tracks: `git rev-parse --abbrev-ref main@{upstream}` is `<remote>/<branch>`
+# (for example `github/main`), and `branch.main.remote` is that remote on its
+# own — cutting the upstream short at the first slash would be wrong for a
+# branch name that itself contains one. A main with no upstream falls back to
+# origin, which is what a plain clone has.
+if [ -z "$REMOTE_NAME" ]; then
+  if git rev-parse --abbrev-ref "main@{upstream}" >/dev/null 2>&1; then
+    REMOTE_NAME="$(git config --get branch.main.remote 2>/dev/null || true)"
+  fi
+fi
+if [ -z "$REMOTE_NAME" ]; then
+  REMOTE_NAME="origin"
+fi
+
 # The explicit refspec rather than a bare branch name, so the remote-tracking
 # ref this then compares against is certainly the one that was just fetched.
-if ! git fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main"; then
-  say "could not fetch origin/main"
+if ! git fetch --quiet -- "$REMOTE_NAME" "+refs/heads/main:refs/remotes/${REMOTE_NAME}/main"; then
+  say "could not fetch ${REMOTE_NAME}/main"
   finish failed-fetch 1
 fi
 
 LOCAL="$(git rev-parse HEAD)"
-REMOTE="$(git rev-parse origin/main 2>/dev/null || echo "")"
+REMOTE="$(git rev-parse "${REMOTE_NAME}/main" 2>/dev/null || echo "")"
 if [ -z "$REMOTE" ]; then
-  say "origin/main does not exist"
+  say "${REMOTE_NAME}/main does not exist"
   finish failed-fetch 1
 fi
 
 if [ "$LOCAL" = "$REMOTE" ]; then
-  say "already at origin/main (${LOCAL:0:8})"
+  say "already at ${REMOTE_NAME}/main (${LOCAL:0:8})"
   finish up-to-date
 fi
 
@@ -89,21 +111,21 @@ fi
 # on with nothing waiting for it is the ordinary state of a working day, and a
 # line in the log every hour saying so would be noise.
 if [ -n "$(git status --porcelain)" ]; then
-  say "origin/main has moved to ${REMOTE:0:8}, but there are local changes — not touching them"
+  say "${REMOTE_NAME}/main has moved to ${REMOTE:0:8}, but there are local changes — not touching them"
   git status --short | sed 's/^/    /'
   finish skipped-dirty
 fi
 
-if ! git merge-base --is-ancestor HEAD origin/main; then
-  say "origin/main (${REMOTE:0:8}) is not ahead of HEAD (${LOCAL:0:8}); this would need a real merge"
+if ! git merge-base --is-ancestor HEAD "${REMOTE_NAME}/main"; then
+  say "${REMOTE_NAME}/main (${REMOTE:0:8}) is not ahead of HEAD (${LOCAL:0:8}); this would need a real merge"
   finish skipped-diverged
 fi
 
-if ! git merge --ff-only origin/main >/dev/null 2>&1; then
-  say "fast-forward to ${REMOTE:0:8} refused"
+if ! git merge --ff-only "${REMOTE_NAME}/main" >/dev/null 2>&1; then
+  say "fast-forward to ${REMOTE_NAME}/main (${REMOTE:0:8}) refused"
   finish failed-merge 1
 fi
-say "fast-forwarded ${LOCAL:0:8} → ${REMOTE:0:8}"
+say "fast-forwarded ${LOCAL:0:8} → ${REMOTE_NAME}/main (${REMOTE:0:8})"
 
 if [ "$BUILD" -eq 0 ]; then
   finish updated

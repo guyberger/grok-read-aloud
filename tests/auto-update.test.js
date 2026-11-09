@@ -224,6 +224,62 @@ test("tools/auto-update.sh", { skip: hasGit ? false : "no git" }, async (t) => {
     assert.equal(head(where.local), upstream);
   });
 
+  await t.test("main tracking a remote other than origin updates when origin cannot be fetched", () => {
+    // Two remotes: local main follows github/main, and origin refuses the
+    // fetch. The pull has to come from the tracked remote, or every hourly
+    // run ends failed-fetch.
+    const where = checkout();
+    git(where.local, "remote", "rename", "origin", "github");
+    git(where.local, "remote", "add", "origin", resolve(where.base, "unreachable.git"));
+    assert.equal(git(where.local, "rev-parse", "--abbrev-ref", "main@{upstream}"), "github/main");
+    assert.equal(git(where.local, "config", "--get", "branch.main.remote"), "github");
+    assert.throws(() => git(where.local, "rev-parse", "--verify", "--quiet", "origin/main"));
+
+    const upstream = pushUpstream(where);
+    const result = run(where.local);
+    assert.equal(result.outcome, "updated", result.output);
+    assert.equal(head(where.local), upstream);
+    assert.match(result.stdout, /github\/main/, "the log names the remote it fetched");
+    assert.equal(built(where), true);
+  });
+
+  await t.test("main with no upstream falls back to origin", () => {
+    const where = checkout();
+    git(where.local, "branch", "--unset-upstream");
+    assert.throws(() => git(where.local, "config", "--get", "branch.main.remote"));
+
+    const upstream = pushUpstream(where);
+    const result = run(where.local);
+    assert.equal(result.outcome, "updated", result.output);
+    assert.equal(head(where.local), upstream);
+    assert.match(result.stdout, /origin\/main/);
+  });
+
+  await t.test("--remote fetches that remote instead of the one main tracks", () => {
+    const where = checkout();
+    const before = head(where.local);
+    const extra = resolve(where.base, "extra.git");
+    const work = resolve(where.base, "extra-work");
+    git(where.base, "clone", "--quiet", "--bare", where.remote, extra);
+    git(where.base, "clone", "--quiet", extra, work);
+    writeFileSync(resolve(work, "README.md"), "from the other remote\n");
+    git(work, "add", "-A");
+    git(work, "commit", "--quiet", "-m", "only on github");
+    git(work, "push", "--quiet", "origin", "main");
+    const tip = head(work);
+    git(where.local, "remote", "add", "github", extra);
+
+    const untouched = run(where.local);
+    assert.equal(untouched.outcome, "up-to-date", untouched.output);
+    assert.equal(head(where.local), before, "the tracked remote is origin, which has nothing new");
+    assert.match(untouched.stdout, /origin\/main/);
+
+    const result = run(where.local, "--remote", "github");
+    assert.equal(result.outcome, "updated", result.output);
+    assert.equal(head(where.local), tip);
+    assert.match(result.stdout, /github\/main/);
+  });
+
   await t.test("--no-build pulls without building", () => {
     const where = checkout();
     const upstream = pushUpstream(where);
