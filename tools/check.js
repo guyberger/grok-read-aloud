@@ -116,24 +116,24 @@ for (const file of walk(resolve(SRC, "content"))) {
   if (!listed.includes(relative)) failures.push(`${relative} is never injected`);
 }
 
-// 4. Every keyboard command a manifest declares is one the background handles.
-const commandBlock = background.slice(background.indexOf("const COMMAND_MESSAGES"));
-const commandNames = [...commandBlock.slice(0, commandBlock.indexOf("};")).matchAll(/"([\w-]+)":/g)].map(
-  (match) => match[1],
-);
+// 4. The extension defines no keyboard shortcuts. A manifest `commands` key is
+// what Chrome and Firefox turn into shortcut settings, and `commands.onCommand`
+// is the listener that would handle them.
 for (const name of ["manifest.chrome.json", "manifest.firefox.json"]) {
-  let commands;
+  let manifest;
   try {
-    commands = Object.entries(JSON.parse(readFileSync(resolve(SRC, name), "utf8")).commands ?? {});
+    manifest = JSON.parse(readFileSync(resolve(SRC, name), "utf8"));
   } catch {
     continue;
   }
-  for (const [command] of commands) {
-    if (!commandNames.includes(command)) failures.push(`${name} declares unhandled command ${command}`);
+  if (Object.hasOwn(manifest, "commands")) failures.push(`${name} declares a commands key`);
+}
+for (const file of walk(SRC)) {
+  if (extname(file) !== ".js") continue;
+  const source = readFileSync(file, "utf8");
+  if (/\bcommands\s*\.\s*onCommand\b|\b(?:chrome|browser|ext)\.commands\b/.test(source)) {
+    failures.push(`${file.slice(ROOT.length)} references the commands API`);
   }
-  // Chrome refuses to install an extension that suggests more than four keys.
-  const suggested = commands.filter(([, command]) => command.suggested_key).length;
-  if (suggested > 4) failures.push(`${name} suggests ${suggested} shortcuts; Chrome allows 4`);
 }
 
 // 5. No credentials committed. A signed-in session is a pair of JWTs, so the

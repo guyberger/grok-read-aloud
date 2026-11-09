@@ -126,7 +126,7 @@ async function main() {
   }
   console.log(`extension id: ${extensionId}\n`);
 
-  // The article tab must stay active: commands without an explicit tab id go
+  // The article tab must stay active: messages without an explicit tab id go
   // to the active tab, which is the path the popup actually uses.
   // Any tab on the fixture server will do — the driver navigates it to the
   // article itself below, and the click-to-jump checks click a link that
@@ -138,7 +138,7 @@ async function main() {
   await browser.send("Target.activateTarget", { targetId: articleTarget.id });
 
   // Extension pages can message the background worker; the worker cannot
-  // message itself, so all commands are issued from the options page.
+  // message itself, so every control message is issued from the options page.
   await browser.send("Target.createTarget", {
     url: `chrome-extension://${extensionId}/options/options.html`,
     background: true,
@@ -153,7 +153,7 @@ async function main() {
   const command = (payload) =>
     ui.evaluate(`new Promise((res) => chrome.runtime.sendMessage(${JSON.stringify(payload)}, res))`);
 
-  // Commands without an explicit tab id go to the active tab, so make sure the
+  // Messages without an explicit tab id go to the active tab, so make sure the
   // tab being driven is the active one rather than racing the options tab.
   const controlOn = async (targetId, action, args_ = {}) => {
     await browser.send("Target.activateTarget", { targetId });

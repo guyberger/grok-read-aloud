@@ -11,9 +11,8 @@
    * media panel behind the toolbar — every one of them reaches a page through
    * one interface, `navigator.mediaSession`, and every one of them works with
    * the tab in the background and the popup closed. For something that talks
-   * for twenty minutes that is the natural place to pause it from: the
-   * extension's own shortcuts act on the focused tab, and the popup needs the
-   * toolbar icon clicked first.
+   * for twenty minutes that is the natural place to pause it from, because the
+   * popup needs the toolbar icon clicked first.
    *
    * Nothing here is touched until a read starts. The media session belongs to
    * the page, which may have a player of its own, so the extension takes it

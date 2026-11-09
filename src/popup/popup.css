@@ -368,9 +368,3 @@ select {
   color: var(--accent);
   cursor: pointer;
 }
-
-.hint {
-  font-size: 10px;
-  color: var(--muted);
-  text-align: right;
-}
