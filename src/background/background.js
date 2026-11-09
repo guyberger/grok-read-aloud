@@ -32,17 +32,6 @@ const pendingSynthesis = new Map();
 const synthesisKey = (tabId, requestId) => `${tabId ?? "none"}:${requestId}`;
 
 /**
- * Each keyboard command, as the message it sends to the page. `npm run check`
- * fails if a manifest declares a command that is missing from here.
- */
-const COMMAND_MESSAGES = {
-  "toggle-read": { type: "toggle" },
-  "stop-read": { type: "stop" },
-  "previous-sentence": { type: "skipSentence", delta: -1 },
-  "next-sentence": { type: "skipSentence", delta: 1 },
-};
-
-/**
  * Settings, held for as long as the worker lives. Reading them is a trip to
  * extension storage, and the first synthesis of a read waits on it; the
  * listener below drops the copy the moment anything is written.
@@ -326,16 +315,6 @@ ext.storage.onChanged.addListener((changes, area) => {
 ext.tabs.onRemoved.addListener((tabId) => forgetTabState(tabId));
 ext.tabs.onUpdated.addListener((tabId, changes) => {
   if (changes.status === "loading") forgetTabState(tabId);
-});
-
-ext.commands.onCommand.addListener(async (command) => {
-  const message = COMMAND_MESSAGES[command];
-  if (!message) return;
-  try {
-    await sendToTab(await activeTabId(), message);
-  } catch {
-    // A shortcut pressed on a page we cannot inject into is a no-op.
-  }
 });
 
 ext.runtime.onInstalled.addListener(async (details) => {

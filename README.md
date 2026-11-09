@@ -70,18 +70,18 @@ dependencies — just the files in `src/` and a ~40-line copy script.
   going back through a page, or reading it again, replays what is in hand
   instead of buying the same sentences twice.
 - Steps back and forward a sentence at a time, so a few words you missed take
-  one key press to hear again — a sentence being a whole one, so `Dr. Mair` and
+  one press to hear again — a sentence being a whole one, so `Dr. Mair` and
   `Sept. 1974` are not three of them.
 - Remembers where you left off on a page, so coming back to it carries on from
   there instead of from the top — and asks for the audio from there, so the
   part you already heard is not paid for twice.
 - Reads in one tab at a time: starting a read somewhere else pauses the tab that
   was reading, rather than two voices talking over each other.
-- Play, pause, resume and stop from the popup or a keyboard shortcut — or from
-  the play/pause key on a keyboard, a headphone button, or whatever the system
-  shows for the thing currently making sound, all of which work with the tab in
-  the background. If something outside the extension pauses the audio, the read
-  pauses with it rather than claiming to still be playing.
+- Play, pause, resume and stop from the popup, or from the play/pause key on a
+  keyboard, a headphone button, or whatever the system shows for the thing
+  currently making sound, all of which work with the tab in the background. If
+  something outside the extension pauses the audio, the read pauses with it
+  rather than claiming to still be playing.
 - Speed control from 0.5× to 3×, applied instantly without re-synthesising.
 - Splits long pages into chunks at paragraph and sentence boundaries, and
   fetches the next chunk while the current one plays, so playback does not stall
@@ -338,18 +338,13 @@ different half of this, so `npm test` asserts both are still asked for.
 ## Use it
 
 - **Popup** — click the toolbar icon, choose **Whole page** or **Selection**,
-  then click the read button. The same button becomes Pause and Resume.
-- **Alt+Shift+R** — start reading, or pause/resume if already reading. With text
-  selected it reads the selection; otherwise it reads the page.
-- **Alt+Shift+S** — stop.
-- **Alt+Shift+←** / **Alt+Shift+→** — back a sentence, or on to the next one.
-  The same two steps are the ◀ and ▶ buttons either side of the read button in
-  the popup.
+  then click the read button. The same button becomes Pause and Resume. The ◀
+  and ▶ buttons either side of it step a sentence back or forward.
 - **The media keys** — while a page is being read, the play/pause key on a
   keyboard, the button on a pair of headphones, and the media panel the
   browser and the operating system show all drive the read: play, pause, stop,
   and previous/next for a sentence either way. They say which page is being
-  read, and unlike the shortcuts above they do not need the tab focused.
+  read, and they work with the tab in the background.
 - **About *n* min left** — next to the part count, how much listening is left
   at the speed currently set. Moving the speed slider moves it.
 - **Click anywhere in the text** while it is reading to carry on from the
@@ -384,14 +379,9 @@ quietens the second.
 and forgets the position. Pausing, closing the tab and a failed request all keep
 it — those are reads that were interrupted rather than ended.
 
-Rebind any of these at `chrome://extensions/shortcuts`, or in Firefox under
-`about:addons` → the gear menu → **Manage Extension Shortcuts**.
-
-By default the extension can only touch a page at the moment you invoke it, via
-`activeTab`. That means the keyboard shortcut works, but only on the tab that is
-focused when you press it. If you would rather it be able to act on any page
-without that handshake, the options page has an **Allow on all sites** button
-that requests the broader permission; **Revoke** takes it back.
+By default the extension can only touch a page at the moment you open the popup
+on it, via `activeTab`. The options page has an **Allow on all sites** button
+that requests access to every site instead; **Revoke** takes it back.
 
 ### Settings
 
@@ -485,7 +475,6 @@ checks cannot do
 - [ ] Resuming continues from the same word.
 - [ ] **Stop** clears the highlight completely and resets the popup to Ready.
 - [ ] Moving the speed slider changes the pace immediately, mid-sentence.
-- [ ] `Alt+Shift+R` and `Alt+Shift+S` do the same as the popup buttons.
 
 **The browser's own media controls** — the part no automated check can press
 - [ ] While reading, the page appears in the browser's media panel (Chrome:
@@ -507,7 +496,6 @@ checks cannot do
 - [ ] Both work while paused, and start playing again from the new position.
 - [ ] Both buttons are greyed out with nothing being read.
 - [ ] ▶ on the last sentence of the page does nothing rather than erroring.
-- [ ] `Alt+Shift+←` and `Alt+Shift+→` do the same as the two buttons.
 
 **Where a sentence ends** — with `tests/fixtures/abbreviations.html` open
 - [ ] The first sentence is read straight through: `Dr. Mair`, `Mt. Vernon`,
@@ -1815,9 +1803,6 @@ the driver loads the extension over the protocol instead.
   [How long is left](#how-long-is-left). Chrome also only shows the panel once
   audio is genuinely playing, so it appears a second or so into a read rather
   than the moment read is pressed.
-- **Shortcuts are tab-scoped by default.** With only `activeTab`, the keyboard
-  shortcut acts on the focused tab at the moment you press it. Use **Allow on
-  all sites** in the options if you want it unconditional.
 - **One tab at a time.** Starting a read in a second tab pauses the first one
   rather than talking over it — see [One read at a time](#one-read-at-a-time).
   Two tabs can still be paused mid-read at once, each holding its own place.
