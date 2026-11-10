@@ -716,6 +716,18 @@ tail -f ~/Library/Logs/grok-read-aloud-auto-update.log
 tools/auto-update-uninstall.sh       # when you want it gone
 ```
 
+**If the popup takes a second or more to open.** On some Macs, Chrome reads
+an unpacked extension's files slowly when they live under your home folder
+(about 1.2 s a file was measured from `~/projects` and `~/`), while the same
+build loaded from `~/Library/Application Support` opens in about 15 ms. In that
+case, build there and load that folder instead of `dist/chrome`:
+
+```bash
+OUT="$HOME/Library/Application Support/grok-read-aloud"
+npm run dev -- --out "$OUT"                 # then load "$OUT/chrome" unpacked
+tools/auto-update-install.sh --out "$OUT"   # the hourly update builds there too
+```
+
 **`npm run dev`** rebuilds `dist/chrome` on every change under `src/`,
 debounced, in about 10 ms. A rebuild is still a directory copy plus the
 popup's small in-repo bundle step (`tools/bundle.js`, no dependencies), so a
