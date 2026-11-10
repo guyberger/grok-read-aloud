@@ -148,6 +148,16 @@ async function main() {
   });
   const ui = await new Session(uiTarget.webSocketDebuggerUrl).open();
   await ui.send("Runtime.enable");
+  // The target is listed as soon as its URL is, which can be before the
+  // extension page has committed and been given its APIs — slow extension
+  // loads make that window wide enough to land in. Wait until it has them.
+  for (const deadline = Date.now() + 15000; ; await sleep(200)) {
+    const ready = await ui
+      .evaluate(`typeof chrome?.storage?.local === "object" && document.readyState === "complete"`)
+      .catch(() => false);
+    if (ready) break;
+    if (Date.now() > deadline) throw new Error("the options page never got its extension APIs");
+  }
   await browser.send("Target.activateTarget", { targetId: articleTarget.id });
 
   const command = (payload) =>

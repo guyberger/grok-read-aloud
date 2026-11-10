@@ -169,8 +169,10 @@ npm run build
 
 Nothing is downloaded and nothing is installed first: the committed
 `package-lock.json` describes an empty dependency tree, so `npm ci` succeeds as
-a no-op and can be skipped entirely. The build copies `src/` and swaps in the
-right `manifest.json`, which it does three times:
+a no-op and can be skipped entirely. The build copies `src/`, swaps in the
+right `manifest.json`, and folds the popup into two files (see
+[The popup is two fetches](#the-popup-is-two-fetches)), which it does three
+times:
 
 | Folder | What it is |
 | --- | --- |
@@ -715,9 +717,9 @@ tools/auto-update-uninstall.sh       # when you want it gone
 ```
 
 **`npm run dev`** rebuilds `dist/chrome` on every change under `src/`,
-debounced, in about 10 ms. A rebuild is still a directory copy — there is no
-bundler here and a dev build adds none — so a change rebuilds everything rather
-than working out what depends on what. Each build writes a `build-id.json` and
+debounced, in about 10 ms. A rebuild is still a directory copy plus the
+popup's small in-repo bundle step (`tools/bundle.js`, no dependencies), so a
+change rebuilds everything rather than working out what depends on what. Each build writes a `build-id.json` and
 stamps the same id into the manifest's `version_name`.
 
 **The reload** is those two ids compared, in `src/dev/`. `version_name` is the
@@ -1007,6 +1009,27 @@ sized its window appears and then moves. The credential row and the page title
 are laid out from the first paint whether or not their content is known yet —
 the row invisible until it has something to say, the title holding its one line
 — so filling them in cannot resize a window that is already on screen.
+
+### The popup is two fetches
+
+Every `chrome-extension://` file the popup waits on is a round trip before the
+browser shows the window. That is normally well under a millisecond, but it is
+not guaranteed: on a machine where something proxies extension requests, each
+one has been measured at over a second. Loaded as written in `src/`, the popup
+was a chain four deep — `popup.html`, then `popup.css` and `popup.js`, then the
+`import()` of `common/settings.js` and `common/panel-cache.js`, then their own
+imports of `common/browser.js` and `common/xai-auth.js` — seven fetches, each
+level waiting on the one before.
+
+So the build writes the popup itself instead of copying it. `popup.css` is
+inlined into `popup.html` as a `<style>` block (the MV3 default CSP restricts
+scripts, not styles), and `popup.js` is bundled with every module it reaches,
+dynamic imports included, by `tools/bundle.js` into one script with no imports
+left in it. That is two fetches, one level deep. The dynamic imports stay
+lazy: each module still runs only when the popup first asks for it, after the
+first paint; it just no longer costs a fetch. `src/` keeps its separate
+modules, and `npm run check` builds every target and fails if the popup links a
+stylesheet, loads more than its one script, or that script imports anything.
 
 ### Highlighting without touching the page
 

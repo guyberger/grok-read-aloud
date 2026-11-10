@@ -4,15 +4,18 @@
  * dev-only auto-reload is nowhere near a production build.
  */
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, extname, resolve } from "node:path";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import {
   DEV_PERMISSIONS,
   DEV_SOURCE_DIR,
   DEV_WORKER_FILE,
+  POPUP,
   TARGETS,
+  build,
   isDevOnlySource,
   manifestFor,
 } from "./build.js";
@@ -234,6 +237,54 @@ for (const file of walk(resolve(SRC, DEV_SOURCE_DIR))) {
 }
 for (const relative of ["background/background.js", "common/browser.js", "popup/popup.js"]) {
   if (isDevOnlySource(relative)) failures.push(`the build would leave ${relative} out of a production build`);
+}
+
+// 8. The built popup is its HTML plus one script, with nothing to chain.
+//
+// Every extension fetch the popup waits on is a round trip before the window
+// is shown, and some machines make each one cost over a second. So the built
+// page may not link a stylesheet, may load exactly one script, and that script
+// may not import anything — statically or with import() — that would be
+// another fetch. This builds every target into a scratch directory and looks.
+{
+  const scratch = mkdtempSync(join(tmpdir(), "read-aloud-check-"));
+  try {
+    for (const target of TARGETS) {
+      build({ only: target.name, out: scratch });
+      const directory = resolve(scratch, target.name);
+      const html = readFileSync(resolve(directory, POPUP.html), "utf8");
+      const where = `${target.name}/${POPUP.html}`;
+      for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+        if (/stylesheet|\.css\b/i.test(tag)) failures.push(`${where} links a stylesheet: ${tag}`);
+      }
+      const fetched = [...html.matchAll(/<(?:script|link|img|iframe|source)\b[^>]*\b(?:src|href)=["']([^"']+)["']/gi)].map(
+        (match) => match[1],
+      );
+      if (fetched.length !== 1 || fetched[0] !== POPUP.script.split("/").pop()) {
+        failures.push(`${where} should fetch only ${POPUP.script.split("/").pop()}, but fetches: ${fetched.join(", ") || "nothing"}`);
+      }
+      if (/<style\b/i.test(html) === false) failures.push(`${where} has no inlined stylesheet`);
+
+      const script = readFileSync(resolve(directory, POPUP.script), "utf8");
+      try {
+        const parsed = new vm.SourceTextModule(script, { identifier: `${target.name}/${POPUP.script}` });
+        if (parsed.dependencySpecifiers.length) {
+          failures.push(`${target.name}/${POPUP.script} imports ${parsed.dependencySpecifiers.join(", ")}`);
+        }
+      } catch (error) {
+        failures.push(`parse ${target.name}/${POPUP.script}: ${error.message}`);
+      }
+      if (/\bimport\s*\(/.test(script)) failures.push(`${target.name}/${POPUP.script} calls import()`);
+      try {
+        statSync(resolve(directory, POPUP.stylesheet));
+        failures.push(`${target.name} still ships ${POPUP.stylesheet}, which nothing loads`);
+      } catch {
+        // Gone, as it should be.
+      }
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 if (failures.length) {
