@@ -1,6 +1,9 @@
 /**
  * Copies the single source tree into one unpacked extension per browser,
- * swapping in that browser's manifest. No bundler, no transform.
+ * swapping in that browser's manifest. The one transform is the popup's: its
+ * stylesheet is inlined and its script bundled with everything it imports, so
+ * opening it costs two extension fetches instead of a chain of them — see
+ * `tools/bundle.js`. Everything else is copied as it is.
  *
  *   node tools/build.js                          # the three production builds
  *   node tools/build.js --dev --only chrome      # dist/chrome, with auto-reload
@@ -16,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bundle, inlineStylesheets } from "./bundle.js";
 // The two names a dev build has for itself are defined where they are read.
 import { BUILD_ID_FILE, DEV_VERSION_MARK } from "../src/dev/build-id.js";
 
@@ -35,6 +39,21 @@ export const TARGETS = [
 ];
 
 const MANIFEST_FILES = TARGETS.map((target) => target.manifest);
+
+/**
+ * The popup's files, which the build writes itself rather than copies: the
+ * page with its stylesheet inlined, and the script with its imports bundled.
+ * The stylesheet is not shipped at all, since nothing loads it any more.
+ */
+export const POPUP = { html: "popup/popup.html", script: "popup/popup.js", stylesheet: "popup/popup.css" };
+
+/** Writes the built popup into an already copied extension directory. */
+export function buildPopup(directory) {
+  const html = readFileSync(resolve(SRC, POPUP.html), "utf8");
+  writeFileSync(resolve(directory, POPUP.html), inlineStylesheets(html, dirname(resolve(SRC, POPUP.html))));
+  writeFileSync(resolve(directory, POPUP.script), bundle(resolve(SRC, POPUP.script), { root: SRC }));
+  rmSync(resolve(directory, POPUP.stylesheet), { force: true });
+}
 
 /** The source directory that only a dev build is allowed to copy. */
 export const DEV_SOURCE_DIR = "dev";
@@ -127,6 +146,7 @@ export function buildTarget(target, { dev = false, buildId = null, out = DIST } 
     },
   });
 
+  buildPopup(directory);
   writeFileSync(resolve(directory, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
   if (dev) {
