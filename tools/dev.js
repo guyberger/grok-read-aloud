@@ -3,6 +3,7 @@
  *
  *   npm run dev
  *   npm run dev -- --only chrome-test     # the build tools/e2e.js loads
+ *   npm run dev -- --out DIR              # write DIR/chrome instead of dist/chrome
  *
  * The build it writes carries an id and the watcher that reads it, so the copy
  * of the extension loaded in Chrome reloads itself into each rebuild; see
@@ -30,13 +31,15 @@ for (let i = 2; i < process.argv.length; i += 2) {
   args.set(process.argv[i].replace(/^--/, ""), process.argv[i + 1]);
 }
 const only = args.get("only") ?? "chrome";
+const out = args.has("out") ? resolve(args.get("out")) : undefined;
+const where = out ? `${out}/${only}` : `dist/${only}`;
 
 function rebuild(reason) {
   const started = Date.now();
   try {
-    const { buildId } = build({ dev: true, only });
+    const { buildId } = build({ dev: true, only, ...(out ? { out } : {}) });
     const at = new Date().toLocaleTimeString();
-    console.log(`${at}  built dist/${only} — build ${buildId} (${Date.now() - started}ms)${reason}`);
+    console.log(`${at}  built ${where} — build ${buildId} (${Date.now() - started}ms)${reason}`);
   } catch (error) {
     // A broken build must not end the watch: the next save is usually the fix.
     console.error(`${new Date().toLocaleTimeString()}  build failed: ${error.message}`);
@@ -44,7 +47,7 @@ function rebuild(reason) {
 }
 
 rebuild("");
-console.log(`watching ${relative(ROOT, SRC)}/ — load dist/${only} unpacked once and leave it; Ctrl-C to stop`);
+console.log(`watching ${relative(ROOT, SRC)}/ — load ${where} unpacked once and leave it; Ctrl-C to stop`);
 
 let pending = null;
 let changed = new Set();

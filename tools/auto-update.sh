@@ -11,6 +11,7 @@
 #   tools/auto-update.sh --repo /path    # another one
 #   tools/auto-update.sh --no-build      # pull only
 #   tools/auto-update.sh --remote NAME   # that remote's main, not the tracked one
+#   tools/auto-update.sh --out DIR       # write the dev build to DIR/chrome, not dist/chrome
 #
 # It is deliberately timid. It never resets, never stashes, never cleans and
 # never merges anything but a fast-forward: if the tree is dirty, if HEAD is not
@@ -25,12 +26,14 @@ set -u -o pipefail
 REPO=""
 BUILD=1
 REMOTE_NAME=""
+OUT=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; [ -n "$REPO" ] || { echo "--repo needs a path" >&2; exit 2; }; shift 2 ;;
     --no-build) BUILD=0; shift ;;
     --remote) REMOTE_NAME="${2:-}"; [ -n "$REMOTE_NAME" ] || { echo "--remote needs a name" >&2; exit 2; }; shift 2 ;;
+    --out) OUT="${2:-}"; [ -n "$OUT" ] || { echo "--out needs a path" >&2; exit 2; }; shift 2 ;;
     -h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
@@ -137,10 +140,12 @@ if [ -z "$NODE" ]; then
   finish failed-build 1
 fi
 
-if ! "$NODE" tools/build.js --dev --only chrome; then
+OUT_ARGS=()
+[ -n "$OUT" ] && OUT_ARGS=(--out "$OUT")
+if ! "$NODE" tools/build.js --dev --only chrome "${OUT_ARGS[@]+"${OUT_ARGS[@]}"}"; then
   say "pulled, but the dev build failed"
   finish failed-build 1
 fi
 
-say "rebuilt dist/chrome; the extension picks it up within about half a minute"
+say "rebuilt ${OUT:-dist}/chrome; the extension picks it up within about half a minute"
 finish updated

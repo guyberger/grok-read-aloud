@@ -5,6 +5,7 @@
 #
 #   tools/auto-update-install.sh
 #   tools/auto-update-install.sh --no-load   # write the plist, don't load it
+#   tools/auto-update-install.sh --out DIR   # have it build DIR/chrome, not dist/chrome
 #
 # launchd gives an agent a PATH of /usr/bin:/bin:/usr/sbin:/sbin and nothing
 # else, which is why node is resolved here, now, and written into the plist:
@@ -15,10 +16,12 @@ set -eu -o pipefail
 
 LABEL="com.github.guyberger.grok-read-aloud.auto-update"
 LOAD=1
+OUT=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-load) LOAD=0; shift ;;
+    --out) OUT="${2:-}"; [ -n "$OUT" ] || { echo "--out needs a path" >&2; exit 2; }; shift 2 ;;
     -h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
@@ -56,6 +59,14 @@ NODE_DIR="$(dirname "$NODE")"
 
 mkdir -p "$AGENTS" "$(dirname "$LOG")"
 
+OUT_XML=""
+if [ -n "$OUT" ]; then
+  mkdir -p "$OUT"
+  OUT="$(cd "$OUT" && pwd)"
+  OUT_XML="    <string>--out</string>
+    <string>$OUT</string>"
+fi
+
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -67,6 +78,7 @@ cat > "$PLIST" <<PLIST
   <array>
     <string>/bin/bash</string>
     <string>$SCRIPT</string>
+$OUT_XML
   </array>
   <key>WorkingDirectory</key>
   <string>$REPO</string>
@@ -92,6 +104,7 @@ PLIST
 echo "wrote $PLIST"
 echo "  checkout  $REPO"
 echo "  node      $NODE"
+echo "  build     ${OUT:-$REPO/dist}/chrome"
 echo "  log       $LOG"
 
 if [ "$LOAD" -eq 0 ]; then
