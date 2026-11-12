@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      A page that, like many news sites, refuses to play media from anywhere
+      but itself. The audio element cannot load a blob URL here, so the reader
+      has to fall back to Web Audio — and the speed control has to keep the
+      pitch on that path too.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="media-src 'self'" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Strict Media Policy — Test Article</title>
+  </head>
+  <body>
+    <article>
+      <h1>The Lighthouse Keepers</h1>
+      <p>
+        For most of two centuries the lights along the coast were kept by families who lived beside them. The work
+        was the same every night: trim the wicks, polish the lenses, wind the clockwork that turned the beam, and
+        write down the weather in a log that nobody but the inspector would ever read.
+      </p>
+      <p>
+        Electrification arrived slowly and then all at once. A keeper who had climbed the same stairs for thirty years
+        could be replaced by a timer and a fortnightly visit, and by the end of the century almost every light on the
+        coast was running on its own, watched from a control room many miles away.
+      </p>
+    </article>
+  </body>
+</html>

@@ -971,6 +971,8 @@
     player = null;
   });
 
-  ns.reader = { refreshSettings, snapshot };
+  // `playback` says how the audio is being sped up — the e2e check that a
+  // speed change never moves the pitch reads it.
+  ns.reader = { refreshSettings, snapshot, playback: () => player?.playback ?? null };
   refreshSettings();
 })(globalThis.__readAloud);

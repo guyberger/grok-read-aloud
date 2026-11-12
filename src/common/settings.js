@@ -5,8 +5,9 @@ export const DEFAULT_SETTINGS = {
   apiKey: "",
   voiceId: "eve",
   language: "en",
-  // Playback rate applied to the audio element. Timestamps stay valid because
-  // they are expressed in media time, which `currentTime` already reports.
+  // Reading speed. The audio is time-stretched to it with the pitch kept (see
+  // `content/stretch.js`); the player reports time in seconds of the original
+  // audio, so the timestamps stay valid at any speed.
   rate: 1,
   chunkChars: 1200,
   // Clicking a word in the text being read moves playback to it.

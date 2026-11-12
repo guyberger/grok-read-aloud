@@ -391,7 +391,7 @@ that requests access to every site instead; **Revoke** takes it back.
 | --- | --- | --- |
 | Voice | `eve` | Live list from the API, with a built-in fallback list |
 | Language | `en` | 20 languages plus `auto` detection |
-| Default speed | 1.0× | Applied to the audio element, so pitch is preserved |
+| Default speed | 1.0× | A pitch-preserving time-stretch — see [Known limits](#known-limits) |
 | Characters per request | 1200 | The size chunks settle at; the first one or two are smaller regardless, so a read starts quickly |
 | Click a sentence to read from it | on | Only plain clicks on the text being read, and only while one is running |
 | Read code blocks aloud | off | Whole snippets. Code inside a sentence is read either way |
@@ -1684,6 +1684,7 @@ google-chrome --headless=new --window-size=1000,800 \
   --host-resolver-rules="MAP api.x.ai 127.0.0.1:8443,MAP auth.x.ai 127.0.0.1:8443,MAP accounts.x.ai 127.0.0.1:8443,MAP docs.google.com 127.0.0.1:8443" \
   --ignore-certificate-errors-spki-list="$SPKI" \
   --remote-debugging-port=9333 --autoplay-policy=no-user-gesture-required \
+  --mute-audio \
   http://127.0.0.1:8777/article.html &
 
 # 4. the checks
@@ -1697,7 +1698,10 @@ about the build is identical, and the `activeTab` path is covered by the manual
 checklist above.
 
 Recent Chrome removed the `--load-extension` command-line switch, which is why
-the driver loads the extension over the protocol instead.
+the driver loads the extension over the protocol instead. It unloads it again
+when it finishes, pass or fail, and closes the tabs it opened, so one Chrome
+can take run after run. `--mute-audio` keeps the test audio — which really
+plays, so that playback is really tested — out of the speakers.
 
 ## Known limits
 
@@ -1829,10 +1833,21 @@ the driver loads the extension over the protocol instead.
   a page longer than the 24 MB budget drops the parts it has gone longest
   without playing, so going back to the very top of one of those is a fresh
   request.
-- **Speed above 1.5× is a playback-rate change**, not a re-synthesis. The API's
-  own `speed` parameter tops out at 1.5× and would require re-fetching on every
-  change, so the extension uses the audio element's rate, which preserves pitch.
-  The Web Audio fallback path does *not* preserve pitch.
+- **Speed is a time-stretch in the page, not a re-synthesis**, and it never
+  changes the pitch — on any page, through either playback engine. The API's
+  own `speed` parameter tops out at 1.5× and would mean re-fetching on every
+  change. Playing samples faster raises the voice, and the audio element's own
+  pitch-keeping stretch warbles from about 1.5× up, so neither is used:
+  `content/stretch.js` decodes each chunk and time-stretches it with WSOLA (the
+  method SoundTouch uses) — overlapping 30 ms windows taken `rate` times further
+  apart than they are laid down, each nudged by up to 12 ms to where it lines up
+  with the one before, so every pitch period keeps its length. Both engines play
+  the result at 1×. The stretch is written here rather than vendored; a 30 s
+  chunk takes 20–30 ms in Chrome and runs in slices of a few milliseconds, and a
+  speed change mid-read swaps in the new audio from the same word.
+  `tests/stretch.test.js` holds tones at 0.5× to 3× to within 2% of their pitch
+  (they measure within 0.05%), and the end-to-end check asserts the same on a
+  page whose policy forces the Web Audio path.
 - **The media controls show one chunk, not the page.** Play, pause, stop and
   the two sentence steps are the extension's own; the position and duration
   beside them are the browser reading the audio element, which holds the chunk
