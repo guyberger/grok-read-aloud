@@ -528,6 +528,26 @@ async function main() {
     return point;
   };
 
+  /**
+   * Bring something into view and leave it there while a read is playing.
+   *
+   * `scrollIntoView` is not a gesture the reader counts as the listener's, so
+   * a read that is still following smooth-scrolls straight back to the voice.
+   * A click measured in that gap lands on whatever has slid into those
+   * coordinates — the jump never happens, and the highlight stays where the
+   * read already was. The wheel is the gesture that hands the view over, and
+   * it has to come first: a wheel during a smooth scroll does not cancel the
+   * animation already in flight.
+   */
+  const lookAt = async (call) => {
+    await page.evaluate(
+      `document.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 40 }));
+       ${call};
+       true`,
+      world,
+    );
+  };
+
   const clickAt = async ({ x, y }) => {
     const common = { x: Math.round(x), y: Math.round(y), button: "left", clickCount: 1 };
     await page.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...common });
@@ -664,7 +684,7 @@ async function main() {
   await control("resume");
   const playingAgain = await awaitStatus("playing", { timeoutMs: 5000 });
   check("playing again before the cross-chunk jump", playingAgain.status === "playing", playingAgain.status);
-  await page.evaluate(`window.showElement("article p", 4)`, world);
+  await lookAt(`window.showElement("article p", 4)`);
   const farPlaying = await wordPoint("article p", 4, "engineering");
   const beforeFar = await page.evaluate(probe, world);
   const requestsBeforeFar = await synthesised();
@@ -758,7 +778,7 @@ async function main() {
 
   const beforeNear = await page.evaluate(probe, world);
   const requestsBeforeNear = (await synthesised()).length;
-  await page.evaluate(`window.showElement("article p", 4)`, world);
+  await lookAt(`window.showElement("article p", 4)`);
   await clickAt(await wordPoint("article p", 4, "engineering"));
   const nearJump = await awaitHighlight(far.word, { timeoutMs: 10000 });
   const afterNear = await page.evaluate(probe, world);
@@ -801,7 +821,7 @@ async function main() {
   // 9c. A link inside the text keeps its own click, while playing. The link
   // sits in the first paragraph, behind the playhead, so a jump would send
   // the read backwards — "no step back" is the assertion.
-  await page.evaluate(`window.showElement("article a")`, world);
+  await lookAt(`window.showElement("article a")`);
   const linkPoint = await page.evaluate(`
     (() => {
       const rect = document.querySelector("article a").getClientRects()[0];
@@ -830,7 +850,7 @@ async function main() {
   // Still playing, and the word clicked is behind the playhead.
   await ui.evaluate(`chrome.storage.local.set({ clickToJump: false }).then(() => true)`);
   await sleep(600);
-  await page.evaluate(`window.showElement("article p", 3)`, world);
+  await lookAt(`window.showElement("article p", 3)`);
   const disabled = await wordPoint("article p", 3, "visitors");
   await hoverAt(disabled);
   const beforeDisabled = await page.evaluate(probe, world);
@@ -886,7 +906,7 @@ async function main() {
     if (sample.status === "playing" && sample.word) break;
     await sleep(250);
   }
-  await page.evaluate(`window.showElement("article p", 2)`, world);
+  await lookAt(`window.showElement("article p", 2)`);
   const anchor = await wordPoint("article p", 2, "Grinding");
   await clickAt(anchor);
   const anchored = await awaitHighlight(anchor.word, { timeoutMs: 15000 });
@@ -982,7 +1002,7 @@ async function main() {
   }
   // Deep enough into the article that continuing from it is worth offering,
   // and in a paragraph the checks below can name.
-  await page.evaluate(`window.showElement("article p", 4)`, world);
+  await lookAt(`window.showElement("article p", 4)`);
   const leaveAt = await wordPoint("article p", 4, "engineering");
   await clickAt(leaveAt);
   const parked = await awaitHighlight(leaveAt.word, { timeoutMs: 15000 });
@@ -1788,7 +1808,7 @@ async function main() {
   // The read keeps fetching ahead while it plays, so what counts is a request
   // for text this tab had already been sent audio for.
   const fetchedByNow = await synthesised();
-  await page.evaluate(`window.showElement("article p", 0)`, world);
+  await lookAt(`window.showElement("article p", 0)`);
   const backTo = await wordPoint("article p", 0, "dammed");
   await clickAt(backTo);
   const wentBack = await awaitHighlight(backTo.word, { timeoutMs: 15000 });
