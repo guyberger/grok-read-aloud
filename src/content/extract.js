@@ -435,11 +435,55 @@
     return null;
   }
 
-  /** Index into `doc.text` under a viewport point, or -1 if it is not read. */
+  /**
+   * The offset of the character of `node` drawn under (x, y) — the one after
+   * the caret or the one before it — or -1 when the point is on neither.
+   *
+   * The caret APIs answer a different question: they snap to the nearest
+   * caret position wherever the point is, so the blank end of a short line,
+   * the gap between two paragraphs and the padding around them all come back
+   * as text. Taken on their own they make all of that blank space clickable,
+   * and the cursor promise it. A point counts as on a character when it is
+   * inside the box the character is drawn in, stretched to the full height of
+   * its line so the leading between two lines of a paragraph is not a hole.
+   */
+  function characterAt(node, offset, x, y) {
+    const length = node.data.length;
+    const range = document.createRange();
+    const lineHeight = parseFloat(getComputedStyle(node.parentElement ?? document.body).lineHeight);
+    for (const start of [offset, offset - 1]) {
+      if (start < 0 || start >= length) continue;
+      range.setStart(node, start);
+      range.setEnd(node, start + 1);
+      for (const rect of range.getClientRects()) {
+        const leading = Number.isFinite(lineHeight) ? Math.max(0, (lineHeight - rect.height) / 2) : 0;
+        if (
+          x >= rect.left - HIT_SLOP_PX &&
+          x <= rect.right + HIT_SLOP_PX &&
+          y >= rect.top - leading - HIT_SLOP_PX &&
+          y <= rect.bottom + leading + HIT_SLOP_PX
+        ) {
+          return start;
+        }
+      }
+    }
+    return -1;
+  }
+
+  /** Sub-pixel rounding at a glyph's edge should not make it a hole. */
+  const HIT_SLOP_PX = 1;
+
+  /**
+   * Index into `doc.text` of the character under a viewport point, or -1 if
+   * the point is not on a character being read — off the text altogether, or
+   * on blank space inside the element it came from.
+   */
   function charIndexFromPoint(doc, x, y) {
     const caret = caretAt(x, y);
     if (!caret || caret.node.nodeType !== Node.TEXT_NODE) return -1;
-    return charIndexAt(doc, caret.node, caret.offset);
+    const at = characterAt(caret.node, caret.offset, x, y);
+    if (at < 0) return -1;
+    return charIndexAt(doc, caret.node, at);
   }
 
   /**

@@ -561,7 +561,8 @@ async function main() {
   const awaitStatus = (status, options) => awaitStatusIn(page, world, status, options);
 
   // A click outside the selection is outside everything a selection read knows
-  // about, so it must do nothing. Paused, because a jump would resume playing.
+  // about, so it must do nothing. (Paused, a click does nothing anyway — see
+  // 9a — so this holds the selection read still to measure it.)
   await control("pause");
   await page.evaluate(`window.showElement("article p", 0)`, world);
   const outsideSelection = await wordPoint("article p", 0, "dammed");
@@ -596,21 +597,74 @@ async function main() {
     await sleep(250);
   }
 
-  // 9a. A word in a chunk that has not been fetched, from a paused read: the
-  // jump crosses chunks and playback resumes on its own — and it is the
-  // *sentence* the click landed in that is read, from its first word.
+  /** Moves the pointer to a viewport point, as a real mouse would. */
+  const hoverAt = async ({ x, y }) => {
+    await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: Math.round(x), y: Math.round(y), buttons: 0 });
+    // The cue is settled once per animation frame.
+    await sleep(150);
+  };
+
+  /** What the pointer is over now: whether the cue is on, and the cursor shown there. */
+  const cueAt = async ({ x, y }) =>
+    JSON.parse(
+      await page.evaluate(`
+        (() => {
+          const marked = [...document.querySelectorAll("[data-read-aloud-jump]")];
+          const under = document.elementFromPoint(${Math.round(x)}, ${Math.round(y)});
+          return JSON.stringify({
+            marked: marked.map((element) => element.tagName.toLowerCase()),
+            under: under?.tagName.toLowerCase() ?? null,
+            cursor: under ? getComputedStyle(under).cursor : null,
+          });
+        })()
+      `),
+    );
+
+  // 9a. Paused, the text is not something to click: no pointer over it, and
+  // a click is just a click. Click-to-jump belongs to a read that is playing
+  // (or fetching the audio for one); stepping is what the controls are for.
+  const held = await control("pause");
+  check("paused before clicking", held?.state?.status === "paused", held?.state?.status);
+  await page.evaluate(`window.showElement("article p", 4)`, world);
+  const far = await wordPoint("article p", 4, "engineering");
+  await hoverAt(far);
+  const pausedCue = await cueAt(far);
+  check(
+    "paused, the text being read does not show a pointer cursor",
+    pausedCue.marked.length === 0 && pausedCue.cursor !== "pointer",
+    `${pausedCue.marked.join(", ") || "nothing marked"}, cursor ${pausedCue.cursor} over ${pausedCue.under}`,
+  );
+  const beforePaused = await page.evaluate(probe, world);
+  const requestsBeforePaused = (await synthesised()).length;
+  await clickAt(far);
+  await sleep(1200);
+  const afterPaused = await page.evaluate(probe, world);
+  check(
+    "a click while paused does not jump",
+    afterPaused.status === "paused" &&
+      afterPaused.chunkIndex === beforePaused.chunkIndex &&
+      Math.abs(afterPaused.progress - beforePaused.progress) < 1e-6 &&
+      (await synthesised()).length === requestsBeforePaused,
+    `${afterPaused.status}, chunk ${beforePaused.chunkIndex} → ${afterPaused.chunkIndex}, ` +
+      `progress ${beforePaused.progress.toFixed(3)} → ${afterPaused.progress.toFixed(3)}`,
+  );
+
+  // 9a'. A word in a chunk that has not been fetched, from a playing read: the
+  // jump crosses chunks — and it is the *sentence* the click landed in that is
+  // read, from its first word.
   //
   // "engineering" is the fifth word of "What remains interesting is the
   // engineering restraint.", so a request beginning "What" and a highlight
   // reaching "What" before "engineering" are both only true of a jump that
   // snapped back to the sentence.
-  const held = await control("pause");
-  check("paused before the cross-chunk jump", held?.state?.status === "paused", held?.state?.status);
+  await control("resume");
+  const playingAgain = await awaitStatus("playing", { timeoutMs: 5000 });
+  check("playing again before the cross-chunk jump", playingAgain.status === "playing", playingAgain.status);
   await page.evaluate(`window.showElement("article p", 4)`, world);
-  const far = await wordPoint("article p", 4, "engineering");
+  const farPlaying = await wordPoint("article p", 4, "engineering");
   const beforeFar = await page.evaluate(probe, world);
   const requestsBeforeFar = await synthesised();
-  await clickAt(far);
+  await clickAt(farPlaying);
   const farJump = await awaitHighlight(far.word, { timeoutMs: 15000 });
   const afterFar = await awaitStatus("playing", { timeoutMs: 5000 });
   const newRequests = (await synthesised()).slice(requestsBeforeFar.length);
@@ -629,7 +683,7 @@ async function main() {
     afterFar.chunkIndex > beforeFar.chunkIndex,
     `chunk ${beforeFar.chunkIndex} → ${afterFar.chunkIndex} of ${afterFar.chunkCount}`,
   );
-  check("a jump from paused resumes playing", afterFar.status === "playing", afterFar.status);
+  check("the read keeps playing after the jump", afterFar.status === "playing", afterFar.status);
   check(
     "the audio fetched for the jump starts on the first word of that sentence",
     newRequests[0]?.head.startsWith("What remains interesting"),
@@ -643,30 +697,52 @@ async function main() {
   check("the jump kept timestamp alignment", afterFar.aligned !== false);
   check("no error during the jumps", !afterFar.error, afterFar.error);
 
-  // The cue: while the read is running, the words of it are something to
-  // click, and the cursor over them says so. It is one attribute on the
-  // element the text came out of, and `highlight.css` does the rest.
-  const cue = JSON.parse(
+  // The cue: while the read is playing, the words of it are something to
+  // click, and the cursor over them says so — over the words, and only there.
+  // The margins of the article, the gaps between its paragraphs and the page
+  // around it keep their own cursor, after a jump as before one.
+  const hoverPoints = JSON.parse(
     await page.evaluate(`
       (() => {
-        const marked = [...document.querySelectorAll("[data-read-aloud-jump]")];
+        const p = document.querySelectorAll("article p")[4];
+        p.scrollIntoView({ block: "center" });
+        const article = document.querySelector("article").getBoundingClientRect();
+        const para = p.getBoundingClientRect();
+        const previous = document.querySelectorAll("article p")[3].getBoundingClientRect();
         return JSON.stringify({
-          marked: marked.map((element) => element.tagName.toLowerCase()),
-          overText: getComputedStyle(document.querySelector("article p")).cursor,
-          overFurniture: getComputedStyle(document.querySelector("nav")).cursor,
+          padding: { x: article.left + 6, y: para.top + para.height / 2 },
+          gap: { x: para.left + para.width / 2, y: (previous.bottom + para.top) / 2 },
         });
       })()
-    `),
+    `, world),
   );
+  const overWord = await wordPoint("article p", 4, "engineering");
+  await hoverAt(overWord);
+  const cueWord = await cueAt(overWord);
   check(
     "the text being read shows a pointer cursor while it is being read",
-    cue.marked.length === 1 && cue.overText === "pointer",
-    `${cue.marked.join(", ") || "nothing marked"}, cursor ${cue.overText}`,
+    cueWord.marked.length === 1 && cueWord.cursor === "pointer",
+    `${cueWord.marked.join(", ") || "nothing marked"}, cursor ${cueWord.cursor} over ${cueWord.under}`,
+  );
+  await hoverAt(hoverPoints.gap);
+  const cueGap = await cueAt(hoverPoints.gap);
+  check(
+    "the gap between paragraphs keeps a normal cursor",
+    cueGap.marked.length === 0 && cueGap.cursor !== "pointer",
+    `${cueGap.marked.join(", ") || "nothing marked"}, cursor ${cueGap.cursor} over ${cueGap.under}`,
+  );
+  await hoverAt(overWord);
+  await hoverAt(hoverPoints.padding);
+  const cuePadding = await cueAt(hoverPoints.padding);
+  check(
+    "the article's margin keeps a normal cursor after hovering the text",
+    cuePadding.marked.length === 0 && cuePadding.cursor !== "pointer",
+    `${cuePadding.marked.join(", ") || "nothing marked"}, cursor ${cuePadding.cursor} over ${cuePadding.under}`,
   );
   check(
     "the cue stops where the text being read stops",
-    cue.overFurniture !== "pointer",
-    `over the navigation: ${cue.overFurniture}`,
+    (await page.evaluate(`getComputedStyle(document.querySelector("nav")).cursor`)) !== "pointer",
+    await page.evaluate(`getComputedStyle(document.querySelector("nav")).cursor`),
   );
 
   // 9b. A sentence inside the audio already in hand, behind the playhead: a
@@ -678,7 +754,8 @@ async function main() {
 
   const beforeNear = await page.evaluate(probe, world);
   const requestsBeforeNear = (await synthesised()).length;
-  await clickAt(far);
+  await page.evaluate(`window.showElement("article p", 4)`, world);
+  await clickAt(await wordPoint("article p", 4, "engineering"));
   const nearJump = await awaitHighlight(far.word, { timeoutMs: 10000 });
   const afterNear = await page.evaluate(probe, world);
   const requestsAfterNear = (await synthesised()).length;
@@ -717,9 +794,9 @@ async function main() {
   `, world);
   check("the highlight stays on screen after the jump", framed.visible, framed.word ?? "no word");
 
-  // 9c. A link inside the text keeps its own click. Paused, because a jump
-  // would resume playing — so "still paused" is the whole assertion.
-  await control("pause");
+  // 9c. A link inside the text keeps its own click, while playing. The link
+  // sits in the first paragraph, behind the playhead, so a jump would send
+  // the read backwards — "no step back" is the assertion.
   await page.evaluate(`window.showElement("article a")`, world);
   const linkPoint = await page.evaluate(`
     (() => {
@@ -733,8 +810,11 @@ async function main() {
   const afterLink = await page.evaluate(probe, world);
   check(
     "a click on a link inside the text is not a jump",
-    afterLink.status === "paused" && afterLink.chunkIndex === beforeLink.chunkIndex,
-    `${afterLink.status}, chunk ${beforeLink.chunkIndex} → ${afterLink.chunkIndex}`,
+    beforeLink.status === "playing" &&
+      afterLink.chunkIndex === beforeLink.chunkIndex &&
+      afterLink.progress >= beforeLink.progress,
+    `${beforeLink.status} → ${afterLink.status}, chunk ${beforeLink.chunkIndex} → ${afterLink.chunkIndex}, ` +
+      `progress ${beforeLink.progress.toFixed(3)} → ${afterLink.progress.toFixed(3)}`,
   );
   check(
     "the link kept its own behaviour",
@@ -743,25 +823,29 @@ async function main() {
   );
 
   // 9d. The setting turns it off, mid-read, listeners and cursor and all.
+  // Still playing, and the word clicked is behind the playhead.
   await ui.evaluate(`chrome.storage.local.set({ clickToJump: false }).then(() => true)`);
   await sleep(600);
   await page.evaluate(`window.showElement("article p", 3)`, world);
   const disabled = await wordPoint("article p", 3, "visitors");
+  await hoverAt(disabled);
   const beforeDisabled = await page.evaluate(probe, world);
   await clickAt(disabled);
   await sleep(700);
   const afterDisabled = await page.evaluate(probe, world);
   check(
     "clicking does nothing once the setting is off",
-    afterDisabled.status === "paused" &&
+    beforeDisabled.status === "playing" &&
       afterDisabled.chunkIndex === beforeDisabled.chunkIndex &&
-      Math.abs(afterDisabled.progress - beforeDisabled.progress) < 1e-6,
-    `${afterDisabled.status}, chunk ${beforeDisabled.chunkIndex} → ${afterDisabled.chunkIndex}`,
+      afterDisabled.progress >= beforeDisabled.progress,
+    `${beforeDisabled.status} → ${afterDisabled.status}, chunk ${beforeDisabled.chunkIndex} → ${afterDisabled.chunkIndex}, ` +
+      `progress ${beforeDisabled.progress.toFixed(3)} → ${afterDisabled.progress.toFixed(3)}`,
   );
+  const disabledCue = await cueAt(disabled);
   check(
     "and the cursor stops saying the text is clickable",
-    (await page.evaluate(`document.querySelectorAll("[data-read-aloud-jump]").length`)) === 0,
-    await page.evaluate(`getComputedStyle(document.querySelector("article p")).cursor`),
+    disabledCue.marked.length === 0 && disabledCue.cursor !== "pointer",
+    `${disabledCue.marked.join(", ") || "nothing marked"}, cursor ${disabledCue.cursor}`,
   );
   await ui.evaluate(`chrome.storage.local.set({ clickToJump: true }).then(() => true)`);
   await sleep(600);
@@ -1696,14 +1780,18 @@ async function main() {
     advanced.error || `part ${advanced.chunkIndex + 1} of ${advanced.chunkCount}`,
   );
 
-  const fetchedByNow = (await synthesised()).length;
-  await control("pause");
+  // Still playing: a click only jumps a read that is playing.
+  // The read keeps fetching ahead while it plays, so what counts is a request
+  // for text this tab had already been sent audio for.
+  const fetchedByNow = await synthesised();
   await page.evaluate(`window.showElement("article p", 0)`, world);
   const backTo = await wordPoint("article p", 0, "dammed");
   await clickAt(backTo);
   const wentBack = await awaitHighlight(backTo.word, { timeoutMs: 15000 });
   const afterBack = await awaitStatus("playing", { timeoutMs: 10000 });
-  const costOfGoingBack = (await synthesised()).length - fetchedByNow;
+  const costOfGoingBack = (await synthesised())
+    .slice(fetchedByNow.length)
+    .filter((entry) => fetchedByNow.some((earlier) => earlier.head === entry.head)).length;
   check(
     "clicking back into the opening of a read reaches the sentence asked for",
     wentBack.matched,
@@ -2270,10 +2358,25 @@ async function main() {
     Boolean(painted?.word) && !painted.error,
     painted?.error || `highlighted "${painted?.word}"`,
   );
+  // The cue follows the pointer, so put it on the word being spoken.
+  const spokenAt = JSON.parse(
+    await page.evaluate(`
+      (() => {
+        for (const range of CSS.highlights.get("read-aloud-word") ?? []) {
+          const rect = range.getClientRects()[0];
+          return JSON.stringify({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+        }
+        return "null";
+      })()
+    `, world),
+  );
+  const markedOverWord = spokenAt
+    ? (await hoverAt(spokenAt), await page.evaluate(`document.querySelectorAll("[data-read-aloud-jump]").length`))
+    : 0;
   check(
     "and its words are offered as something to click",
-    painted?.marked === 1,
-    `${painted?.marked} element(s) marked`,
+    markedOverWord === 1,
+    `${markedOverWord} element(s) marked with the pointer over "${painted?.word}"`,
   );
   check(
     "nothing is fetched for text the page already has",

@@ -83,8 +83,15 @@
    * Listening is tied to a read rather than to the page: with nothing being
    * read there is nothing for a click to move, so there is no reason for the
    * extension to be in the page's click path at all.
+   *
+   * `hover`, when given, is the cursor's half of the same promise:
+   * `hover.test(x, y)` says whether a click at that viewport point would be
+   * the reader's, and `hover.change(over)` hears each time the answer for the
+   * point under the pointer flips. It is asked again when the pointer moves
+   * and when the page scrolls under a pointer that is standing still, at most
+   * once a frame, and told `false` when the watch ends.
    */
-  function watch(handler) {
+  function watch(handler, { hover = null } = {}) {
     // Capture, so a page that swallows its own pointer events still tells us
     // where the press began and a drag is not mistaken for a click.
     const onPointerDown = (event) => {
@@ -94,8 +101,43 @@
       if (isPlainTextClick(event)) handler(event);
     };
 
+    let point = null;
+    let over = false;
+    let frame = 0;
+    const settle = () => {
+      frame = 0;
+      const now = Boolean(point) && Boolean(hover.test(point.x, point.y));
+      if (now === over) return;
+      over = now;
+      hover.change(over);
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(settle);
+    };
+    const onPointerMove = (event) => {
+      // A finger has no cursor to change.
+      if (event.pointerType === "touch") return;
+      point = { x: event.clientX, y: event.clientY };
+      schedule();
+    };
+    const onScroll = () => {
+      if (point) schedule();
+    };
+    const onPointerOut = (event) => {
+      // Leaving the window, rather than one element for another.
+      if (event.relatedTarget) return;
+      point = null;
+      schedule();
+    };
+
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("click", onClick);
+    if (hover) {
+      document.addEventListener("pointermove", onPointerMove, { capture: true, passive: true });
+      document.addEventListener("pointerout", onPointerOut, { capture: true, passive: true });
+      // Capture, so a scrolling box inside the page counts as well as the page.
+      document.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    }
 
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
@@ -103,6 +145,16 @@
       // The next read starts without a press behind it, so a first click must
       // not be measured against where a pointer went down during the last one.
       pressedAt = null;
+      if (!hover) return;
+      document.removeEventListener("pointermove", onPointerMove, true);
+      document.removeEventListener("pointerout", onPointerOut, true);
+      document.removeEventListener("scroll", onScroll, true);
+      cancelAnimationFrame(frame);
+      frame = 0;
+      if (over) {
+        over = false;
+        hover.change(false);
+      }
     };
   }
 
