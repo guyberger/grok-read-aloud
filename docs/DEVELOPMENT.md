@@ -159,7 +159,7 @@ things worth knowing:
   install rather than something to redo each session. Rebuilding over the same
   folder needs the card's **Reload** on `chrome://extensions` to take effect —
   unless the build being loaded is a dev one, which reloads itself; see
-  [Auto-update while developing](#auto-update-while-developing).
+  [Reload while developing](#reload-while-developing).
 
 ### Firefox
 
@@ -572,8 +572,8 @@ cannot sign into a Google account
 - [ ] On `chrome://extensions` or another internal page, the popup explains that
       the page cannot be read instead of appearing to hang.
 
-**Auto-update** — see [Auto-update while
-developing](#auto-update-while-developing). The reload is the one thing the
+**Dev reload** — see [Reload while
+developing](#reload-while-developing). The reload is the one thing the
 headless driver cannot watch all the way through, because an extension loaded
 over the DevTools Protocol does not come back from `chrome.runtime.reload()`.
 - [ ] With `dist/chrome` loaded unpacked from a dev build, save a file under
@@ -586,11 +586,6 @@ over the DevTools Protocol does not come back from `chrome.runtime.reload()`.
       another window, not the active one, is left alone.
 - [ ] Open the popup and save a file while it is on screen: the panel stays up
       and keeps working, and the reload happens once it is closed.
-- [ ] `tools/auto-update.sh` with a dirty tree logs `status=skipped-dirty` and
-      leaves the change alone; on `main` and clean, behind the `main` it
-      tracks, it logs `status=updated` and Chrome reloads itself a moment later.
-- [ ] After `tools/auto-update-uninstall.sh`, `launchctl list | grep
-      grok-read-aloud` finds nothing.
 
 ## Development
 
@@ -619,10 +614,8 @@ it, the claim that keeps one tab reading at a time, the line between code
 written into a sentence and a snippet, the arithmetic behind how long a read
 has left, what the read looks like on the browser's own media controls, the
 line between a pause the extension asked for and one that came from outside it,
-the rule that decides whether a dev build has been rebuilt under it, and the
-rules that stop the hourly pull touching a checkout that is mid-change — those
-last against real checkouts with a bare repository standing in for the remote,
-so nothing in `npm test` needs the network.
+and the rule that decides whether a dev build has been rebuilt under it.
+Nothing in `npm test` needs the network.
 The extraction, click, media-control and playback tests drive a headless
 Chrome, because what counts as rendered, what is under a given pixel, which
 media actions a browser has and when an audio element fires `pause` are the
@@ -655,31 +648,23 @@ for](#audio-already-paid-for): with the latency model above, the first read
 waits about 800 ms for its opening chunk and the second waits about 12 ms for
 no requests at all.
 
-### Auto-update while developing
+### Reload while developing
 
 A loaded unpacked extension is a folder Chrome read once. Change the folder and
 nothing happens; you have to press **Reload** on its card. This section is how
-to stop doing that — and, with the hourly pull below, how a merge to `main`
-reaches a Chrome that is already open without anybody touching it.
+to stop doing that.
 
 **One-time setup**
 
-1. Start `npm run dev` and, while it is running, load `dist/chrome` unpacked
-   from `chrome://extensions` as in [Install](#chrome). It matters that it is a
-   *dev* build being loaded: the dev build is the one carrying the watcher, and
-   what Chrome keeps is whatever was in that folder at that moment. If the card
-   is already there from a production build, remove it and add it again.
-2. Run `tools/auto-update-install.sh` once, from this checkout. It writes a
-   LaunchAgent that runs `tools/auto-update.sh` now and then every hour, logging
-   to `~/Library/Logs/grok-read-aloud-auto-update.log`.
-3. Nothing else. `npm run dev` can be stopped and started as you like; the
-   LaunchAgent runs its own build and does not need the watcher.
+Start `npm run dev` and, while it is running, load `dist/chrome` unpacked
+from `chrome://extensions` as in [Install](#chrome). It matters that it is a
+*dev* build being loaded: the dev build is the one carrying the watcher, and
+what Chrome keeps is whatever was in that folder at that moment. If the card
+is already there from a production build, remove it and add it again. After
+that, every rebuild while `npm run dev` is running reloads the extension.
 
 ```bash
-npm run dev                          # terminal 1, while you load dist/chrome
-tools/auto-update-install.sh         # once
-tail -f ~/Library/Logs/grok-read-aloud-auto-update.log
-tools/auto-update-uninstall.sh       # when you want it gone
+npm run dev                          # while you load dist/chrome
 ```
 
 **If the popup takes a second or more to open.** On some Macs, Chrome reads
@@ -691,7 +676,6 @@ case, build there and load that folder instead of `dist/chrome`:
 ```bash
 OUT="$HOME/Library/Application Support/grok-read-aloud"
 npm run dev -- --out "$OUT"                 # then load "$OUT/chrome" unpacked
-tools/auto-update-install.sh --out "$OUT"   # the hourly update builds there too
 ```
 
 **`npm run dev`** rebuilds `dist/chrome` on every change under `src/`,
@@ -727,23 +711,6 @@ running it; while the worker is awake a plain two-second poll makes it quicker
 than that. None of it is on the path the popup opens through — the worker checks
 on its own schedule, never in answer to a message — and a check that lands while
 the panel is on screen postpones itself rather than closing it.
-
-**The hourly pull**, `tools/auto-update.sh`, is deliberately timid. It fetches
-the remote local `main` tracks — `main@{upstream}` names `<remote>/<branch>`,
-and `branch.main.remote` is that remote — and fast-forwards only when the
-checkout is on `main`, the working tree is clean, and that remote's `main` is
-strictly ahead. A plain clone tracks `origin`; a checkout whose `main` follows
-another remote fetches that one instead. A `main` with no upstream falls back
-to `origin`, and `--remote NAME` fetches that remote rather than the tracked
-one. Anything else — a branch, an uncommitted change, an untracked file, a
-local commit the remote `main` has not got — is logged and skipped, and the
-log names the remote it used. It never resets, stashes, cleans or merges
-anything but a fast-forward, and `tests/auto-update.test.js` asserts the skips
-by what is still there afterwards. When it does pull it runs the dev build, and
-the extension picks that up on its own. launchd hands an agent a PATH of almost
-nothing, which is why the installer resolves `node` at install time and writes
-it into the plist: Homebrew's `node` and an nvm one are both somewhere launchd
-would never look.
 
 **The production build is untouched by all of it.** `npm run build` copies no
 `src/dev/`, writes no `build-id.json`, adds no permission and names no build —
@@ -1835,15 +1802,13 @@ plays, so that playback is really tested — out of the speakers.
   Two tabs can still be paused mid-read at once, each holding its own place.
 - **Pages the browser protects** — `chrome://`, `about:`, the Web Store, other
   extensions' pages — cannot be read, and the popup says so.
-- **The auto-update is Chrome, macOS, and development only.** The reload rests
+- **The dev reload is Chrome and development only.** It rests
   on `chrome.runtime.reload()` reloading an *unpacked* extension from disk,
   which is a thing a development install does and a Web Store install does not;
   `--dev` refuses the Firefox target outright rather than guessing at an
-  equivalent, and a temporary add-on is gone on restart anyway. The hourly pull
-  is a macOS LaunchAgent, so Linux would want a systemd timer and Windows a
-  scheduled task — `tools/auto-update.sh` itself is portable, only the thing
-  that runs it is not. None of this is in a production build at all; see
-  [Auto-update while developing](#auto-update-while-developing).
+  equivalent, and a temporary add-on is gone on restart anyway. None of this
+  is in a production build at all; see
+  [Reload while developing](#reload-while-developing).
 - **Long pages cost real money.** Billing is per input character, and the whole
   page is sent in chunks. The API caps a single request at 60,000 characters;
   the extension stays far below that, but a very long article is still a lot of

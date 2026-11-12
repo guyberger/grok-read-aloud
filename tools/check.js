@@ -52,8 +52,7 @@ for (const file of files) {
   }
 }
 
-// So does every shell script. One of them is run by launchd at an hour nobody
-// is watching, where a syntax error is a line in a log file and nothing else.
+// So does every shell script.
 for (const file of files) {
   if (extname(file) !== ".sh") continue;
   const parsed = spawnSync("bash", ["-n", file], { encoding: "utf8" });
