@@ -423,6 +423,100 @@ test("a selection read is only clickable inside the selection", { skip }, async 
   assert.equal(elsewhere, -1, "text outside the selection should not be clickable");
 });
 
+test("blank space inside the text's own element resolves to nothing", { skip }, async () => {
+  const { page } = await read("article.html");
+
+  // The caret APIs snap to the nearest text from anywhere in a block, so each
+  // of these used to come back as a character — and be clickable, under a
+  // pointer cursor — although nothing is drawn there.
+  const points = JSON.parse(
+    await page.evaluate(`
+      (() => {
+        const { extract } = globalThis.__readAloud;
+        const paragraphs = [...document.querySelectorAll("article p")];
+        paragraphs[0].scrollIntoView({ block: "center" });
+        const first = paragraphs[0].getBoundingClientRect();
+        const second = paragraphs[1].getBoundingClientRect();
+        const lines = (element) => {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          return [...range.getClientRects()];
+        };
+        // A paragraph whose last line stops well short of the column's edge.
+        const short = paragraphs.find((element) => {
+          const box = element.getBoundingClientRect();
+          return box.top > 0 && box.bottom < innerHeight && box.right - lines(element).at(-1).right > 80;
+        });
+        const lastLine = lines(short).at(-1);
+        const article = document.querySelector("article").getBoundingClientRect();
+        const at = (x, y) => extract.charIndexFromPoint(window.doc, x, y);
+        return JSON.stringify({
+          word: at(lines(paragraphs[0])[0].left + 12, lines(paragraphs[0])[0].top + lines(paragraphs[0])[0].height / 2),
+          betweenParagraphs: at(first.left + 40, (first.bottom + second.top) / 2),
+          endOfShortLine: at((lastLine.right + short.getBoundingClientRect().right) / 2, lastLine.top + lastLine.height / 2),
+          articlePadding: at(article.left + 8, first.top - 6 > article.top ? article.top + 4 : -1),
+        });
+      })()
+    `),
+  );
+
+  assert.ok(points.word >= 0, "a point on a word is still on the text");
+  assert.equal(points.betweenParagraphs, -1, "the gap between two paragraphs");
+  assert.equal(points.endOfShortLine, -1, "the blank end of a paragraph's last line");
+  assert.equal(points.articlePadding, -1, "the padding around the text");
+});
+
+test("the hover cue is on only while the pointer is on the text being read", { skip }, async () => {
+  const { page } = await read("article.html");
+
+  await page.evaluate(`
+    (() => {
+      const ns = globalThis.__readAloud;
+      window.hovered = [];
+      window.unwatch = ns.pointer.watch(() => {}, {
+        hover: {
+          test: (x, y) => ns.extract.charIndexFromPoint(window.doc, x, y) >= 0,
+          change: (over) => window.hovered.push(over),
+        },
+      });
+      const paragraphs = [...document.querySelectorAll("article p")];
+      paragraphs[0].scrollIntoView({ block: "center" });
+      const range = document.createRange();
+      range.selectNodeContents(paragraphs[0]);
+      const line = range.getClientRects()[0];
+      const first = paragraphs[0].getBoundingClientRect();
+      const second = paragraphs[1].getBoundingClientRect();
+      const nav = document.querySelector("nav").getBoundingClientRect();
+      window.spots = {
+        word: [line.left + 12, line.top + line.height / 2],
+        gap: [first.left + 40, (first.bottom + second.top) / 2],
+        nav: [nav.left + 30, nav.top + nav.height / 2],
+      };
+      window.moveTo = (name) => new Promise((resolve) => {
+        const [x, y] = window.spots[name];
+        document.elementFromPoint(x, y).dispatchEvent(
+          new PointerEvent("pointermove", { bubbles: true, clientX: x, clientY: y, pointerType: "mouse" }),
+        );
+        // The cue settles once a frame.
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(JSON.stringify(window.hovered))));
+      });
+      return true;
+    })()
+  `);
+
+  const move = async (name) => JSON.parse(await page.evaluate(`window.moveTo(${JSON.stringify(name)})`));
+
+  assert.deepEqual(await move("word"), [true], "onto a word turns the cue on");
+  assert.deepEqual(await move("gap"), [true, false], "into the gap between paragraphs turns it off");
+  assert.deepEqual(await move("word"), [true, false, true], "and back onto a word turns it on again");
+  assert.deepEqual(await move("nav"), [true, false, true, false], "page furniture is never the text");
+  assert.deepEqual(await move("nav"), [true, false, true, false], "it is told about changes, not every move");
+
+  await move("word");
+  const ended = JSON.parse(await page.evaluate(`(window.unwatch(), JSON.stringify(window.hovered))`));
+  assert.equal(ended.at(-1), false, "ending the watch over the text takes the cue off");
+});
+
 /** Dispatches clicks and reports whether the reader would act on each one. */
 async function clickGate(page) {
   await page.evaluate(`

@@ -67,7 +67,7 @@ covered in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#install).
 - **Speed:** drag the slider or pick a preset, from 0.5× to 3×. The pitch stays
   the same at every speed.
 - **Move around:** the ◀ and ▶ buttons step a sentence back or forward, and
-  clicking any sentence in the page reads from there.
+  clicking any sentence in the page while it is playing reads from there.
 - **Keys:** there are no extension shortcuts. The keyboard's play/pause key,
   headphone buttons and the system's media controls all work, even with the tab
   in the background.

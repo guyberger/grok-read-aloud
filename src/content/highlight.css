@@ -54,11 +54,13 @@
 }
 
 /**
- * While a page is being read, the words of it are something to click: a click
- * moves the read to the sentence it lands in. The cursor says so.
+ * While a page is being read aloud, the words of it are something to click: a
+ * click moves the read to the sentence it lands in. The cursor says so.
  *
- * Set on the one element the text was taken from, so it inherits across the
- * article and stops at its edges, and only while a read is running. Links,
+ * Set on the one element the text was taken from, and only while the pointer
+ * is on a character of that text and the voice is going — the reader hit-tests
+ * the pointer and adds and removes the attribute as it crosses on and off the
+ * words, so blank space inside the element keeps the page's own cursor. Links,
  * buttons and fields set their own cursor and keep it, and text can still be
  * selected by dragging — which is also the gesture that is never a jump.
  */

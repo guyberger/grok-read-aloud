@@ -315,11 +315,14 @@ different half of this, so `npm test` asserts both are still asked for.
   read, and they work with the tab in the background.
 - **About *n* min left** — next to the part count, how much listening is left
   at the speed currently set. Moving the speed slider moves it.
-- **Click anywhere in the text** while it is reading to carry on from the
+- **Click anywhere in the text** while it is playing to carry on from the
   sentence you clicked, starting at its first word. The audio stops where it
-  was and picks up there. It works while paused too, and starts playing again
-  from there. While a read is running the cursor over the text being read is a
-  pointer, so you can see where this works; links, buttons and fields keep
+  was and picks up there. It only works while the read is playing (or fetching
+  the audio to play): paused or stopped, a click is just a click — use ◀ and ▶
+  or resume first. While it is playing the cursor is a pointer over the words
+  of the text being read, and only over them — the margins, the space between
+  paragraphs and everything around the article keep their usual cursor — so
+  you can see exactly where a click lands. Links, buttons and fields keep
   their own behaviour, selecting text by dragging still selects, and a click
   outside the text being read does nothing.
 - **Continue page** — when a page was left part-read, the popup says how far in
@@ -546,15 +549,21 @@ cannot sign into a Google account
 - [ ] While a selection is being read, clicking outside it does nothing.
 
 **Clicking to jump**
-- [ ] While reading, the cursor over the text being read is a pointer, and over
+- [ ] While reading, the cursor over the words being read is a pointer, and over
       the navigation and the footer it is not.
+- [ ] While reading, the article's margins, the gap between two paragraphs and
+      the blank end of a short line show the normal cursor — including after a
+      jump — and clicking there does nothing.
 - [ ] Click the middle of a sentence further down the same paragraph: playback
       continues from the *first word of that sentence*, with no pause, and the
       tint moves with it.
 - [ ] Click a sentence near the end of a long article: it starts there within a
       second or two and carries on.
 - [ ] Click a sentence behind the playhead: it goes back to its start.
-- [ ] Pause, then click a sentence: it jumps there and starts playing again.
+- [ ] Pause: the pointer cursor is gone from the text, and clicking a sentence
+      does nothing — it stays paused where it was. ◀ and ▶ still step.
+- [ ] Click a second sentence while the first jump is still fetching: it goes
+      to the second one, with no error shown.
 - [ ] Click a link in the article: the link opens, and playback does not move.
 - [ ] Select some text by dragging: playback does not move.
 - [ ] Clicking navigation, the sidebar or the footer does nothing.
@@ -1133,22 +1142,55 @@ The page can only ask: the worker holds the key and therefore the `fetch`, so it
 holds the `AbortController` too, and the page names the request it no longer
 wants.
 
-**Only while there is a read to move.** The listeners go on when a read starts
-and come off when it ends, rather than sitting in every page the extension has
+**Only while there is a read playing.** The listeners go on while a read is
+playing — or loading the audio for one, which is what a jump puts it in — and
+come off when it pauses, stops or ends, rather than sitting in every page the extension has
 ever been invoked on: with nothing being read there is nothing for a click to
 do, so there is no reason to be in the page's click path at all. `emit` is the
 single place every state change passes through, so the listeners follow the
 state instead of being switched on by hand at each of the half-dozen places a
 read starts or stops. Turning the setting off mid-read takes them off too.
 
-**The cue.** While a read is running, the cursor over the text being read is a
-pointer. It is one `data-read-aloud-jump` attribute on the single element the
-text was taken from, which `content/highlight.css` turns into a `cursor` rule —
-so it inherits across the article and stops at its edges, and links, buttons and
-fields keep the cursor they set for themselves. That attribute is the one thing
-in here that touches the page rather than painting over it, which is why it is an
-attribute rather than a node, why it is on one element rather than on the words,
-and why it comes off the moment the read ends. A selection read gets no cue: the
+Paused is deliberately not included. A paused read is one the listener has put
+down, and the page under it goes back to being an ordinary page: text can be
+clicked to place a caret or to dismiss something without the audio starting
+again. Moving a paused read is what the ◀ and ▶ controls are for, and they still
+work while paused. A click whose `pointerdown` came during a play but whose
+`click` arrives after a pause is dropped too — `onTextClick` checks the status
+again rather than trusting that the listener was on.
+
+A second click while the audio for the first jump is still being fetched cancels
+that fetch. The superseded `playChunk` sees its request rejected with an
+`AbortError`; it is stale — the session has moved on — so it returns quietly
+instead of reporting the abort as the new read's error. (Before this was
+guarded, the rejection put the read into `error` with "signal is aborted without
+reason", flashed the error and took the click listeners off until the new audio
+began to play.)
+
+**The cue.** While a read is playing, the cursor over the words of the text
+being read is a pointer, and everywhere else it is whatever the page says. It is
+one `data-read-aloud-jump` attribute on the single element the text was taken
+from, which `content/highlight.css` turns into a `cursor` rule, and links,
+buttons and fields keep the cursor they set for themselves. The attribute is
+*not* simply left on for the whole read: an article is mostly not words — its
+padding, the space between paragraphs, the blank end of every short line, a
+figure, an infobox — and a cursor rule on the element inherits across all of
+it, so a static attribute promised a jump everywhere inside the article, and
+`caretPositionFromPoint`, which snaps to the nearest caret from any point,
+made the promise true by jumping to whatever text was nearest. Instead
+`pointer.watch` follows `pointermove` and `scroll` and, at most once a frame,
+asks whether the point is on a character of the read text; the attribute goes on
+when the answer turns true and off when it turns false or the pointer leaves the
+window. "On a character" is `extract.charIndexFromPoint`: the caret it finds is
+only accepted if the box of the character beside it (stretched to the line's
+height, so the space between two lines of a paragraph still counts) contains the
+point; anywhere else it returns −1, and a click there does nothing, so the
+cursor and the click always agree.
+
+That attribute is the one thing in here that touches the page rather than
+painting over it, which is why it is an attribute rather than a node, why it is
+on one element rather than on the words, and why it comes off the moment the
+pointer leaves the words or the read pauses, stops or ends. A selection read gets no cue: the
 clickable text is the selection, and marking the element it happens to sit
 inside would promise the rest of that element too.
 
@@ -1491,9 +1533,12 @@ fetched for, and once back into audio already in hand — and assert each time
 that the request begins `What remains interesting`, that the highlight reaches
 `What` before it reaches `engineering`, and that the tint is on that whole
 sentence. All three are false of a jump that went to the word rather than to the
-sentence. The cue is checked as a computed `cursor`: a pointer over the article
-while a read is running, not a pointer over the navigation, and gone from both
-when the read stops or the setting is turned off.
+sentence. The cue is checked as a computed `cursor` under a real `mouseMoved`: a
+pointer over a word while a read is playing, the normal cursor over the gap
+between two paragraphs and over the article's padding (after a jump, and after
+hovering a word first), never a pointer over the navigation, and gone when the
+read pauses, stops or the setting is turned off. A click while paused is checked
+to move nothing and cost no request.
 
 The checks for [picking up where you left off](#picking-up-where-you-left-off)
 reload the page between the two reads, so the content scripts, the chunk list

@@ -342,7 +342,16 @@
     const wanted = requestChunk(index);
     prefetch(index);
 
-    await wanted;
+    // A jump made while this was loading cancels the request it was waiting
+    // on, and the request fails as cancelled requests do. That failure is the
+    // superseded read's, not the one now running: reporting it would put the
+    // new read into an error it never had, and take the clicks off with it.
+    try {
+      await wanted;
+    } catch (error) {
+      if (session !== sessionId) return;
+      throw error;
+    }
     if (session !== sessionId) return;
 
     const request = audioRequest(index);
@@ -354,7 +363,12 @@
     lastSentence = -1;
 
     const audio = ensurePlayer();
-    await audio.load(entry.bytes, entry.contentType);
+    try {
+      await audio.load(entry.bytes, entry.contentType);
+    } catch (error) {
+      if (session !== sessionId) return;
+      throw error;
+    }
     if (session !== sessionId) return;
 
     audio.setRate(settings.rate);
@@ -369,7 +383,12 @@
     // that never gets as far as audio — no credential, a request that failed
     // — never silences a tab that is working.
     handoff.take();
-    await audio.play();
+    try {
+      await audio.play();
+    } catch (error) {
+      if (session !== sessionId) return;
+      throw error;
+    }
     if (session !== sessionId) return;
     if (state.notice === BLOCKED_NOTICE) {
       state.notice = "";
@@ -692,6 +711,14 @@
   const ACTIVE = new Set(["loading", "playing", "paused"]);
 
   /**
+   * When a click in the text is the reader's: while the voice is going, or
+   * about to — a read starting, or a jump fetching its audio. Paused, the
+   * page is the listener's to select and click in like any other page, so
+   * the reader keeps out of it; the popup's play button is the way back in.
+   */
+  const CLICKABLE_STATUSES = new Set(["loading", "playing"]);
+
+  /**
    * Move playback to the word at `charIndex` and keep reading from there.
    *
    * Three ways in, cheapest first. The word is in the chunk already playing:
@@ -818,7 +845,7 @@
    * usually audio this tab has already been billed for.
    */
   function onTextClick(event) {
-    if (!doc || !ACTIVE.has(state.status)) return;
+    if (!doc || !CLICKABLE_STATUSES.has(state.status)) return;
     const charIndex = extract.charIndexFromPoint(doc, event.clientX, event.clientY);
     // Outside the text being read — page furniture, or anywhere at all in a
     // selection read — and the click was never ours.
@@ -846,13 +873,23 @@
     // Only where the words are in the page. Text fetched from elsewhere has
     // nothing on screen for a click to land on, and a cursor promising
     // otherwise over a canvas would be a lie.
-    const wanted = Boolean(settings.clickToJump && doc?.mapped && ACTIVE.has(state.status));
-    if (wanted && !unwatchClicks) unwatchClicks = pointer.watch(onTextClick);
+    const wanted = Boolean(settings.clickToJump && doc?.mapped && CLICKABLE_STATUSES.has(state.status));
+    if (wanted && !unwatchClicks) {
+      unwatchClicks = pointer.watch(onTextClick, {
+        hover: { test: overReadText, change: markClickable },
+      });
+    }
     if (!wanted && unwatchClicks) {
+      // Unwatching reports the pointer as off the text, which takes the cue
+      // off with it.
       unwatchClicks();
       unwatchClicks = null;
     }
-    markClickable();
+  }
+
+  /** Whether a click at this viewport point would move the read. */
+  function overReadText(x, y) {
+    return Boolean(doc) && extract.charIndexFromPoint(doc, x, y) >= 0;
   }
 
   /**
@@ -877,17 +914,19 @@
 
   /**
    * The hover cue: one attribute on the element the text came out of, which
-   * `highlight.css` turns into a pointer cursor. An attribute rather than a
-   * node, and removed the moment the read ends — nothing of it survives a read
-   * — but it is still the page's own element, which is the one thing in here
-   * that touches the document rather than painting over it.
+   * `highlight.css` turns into a pointer cursor — set only while the pointer
+   * is on a character a click would jump to, so the cursor over the margins,
+   * the gaps between paragraphs and anything else inside that element stays
+   * the page's own. An attribute rather than a node, and gone the moment the
+   * pointer leaves the text or the read stops being clickable — but it is
+   * still the page's own element, which is the one thing in here that touches
+   * the document rather than painting over it.
    *
    * A selection read gets no cue: the clickable text is the selection, not the
-   * element it happened to be inside, and marking that element would promise
-   * the rest of it too.
+   * element it happened to be inside.
    */
-  function markClickable() {
-    const wanted = unwatchClicks && doc?.scope === "page" ? doc.root : null;
+  function markClickable(over) {
+    const wanted = over && unwatchClicks && doc?.scope === "page" ? doc.root : null;
     if (markedRoot === wanted) return;
     markedRoot?.removeAttribute?.(CLICKABLE);
     wanted?.setAttribute?.(CLICKABLE, "");
