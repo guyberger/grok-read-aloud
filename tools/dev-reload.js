@@ -22,7 +22,7 @@
  * `Extensions.loadUnpacked` nor any amount of waiting brings it back. So the
  * last thing this can see is the extension taking itself down. That it comes
  * back into the new build is true of a `chrome://extensions` unpacked install —
- * which is the one Guy has, and the one this is for — and it is what the
+ * which is the one developers use, and the one this is for — and it is what the
  * manual checklist in the README covers. The teardown is still a real
  * assertion: the control build, polled over the same interval, never does it.
  */
@@ -261,7 +261,7 @@ async function main() {
   build({ dev: false, only: "chrome", out });
 
   // -------------------------------------------------------------------------
-  // 2. The dev build, loaded the way Guy loads it: once, and then left alone.
+  // 2. The dev build, loaded the way a developer loads it: once, and then left alone.
   const dev = await browser.send("Extensions.loadUnpacked", { path: devDir });
   const firstBuild = buildIdOnDisk(devDir);
   const devBefore = await interrogate(dev.id);

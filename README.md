@@ -30,10 +30,6 @@ Repository: https://github.com/guyberger/grok-read-aloud.git
      options**), click **Sign in with xAI**, or paste an API key from
      https://console.x.ai and click **Save key**. Then click **Allow on all
      sites** under Site access and accept Chrome's prompt, so it is always on.
-4. Offer hourly auto-updates as an extra. If I want them, run
-   `cd ~/grok-read-aloud && node tools/build.js --dev --only chrome --out "$HOME/Library/Application Support/grok-read-aloud" && tools/auto-update-install.sh --out "$HOME/Library/Application Support/grok-read-aloud"`,
-   then tell me to press **Reload** on the extension's card once. After that
-   it updates itself.
 ```
 
 A Chrome extension that reads the page, or your selection, aloud with xAI's
