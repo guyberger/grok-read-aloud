@@ -357,10 +357,14 @@
     const request = audioRequest(index);
     const entry = request && cache.get(request);
     if (!entry) return;
-    timeline = entry.timeline;
-    state.aligned = entry.timeline.aligned;
-    lastWord = -1;
-    lastSentence = -1;
+
+    // The frame loop is still following the previous chunk. Its clock sits at
+    // the end of that audio, and loading the next source resets the clock to
+    // 0 — while this chunk's words are timed from 0 as well. Painting in the
+    // gap, with one of those swapped and the other not yet, highlights a word
+    // seconds into the new chunk and then jumps back to its start. Stop
+    // painting, load, and only then point the highlight at this chunk.
+    stopLoop();
 
     const audio = ensurePlayer();
     try {
@@ -370,6 +374,11 @@
       throw error;
     }
     if (session !== sessionId) return;
+
+    timeline = entry.timeline;
+    state.aligned = entry.timeline.aligned;
+    lastWord = -1;
+    lastSentence = -1;
 
     audio.setRate(settings.rate);
     if (startTime > 0) audio.seek(startTime);
@@ -450,7 +459,10 @@
   }
 
   function update() {
-    if (!timeline || !player) return;
+    // Loading keeps the previous highlight. The new timeline and the new clock
+    // are installed together, and a frame in between would walk the word
+    // backwards — see playChunk.
+    if ((state.status !== "playing" && state.status !== "paused") || !timeline || !player) return;
     const time = player.getTime();
     const wordIndex = util.lastAtOrBefore(timeline.words, time);
     const sentenceIndex = util.lastAtOrBefore(timeline.sentences, time);

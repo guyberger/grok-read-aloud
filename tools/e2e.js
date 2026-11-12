@@ -353,15 +353,19 @@ async function main() {
 
   let inOrder = found.length > 0;
   let cursor = 0;
-  for (const word of found) {
+  let orderDetail = found.slice(0, 8).join(" ");
+  for (let i = 0; i < found.length; i += 1) {
+    const word = found[i];
     const at = articleText.indexOf(word, cursor);
     if (at < 0) {
       inOrder = false;
+      const before = found.slice(Math.max(0, i - 4), i).join(" ");
+      orderDetail = `broke at ${JSON.stringify(word)} after ${before}`;
       break;
     }
     cursor = at;
   }
-  check("highlights advance in document order", inOrder, found.slice(0, 8).join(" "));
+  check("highlights advance in document order", inOrder, orderDetail);
 
   const skipped = ["Navigation:", "Sidebar:", "Footer:", "paragraph", "none"];
   check(
