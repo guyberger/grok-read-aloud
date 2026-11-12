@@ -115,15 +115,53 @@ function check(name, passed, detail = "") {
   console.log(`${passed ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
 }
 
+/**
+ * Puts the browser back the way the run found it: the tabs the run opened are
+ * closed and the extension it loaded is unloaded, so the next run (or the one
+ * after a fix) is not sharing every page with copies of builds gone by. Set
+ * once the run has something to undo; called whether it passed or not.
+ */
+let tidyUp = async () => {};
+
 async function main() {
   const version = await (await fetch(`${CDP}/json/version`)).json();
   const browser = await new Session(version.webSocketDebuggerUrl).open();
 
+  // Every tab the run opens and has not closed again, for tidyUp — and the
+  // one tab it found and leaves behind for the next run.
+  const opened = new Set();
+  let keep = null;
+  const send = browser.send.bind(browser);
+  browser.send = async (method, params) => {
+    const result = await send(method, params);
+    if (method === "Target.createTarget" && result?.targetId) opened.add(result.targetId);
+    if (method === "Target.closeTarget") opened.delete(params?.targetId);
+    return result;
+  };
+
   let extensionId = args.get("id");
+  const loadedHere = !extensionId;
   if (!extensionId) {
     const loaded = await browser.send("Extensions.loadUnpacked", { path: EXTENSION_DIR });
     extensionId = loaded.id;
   }
+  tidyUp = async () => {
+    tidyUp = async () => {};
+    for (const targetId of opened) await send("Target.closeTarget", { targetId }).catch(() => {});
+    // And the tabs the extension opened itself, such as a sign-in page.
+    const { targetInfos = [] } = await send("Target.getTargets").catch(() => ({}));
+    for (const target of targetInfos) {
+      if (target.type !== "page" || target.targetId === keep) continue;
+      const fromRun = target.url.startsWith(`chrome-extension://${extensionId}/`) || /^https:\/\/(accounts|auth)\.x\.ai\//.test(target.url);
+      if (fromRun) await send("Target.closeTarget", { targetId: target.targetId }).catch(() => {});
+    }
+    if (loadedHere) {
+      await send("Extensions.uninstall", { id: extensionId }).catch((error) =>
+        console.log(`could not unload ${extensionId}: ${error.message}`),
+      );
+    }
+    browser.close();
+  };
   console.log(`extension id: ${extensionId}\n`);
 
   // The article tab must stay active: messages without an explicit tab id go
@@ -135,6 +173,7 @@ async function main() {
   const articleTarget = await findTarget((target) => target.url.startsWith(origin), {
     label: PAGE_URL,
   });
+  keep = articleTarget.id;
   await browser.send("Target.activateTarget", { targetId: articleTarget.id });
 
   // Extension pages can message the background worker; the worker cannot
@@ -202,6 +241,12 @@ async function main() {
     }).then(() => true)
   `);
   check("settings persist to storage.local", true);
+
+  // The voice preview plays at the chosen speed through the same stretch.
+  check(
+    "the options page's preview has the pitch-keeping stretch",
+    (await ui.evaluate(`typeof globalThis.__readAloud?.stretch?.render`)) === "function",
+  );
 
   // 2. Voice list through the background worker.
   const voices = await command({ type: "listVoices" });
@@ -367,6 +412,14 @@ async function main() {
       return globalThis.__readAloud.reader.snapshot().progress - a;
     })()
   `, world);
+  // Faster, but never higher: the audio playing is audio stretched to 2x,
+  // and nothing is playing it at anything but 1x.
+  const fastPlayback = await page.evaluate(`globalThis.__readAloud.reader.playback()`, world);
+  check(
+    "2x is played as audio stretched to 2x, with the pitch where it was",
+    fastPlayback?.stretchedRate === 2 && fastPlayback?.pitchPreserving === true,
+    JSON.stringify(fastPlayback),
+  );
   await control("setRate", { rate: 1 });
   const normal = await page.evaluate(`
     (async () => {
@@ -2231,6 +2284,40 @@ async function main() {
 
   await control("stop");
 
+  // 22. A page whose policy refuses blob media, which sends playback down the
+  // Web Audio path. Speed there used to be samples played faster — a higher
+  // voice — and has to be the same pitch-keeping stretch as everywhere else.
+  await page.send("Page.navigate", { url: `${origin}/csp-strict.html` });
+  await sleep(1500);
+  // The rate is set once the reader is on the page: before that there is
+  // nothing in the tab to hear it.
+  await control("start", { scope: "page", from: "start" });
+  world = await page.isolatedContextId();
+  await awaitStatus("playing", { timeoutMs: 25000 });
+  await control("setRate", { rate: 2 });
+  await sleep(600);
+  const strict = await page.evaluate(`
+    (async () => {
+      const reader = globalThis.__readAloud.reader;
+      const before = reader.snapshot().progress;
+      await new Promise((r) => setTimeout(r, 1000));
+      return { playback: reader.playback(), moved: reader.snapshot().progress - before, error: reader.snapshot().error };
+    })()
+  `, world);
+  check(
+    "a page that refuses blob media plays through Web Audio",
+    strict.playback?.engine === "webaudio",
+    JSON.stringify(strict.playback),
+  );
+  check(
+    "and 2x there keeps the pitch too",
+    strict.playback?.stretchedRate === 2 && strict.playback?.pitchPreserving === true && !strict.error,
+    strict.error || JSON.stringify(strict.playback),
+  );
+  check("and it still moves through the page", strict.moved > 0, `${strict.moved.toFixed(4)} in 1s`);
+  await control("stop");
+  await control("setRate", { rate: 1 });
+
   // The tab goes back where the driver found it. Everything above assumes a
   // tab on the fixture server exists when the run starts, and this is the one
   // section that takes it to another origin — so without this, the browser
@@ -2240,14 +2327,15 @@ async function main() {
 
   ui.close();
   page.close();
-  browser.close();
+  await tidyUp();
 
   const failed = checks.filter((entry) => !entry.passed);
   console.log(`\n${checks.length - failed.length}/${checks.length} checks passed`);
   if (failed.length) process.exit(1);
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error(`e2e failed: ${error.message}`);
+  await tidyUp().catch(() => {});
   process.exit(1);
 });

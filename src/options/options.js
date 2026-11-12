@@ -293,6 +293,24 @@ for (const [button, permission, request] of [
   });
 }
 
+let previewUrl = "";
+
+/**
+ * The preview at the chosen speed, stretched the way a read is (see
+ * `content/stretch.js`, loaded beside this page) rather than sped up by the
+ * element, which would warble — or, played faster, raise the voice.
+ */
+async function previewSource(response, rate) {
+  const { stretch } = globalThis.__readAloud;
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = "";
+  if (stretch.isUnity(rate)) return `data:${response.contentType};base64,${response.audio}`;
+  const bytes = Uint8Array.from(atob(response.audio), (char) => char.charCodeAt(0));
+  const rendered = await stretch.render(bytes, rate);
+  previewUrl = URL.createObjectURL(new Blob([stretch.encodeWav(rendered.samples, rendered.sampleRate)], { type: "audio/wav" }));
+  return previewUrl;
+}
+
 el.preview.addEventListener("click", async () => {
   el.preview.disabled = true;
   setStatus(el.previewStatus, "Synthesising…");
@@ -305,8 +323,8 @@ el.preview.addEventListener("click", async () => {
     });
     if (!response?.ok) throw new Error(response?.error || "Preview failed.");
     previewAudio?.pause();
-    previewAudio = new Audio(`data:${response.contentType};base64,${response.audio}`);
-    previewAudio.playbackRate = Number(el.rate.value) || 1;
+    previewAudio = new Audio(await previewSource(response, Number(el.rate.value) || 1));
+    previewAudio.preservesPitch = true;
     await previewAudio.play();
     setStatus(el.previewStatus, `${response.duration.toFixed(1)}s of audio`, "ok");
   } catch (error) {

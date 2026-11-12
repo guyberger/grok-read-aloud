@@ -61,7 +61,7 @@ const PREAMBLE = `
       return element;
     };
   })();
-  ${contentBundle(["util.js", "player.js"])}
+  ${contentBundle(["util.js", "stretch.js", "player.js"])}
 `;
 
 let browser = null;
@@ -168,4 +168,152 @@ test("the pause at the end of a chunk is the chunk ending, not an interruption",
   `);
 
   assert.deepEqual(events, ["ended"], "the end of the audio was taken for an interruption");
+});
+
+/**
+ * Speed. The element must never be the thing that speeds the voice up — that
+ * is where the warble comes from — so a rate change swaps in audio that has
+ * been stretched already, and the element goes on playing it at 1×.
+ */
+async function measurePlayedPitch(page) {
+  // What the element is actually playing, decoded and measured by zero
+  // crossings: a pure tone crosses upward once a cycle.
+  return page.evaluate(`
+    (async () => {
+      const element = globalThis.__elements[0];
+      const data = await (await fetch(element.src)).arrayBuffer();
+      const decoded = await new OfflineAudioContext(1, 1, 24000).decodeAudioData(data);
+      const samples = decoded.getChannelData(0);
+      const from = Math.floor(samples.length * 0.1);
+      const to = Math.floor(samples.length * 0.9);
+      let crossings = 0;
+      for (let i = from + 1; i < to; i += 1) if (samples[i - 1] < 0 && samples[i] >= 0) crossings += 1;
+      return { hz: crossings / ((to - from) / 24000), seconds: decoded.duration };
+    })()
+  `);
+}
+
+test("a faster rate plays stretched audio at 1x, from the same place, at the same pitch", { skip }, async () => {
+  const page = await browser.open(fixtureUrl("article.html"), PREAMBLE);
+  pages.push(page);
+  const bytes = JSON.stringify([...toneWav({ seconds: 4, hz: 440 })]);
+  const result = await page.evaluate(`
+    (async () => {
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      globalThis.events = [];
+      const player = (globalThis.player = globalThis.__readAloud.player.createPlayer({
+        onEnded: () => globalThis.events.push("ended"),
+        onPausedOutside: () => globalThis.events.push("paused-outside"),
+        onResumedOutside: () => globalThis.events.push("resumed-outside"),
+      }));
+      await player.load(new Uint8Array(${bytes}), "audio/wav");
+      await player.play();
+      await sleep(500);
+      const before = player.getTime();
+      player.setRate(2);
+      // Long enough for the render and the swap.
+      await sleep(400);
+      const swapped = player.getTime();
+      await sleep(500);
+      const after = player.getTime();
+      return {
+        before,
+        swapped,
+        advanced: after - swapped,
+        playback: player.playback,
+        elementRate: globalThis.__elements[0].playbackRate,
+        preservesPitch: globalThis.__elements[0].preservesPitch,
+        duration: player.getDuration(),
+        events: globalThis.events,
+      };
+    })()
+  `);
+
+  assert.equal(result.elementRate, 1, "the element itself was sped up");
+  assert.equal(result.preservesPitch, true);
+  assert.deepEqual(result.playback, { engine: "media", rate: 2, stretchedRate: 2, pitchPreserving: true });
+  // Half a second of 2x is a second of the original audio.
+  assert.ok(result.advanced > 0.75 && result.advanced < 1.25, `advanced ${result.advanced.toFixed(3)}s in 0.5s`);
+  assert.ok(result.swapped >= result.before, `the swap went back from ${result.before} to ${result.swapped}`);
+  assert.ok(Math.abs(result.duration - 4) < 0.05, `duration reads ${result.duration}s, not the original 4s`);
+  assert.deepEqual(result.events, [], "the swap was reported as a pause from outside");
+
+  const played = await measurePlayedPitch(page);
+  assert.ok(Math.abs(played.hz - 440) / 440 < 0.02, `the 440 Hz tone plays at ${played.hz.toFixed(1)} Hz`);
+  assert.ok(Math.abs(played.seconds - 2) < 0.05, `the stretched audio lasts ${played.seconds}s`);
+});
+
+test("a chunk loaded at a rate starts stretched, and seeks in original seconds", { skip }, async () => {
+  const page = await browser.open(fixtureUrl("article.html"), PREAMBLE);
+  pages.push(page);
+  const bytes = JSON.stringify([...toneWav({ seconds: 3, hz: 300 })]);
+  const result = await page.evaluate(`
+    (async () => {
+      const player = (globalThis.player = globalThis.__readAloud.player.createPlayer({}));
+      player.setRate(0.75);
+      await player.load(new Uint8Array(${bytes}), "audio/wav");
+      player.seek(1.5);
+      return {
+        time: player.getTime(),
+        elementTime: globalThis.__elements[0].currentTime,
+        playback: player.playback,
+        elementRate: globalThis.__elements[0].playbackRate,
+      };
+    })()
+  `);
+  assert.equal(result.elementRate, 1);
+  assert.equal(result.playback.stretchedRate, 0.75);
+  assert.ok(Math.abs(result.time - 1.5) < 0.01, `seeked to ${result.time}`);
+  assert.ok(Math.abs(result.elementTime - 2) < 0.01, `the element is at ${result.elementTime}s of the stretched audio`);
+  const played = await measurePlayedPitch(page);
+  assert.ok(Math.abs(played.hz - 300) / 300 < 0.02, `the 300 Hz tone plays at ${played.hz.toFixed(1)} Hz`);
+});
+
+test("on a page that refuses blob media, Web Audio keeps the pitch as well", { skip }, async () => {
+  const page = await browser.open(fixtureUrl("csp-strict.html"), PREAMBLE);
+  pages.push(page);
+  const bytes = JSON.stringify([...toneWav({ seconds: 4, hz: 440 })]);
+  const result = await page.evaluate(`
+    (async () => {
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const player = (globalThis.player = globalThis.__readAloud.player.createPlayer({}));
+      await player.load(new Uint8Array(${bytes}), "audio/wav");
+      await player.play();
+      await sleep(300);
+      player.setRate(2);
+      await sleep(300);
+      const a = player.getTime();
+      await sleep(500);
+      const advanced = player.getTime() - a;
+      player.pause();
+      const paused = player.getTime();
+      await sleep(200);
+      return { advanced, held: player.getTime() - paused, playback: player.playback, duration: player.getDuration() };
+    })()
+  `);
+  assert.deepEqual(result.playback, { engine: "webaudio", rate: 2, stretchedRate: 2, pitchPreserving: true });
+  assert.ok(result.advanced > 0.75 && result.advanced < 1.25, `advanced ${result.advanced.toFixed(3)}s in 0.5s`);
+  assert.equal(result.held, 0);
+  assert.ok(Math.abs(result.duration - 4) < 0.05, `duration reads ${result.duration}s`);
+});
+
+test("a speed change while play is still starting does not fail the play", { skip }, async () => {
+  const page = await browser.open(fixtureUrl("article.html"), PREAMBLE);
+  pages.push(page);
+  const bytes = JSON.stringify([...toneWav({ seconds: 3, hz: 300 })]);
+  const result = await page.evaluate(`
+    (async () => {
+      const player = (globalThis.player = globalThis.__readAloud.player.createPlayer({}));
+      await player.load(new Uint8Array(${bytes}), "audio/wav");
+      const started = player.play().then(() => "ok", (error) => error.name + ": " + error.message);
+      player.setRate(0.5);
+      const outcome = await started;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      return { outcome, time: player.getTime(), paused: globalThis.__elements[0].paused, playback: player.playback };
+    })()
+  `);
+  assert.equal(result.outcome, "ok");
+  assert.equal(result.paused, false, "the swap left it paused");
+  assert.equal(result.playback.stretchedRate, 0.5);
+  assert.ok(result.time > 0, "it never got going");
 });

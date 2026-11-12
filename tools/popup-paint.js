@@ -471,6 +471,7 @@ async function main() {
       "--headless=new",
       "--no-sandbox",
       "--disable-gpu",
+      "--mute-audio",
       "--window-size=1512,982",
       `--remote-debugging-port=${CDP_PORT}`,
       `--user-data-dir=/tmp/ra-popup-paint-${CDP_PORT}`,

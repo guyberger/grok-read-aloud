@@ -96,6 +96,8 @@ export class Browser {
         "--disable-gpu",
         "--no-first-run",
         "--disable-extensions",
+        // The player tests really play audio; none of it should reach the speakers.
+        "--mute-audio",
         ...args,
         `--remote-debugging-port=${port}`,
         `--user-data-dir=/tmp/read-aloud-test-${port}`,

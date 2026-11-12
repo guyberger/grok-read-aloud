@@ -180,6 +180,7 @@ async function main() {
       "--headless=new",
       "--no-sandbox",
       "--disable-gpu",
+      "--mute-audio",
       "--no-first-run",
       "--enable-unsafe-extension-debugging",
       `--remote-debugging-port=${PORT}`,

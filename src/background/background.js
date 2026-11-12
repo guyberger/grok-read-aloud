@@ -18,6 +18,7 @@ const CONTENT_FILES = [
   "content/pace.js",
   "content/audio-cache.js",
   "content/controls.js",
+  "content/stretch.js",
   "content/player.js",
   "content/reader.js",
 ];
