@@ -71,7 +71,131 @@
     if (style.visibility === "hidden" || style.visibility === "collapse") return false;
     // `content-visibility: auto` only skips painting what is offscreen; that
     // text is still part of the page. Only `hidden` takes it out.
-    return style.contentVisibility !== "hidden";
+    if (style.contentVisibility === "hidden") return false;
+    // Still in the tree, and none of the checks above notice it, but not on
+    // the page. See `takenOutOfSight`.
+    return !takenOutOfSight(element, style);
+  }
+
+  /**
+   * Whether the element is in the tree but not on the page.
+   *
+   * `display`, `visibility` and the `hidden` attribute are the easy cases, and
+   * they are not how a page hides a label while leaving it for assistive
+   * technology. Those recipes set none of them:
+   *
+   * - a one-pixel box, absolutely positioned, with the overflow clipped,
+   *   often with `clip: rect(0, 0, 0, 0)` as well
+   * - `clip-path: inset(50%)` or `circle(0)`, which leave no ink
+   * - a box parked entirely off the page (`left: -9999px` is the old form)
+   * - `opacity: 0`
+   *
+   * Reading them speaks "skip to content" and the other labels a page hides
+   * from everyone looking at it. A `clip` only counts on a positioned
+   * element, because that is the only time the property does anything.
+   * `content-visibility: auto` and a line clamp are the opposite — text that
+   * is still the page, just not all painted at once — and neither matches
+   * anything here.
+   */
+  function takenOutOfSight(element, style) {
+    if (Number.parseFloat(style.opacity) === 0) return true;
+    if (clipPathHides(style.clipPath)) return true;
+    if (style.position !== "absolute" && style.position !== "fixed") return false;
+    if (clipHides(style.clip)) return true;
+    if (parkedOutside(element, style)) return true;
+    if (!overflowClips(style)) return false;
+    const width = cssPx(style.width);
+    const height = cssPx(style.height);
+    // Both axes, so a hairline rule is not mistaken for a hidden paragraph.
+    // The screen-reader-only box is one pixel by one pixel.
+    return width !== null && height !== null && width <= 1 && height <= 1;
+  }
+
+  function cssPx(value) {
+    if (!value || !value.endsWith("px")) return null;
+    const n = Number.parseFloat(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function overflowClips(style) {
+    const clips = (value) => value === "hidden" || value === "clip";
+    return clips(style.overflowX) && clips(style.overflowY);
+  }
+
+  /** `rect()` whose box is at most a pixel in both directions. */
+  function clipHides(clip) {
+    if (!clip || clip === "auto") return false;
+    const match = /^rect\(\s*([-\d.]+)px[\s,]+([-\d.]+)px[\s,]+([-\d.]+)px[\s,]+([-\d.]+)px\s*\)$/.exec(clip);
+    if (!match) return false;
+    const top = Number(match[1]);
+    const right = Number(match[2]);
+    const bottom = Number(match[3]);
+    const left = Number(match[4]);
+    return Math.abs(right - left) <= 1 && Math.abs(bottom - top) <= 1;
+  }
+
+  /**
+   * A clip-path that leaves nothing painted. Percentages only: a pixel inset
+   * needs the box it is cutting, and the recipes in use are written in
+   * percentages and a zero radius.
+   */
+  function clipPathHides(clipPath) {
+    if (!clipPath || clipPath === "none") return false;
+    const inset = /^inset\(\s*([^)]+)\)$/.exec(clipPath.trim());
+    if (inset) {
+      const parts = inset[1].trim().split(/\s+/);
+      if (parts.length < 1 || parts.length > 4) return false;
+      // A bare `0` computes to `0px`. Anything else in pixels needs the box
+      // it cuts, which this does not have, so it is left alone.
+      const n = parts.map(insetPercent);
+      if (n.some((part) => part === null)) return false;
+      const top = n[0];
+      const right = n.length > 1 ? n[1] : n[0];
+      const bottom = n.length > 2 ? n[2] : n[0];
+      const left = n.length > 3 ? n[3] : right;
+      // Either axis closing leaves no ink. `inset(50%)` closes both;
+      // `inset(50% 0)` closes only the block axis and is just as blank.
+      return top + bottom >= 100 || left + right >= 100;
+    }
+    const circle = /^circle\(\s*([-\d.]+)(px|%)\b/.exec(clipPath.trim());
+    if (circle) return Number.parseFloat(circle[1]) <= 0;
+    return false;
+  }
+
+  /** A percentage, or 0 for a zero length. Null when the value needs a box. */
+  function insetPercent(part) {
+    if (part.endsWith("%")) {
+      const n = Number.parseFloat(part);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (/^0([a-z]+)?$/.test(part)) return 0;
+    return null;
+  }
+
+  /**
+   * Whether a positioned box lies entirely off the page.
+   *
+   * Fixed boxes are compared with the viewport, which is what they are
+   * positioned against. Everything else is compared with the document: a
+   * paragraph scrolled out of the window is still the page, and negative
+   * overflow — the `left: -9999px` label — is not, because nothing scrolls
+   * there. A few pixels of overlap is a design hanging off its container
+   * and stays.
+   */
+  function parkedOutside(element, style) {
+    const rect = element.getBoundingClientRect();
+    const slop = 8;
+    if (style.position === "fixed") {
+      return (
+        rect.bottom < -slop ||
+        rect.right < -slop ||
+        rect.top > window.innerHeight + slop ||
+        rect.left > window.innerWidth + slop
+      );
+    }
+    const top = rect.top + window.scrollY;
+    const left = rect.left + window.scrollX;
+    return top + rect.height < -slop || left + rect.width < -slop;
   }
 
   /**

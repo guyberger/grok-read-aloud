@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How a Mill Pond Holds the Tide — Hidden Text</title>
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.6 Georgia, "Times New Roman", serif;
+        color: #1d1d1f;
+        background: #fbfbf9;
+      }
+      nav,
+      footer {
+        background: #e8e8e4;
+        padding: 14px 20px;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+      article {
+        position: relative;
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 80px;
+      }
+      h1 {
+        font-size: 32px;
+        line-height: 1.2;
+      }
+      .note {
+        position: absolute;
+        top: 8px;
+        right: 16px;
+        width: 220px;
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        font-size: 13px;
+      }
+      .hang {
+        position: absolute;
+        left: -12px;
+        width: 280px;
+      }
+      .dim {
+        opacity: 0.4;
+      }
+      .clamp {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        width: 240px;
+      }
+      .contents {
+        display: contents;
+      }
+      .fixed-on {
+        position: fixed;
+        bottom: 8px;
+        left: 8px;
+        margin: 0;
+        background: #fbfbf9;
+      }
+      .spill {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: visible;
+        white-space: nowrap;
+      }
+      .spacer {
+        height: 2400px;
+      }
+      .below {
+        content-visibility: auto;
+      }
+
+      /* Hidden from view, still in the tree. Each rule is one recipe. */
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .clip-only {
+        position: absolute;
+        clip: rect(0, 0, 0, 0);
+        width: 200px;
+        height: 40px;
+      }
+      .wp-only {
+        position: absolute;
+        clip: rect(1px, 1px, 1px, 1px);
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        overflow: hidden;
+        padding: 0;
+      }
+      .one-pixel {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        border: 0;
+      }
+      .inset {
+        clip-path: inset(50%);
+      }
+      .inset-slit {
+        clip-path: inset(50% 0);
+      }
+      .circle {
+        clip-path: circle(0);
+      }
+      .parked {
+        position: absolute;
+        left: -10000px;
+        top: 0;
+      }
+      .fixed-off {
+        position: fixed;
+        top: -4000px;
+        left: 16px;
+      }
+      .ghost,
+      .ghost-parent {
+        opacity: 0;
+      }
+      .ghost-parent p {
+        opacity: 1;
+      }
+      .cv-hidden {
+        content-visibility: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation: site furniture that must stay unread</nav>
+
+    <article>
+      <h1>How a mill pond holds the tide</h1>
+      <p class="note">An absolutely positioned note at the top of the article stays part of the page.</p>
+
+      <a class="sr-only" href="#pond">Skip to the mill pond</a>
+      <span class="clip-only">Clip rect hides this label</span>
+      <span class="wp-only">Open the mill menu</span>
+      <span class="one-pixel">One pixel clipped label</span>
+      <span class="parked">Parked off the page</span>
+      <span class="fixed-off">Fixed jump label</span>
+
+      <p>
+        A tide mill fills a pond on the way in and empties it through a wheel on the way out. The wheel turns
+        <span class="sr-only">Back to the top link</span>
+        <span class="inset">Inset hides this label</span>
+        <span class="inset-slit">Inset slit hides this label</span>
+        <span class="circle">Circle hides this label</span>
+        the stone for as long as the pond lasts.
+      </p>
+
+      <p>Passed <span class="contents">through a boxless wrapper</span> the sentence is still one sentence.</p>
+
+      <p class="hang">This label hangs twelve pixels off the edge and stays visible.</p>
+      <p class="dim">Dimmed to forty percent and still read.</p>
+      <p class="clamp">
+        The overflow of this sentence is clamped on screen and still read in full, including the words past the
+        second line.
+      </p>
+      <p class="fixed-on">Fixed bar still on screen.</p>
+      <p>A mark <span class="spill">Overflows its one pixel box</span> sits in the sentence.</p>
+
+      <p class="ghost">Transparent paragraph about boilers</p>
+      <div class="ghost-parent">
+        <p>Transparent parent hides the note</p>
+      </div>
+      <p class="cv-hidden">Content visibility hidden stays unread</p>
+
+      <p>
+        Millers slept in shifts because the tide does not keep office hours, and the families living nearest the
+        pond learned the sound of the gate the way other people learn a clock.
+      </p>
+
+      <div class="spacer"></div>
+      <p class="below">This paragraph sits below the fold and is still part of the page.</p>
+    </article>
+
+    <footer>Footer: terms, credits, and a list of links.</footer>
+  </body>
+</html>

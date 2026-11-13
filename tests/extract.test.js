@@ -230,6 +230,69 @@ test("a selection around a snippet still drops it", { skip }, async () => {
   assert.ok(!doc.text.includes("scheduleCron"), "the snippet between them was read");
 });
 
+test("text hidden from view is left out, including labels kept for assistive technology", { skip }, async () => {
+  const { extract } = await read("visually-hidden.html");
+  const doc = await extract();
+
+  assert.ok(doc, "whole-page extraction returned nothing");
+  assert.ok(doc.text.includes("How a mill pond holds the tide"), "the title was dropped");
+  assert.ok(
+    doc.text.includes("The wheel turns the stone for as long as the pond lasts"),
+    "hiding a label inside a sentence glued the words, or dropped them",
+  );
+  assert.ok(doc.text.includes("through a boxless wrapper"), "a display:contents wrapper hid its text");
+  assert.ok(doc.text.includes("hangs twelve pixels off the edge"), "a slight overlap was treated as off the page");
+  assert.ok(doc.text.includes("Dimmed to forty percent"), "partial opacity was treated as hidden");
+  assert.ok(
+    doc.text.includes("including the words past the second line"),
+    "a line clamp dropped the text past the painted lines",
+  );
+  assert.ok(doc.text.includes("Fixed bar still on screen"), "a fixed bar on screen was dropped");
+  assert.ok(doc.text.includes("Overflows its one pixel box"), "text overflowing a one-pixel box was dropped");
+  assert.ok(doc.text.includes("An absolutely positioned note at the top"), "a positioned note on the page was dropped");
+  assert.ok(
+    doc.text.includes("This paragraph sits below the fold"),
+    "text below the fold was treated as hidden",
+  );
+  assert.ok(doc.text.includes("Millers slept in shifts"), "the body of the article was dropped");
+
+  const hidden = [
+    "Skip to the mill pond",
+    "Back to the top link",
+    "Clip rect hides this label",
+    "Open the mill menu",
+    "One pixel clipped label",
+    "Inset hides this label",
+    "Inset slit hides this label",
+    "Circle hides this label",
+    "Parked off the page",
+    "Fixed jump label",
+    "Transparent paragraph about boilers",
+    "Transparent parent hides the note",
+    "Content visibility hidden stays unread",
+    "Navigation: site furniture",
+    "Footer:",
+  ];
+  for (const phrase of hidden) {
+    assert.ok(!doc.text.includes(phrase), `"${phrase}" was read`);
+  }
+});
+
+test("text scrolled out of the window is still read", { skip }, async () => {
+  const { page, extract } = await read("visually-hidden.html");
+
+  await page.evaluate(`window.scrollTo(0, document.body.scrollHeight)`);
+  const doc = await extract();
+
+  assert.ok(
+    doc.text.includes("An absolutely positioned note at the top"),
+    "scrolling away from a positioned note dropped it",
+  );
+  assert.ok(doc.text.includes("This paragraph sits below the fold"), "the paragraph now on screen was dropped");
+  assert.ok(!doc.text.includes("Parked off the page"), "scrolling brought an off-page label into the read");
+  assert.ok(!doc.text.includes("Fixed jump label"), "a fixed label parked off the viewport was read");
+});
+
 test("a selection is read wherever it is, including inside page furniture", { skip }, async () => {
   const { page, extract } = await read("empty-container.html");
 

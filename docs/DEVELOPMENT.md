@@ -411,7 +411,9 @@ checks cannot do
 - [ ] The page scrolls to follow the highlight, moving only when the word
       leaves the middle of the window.
 - [ ] Navigation, sidebar and footer text is never read or highlighted.
-- [ ] Hidden (`display: none`) text is never read.
+- [ ] Hidden (`display: none`) text is never read, and neither is text hidden
+      for assistive technology only — a one-pixel "skip" link, a label parked
+      off the page. A paragraph clamped to a few lines still is, in full.
 - [ ] Audio continues smoothly across a chunk boundary — watch the "Part *n* of
       *m*" label in the popup tick over without a long gap.
 
@@ -771,6 +773,18 @@ hidden nodes.
 rather than by `Element.checkVisibility`, which reports anything without a
 layout box as invisible — including `display: contents` wrappers, whose
 children render perfectly well and which component frameworks emit freely.
+
+Text the page has hidden from view is not rendered either, even when it is
+left in the tree for assistive technology. The usual recipe — an absolutely
+positioned one-pixel box with the overflow clipped, often with `clip:
+rect(0, 0, 0, 0)` or `clip-path: inset(50%)` — is not `display: none`, and
+neither is a label parked off the page (`left: -9999px`) or anything drawn at
+`opacity: 0`. Reading those would speak "skip to content" and the other
+labels a page hides from everyone looking at it. A `clip` only counts when
+the element is positioned, because that is the only time the property does
+anything. A line clamp and `content-visibility: auto` are the opposite case,
+text that is still the page, and both are read — including after the page has
+been scrolled, since leaving the window is not the same as leaving the page.
 
 ### Google Docs
 
