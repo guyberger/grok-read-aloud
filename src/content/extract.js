@@ -218,6 +218,98 @@
     return !display.startsWith("inline") && display !== "contents";
   }
 
+  /**
+   * A citation mark and nothing else: `[1]`, `[note 2]`, `(3)`, `1,2`, `†`.
+   *
+   * The brackets and the dagger are how a page points at a note without
+   * putting the note in the sentence. A bare number is included too, because
+   * the same mark is often written that way — callers still have to tell it
+   * from an exponent, which is written with the same digits.
+   */
+  const CITE_MARK =
+    /^(?:(?:\[(?:(?:notes?|fn|ref)\.?)?(?:\d+[a-z]?(?:[-–—]\d+[a-z]?)?|[a-z]{1,2})\]|\((?:(?:notes?|fn|ref)\.?)?\d+[a-z]?(?:[-–—]\d+[a-z]?)?\)|\d+(?:[-–—]\d+)?[a-z]?|[*†‡§¶‖※^↑↩←]+)[,;]?)+$/iu;
+
+  /** Class and id tokens pages actually use for a reference, not a container. */
+  const CITE_CLASS =
+    /(?:^|[\s_-])(?:footnote|footnotes|endnote|endnotes|fnref|cite|cites|citation|citations|noteref|reference|references)(?=$|[\s_:-]|\d)/i;
+
+  const CITE_ROLES = new Set(["doc-noteref", "doc-endnoteref"]);
+
+  function compactText(element) {
+    return element.textContent.replace(/\s+/gu, "");
+  }
+
+  function isCitationMark(text) {
+    return Boolean(text) && text.length <= 32 && CITE_MARK.test(text);
+  }
+
+  /**
+   * Brackets, parentheses, daggers and a run of marks. A bare `2` is absent
+   * on purpose: `mc²` is a superscript digit too, and the two cannot be told
+   * apart from the characters alone.
+   */
+  function isDecoratedMark(text) {
+    if (text.startsWith("[") || text.startsWith("(")) return true;
+    if (/^[*†‡§¶‖※^↑↩←]+$/u.test(text)) return true;
+    return /[,;]/.test(text);
+  }
+
+  function hasCitationClass(element) {
+    return CITE_CLASS.test(`${element.getAttribute("class") || ""} ${element.id || ""}`);
+  }
+
+  function couldBeMarker(element) {
+    if (CITE_ROLES.has(element.getAttribute("role"))) return true;
+    const tag = element.tagName;
+    if (tag === "SUP" || tag === "SUB" || tag === "A") return true;
+    // A span is a marker only when the page has already labelled it as one.
+    // Treating every span as a candidate would ask for the text of whatever
+    // wrapper a site had put around the article.
+    if (tag === "SPAN" || tag === "CITE") return hasCitationClass(element);
+    return false;
+  }
+
+  /**
+   * Whether this element is a citation marker rather than a word.
+   *
+   * The note at the bottom of the page is ordinary prose and is read when
+   * the voice gets there. The mark in the sentence — the `[1]` after a
+   * clause — is not part of the clause, and speaking it says "left bracket
+   * one right bracket" in the middle of a thought.
+   *
+   * A bare superscript digit is kept. Nothing else about it says "footnote",
+   * and dropping it would turn `mc²` into `mc`.
+   */
+  function marksCitation(element) {
+    if (!couldBeMarker(element) || element.childElementCount > 8) return false;
+    const compact = compactText(element);
+    if (!isCitationMark(compact)) return false;
+    if (CITE_ROLES.has(element.getAttribute("role")) || hasCitationClass(element)) return true;
+    if (isDecoratedMark(compact)) return true;
+
+    const link = element.tagName === "A" ? element : element.querySelector("a[href]");
+    if (!link) return false;
+    const href = link.getAttribute("href") || "";
+    // A number that links at a fragment, or that a superscript exists only
+    // to carry, is a note. The same number with nowhere to go is an exponent.
+    if (href.startsWith("#")) return true;
+    if (element.tagName === "SUP" || element.tagName === "SUB") return true;
+    const parent = link.parentElement?.tagName;
+    return parent === "SUP" || parent === "SUB";
+  }
+
+  /** Whether a text node's element sits inside a citation marker. Memoised. */
+  function inCitation(element, root, cache) {
+    for (let current = element; current && current !== root.parentElement; current = current.parentElement) {
+      let known = cache.get(current);
+      if (known === undefined) cache.set(current, (known = marksCitation(current)));
+      if (known) return true;
+    }
+    return false;
+  }
+
+  const WORD_CHAR = /\p{L}|\p{N}/u;
+
   /** Whether the element renders, ancestors included. Memoised per walk. */
   function visible(element, cache) {
     const pending = [];
@@ -306,7 +398,7 @@
     return end > start ? [start, end] : null;
   }
 
-  function collectTextNodes(root, range, chromeTags, cache = new Map(), { readCodeBlocks = false } = {}) {
+  function collectTextNodes(root, range, chromeTags, cache = new Map(), { readCodeBlocks = false, skipCitations = true } = {}) {
     // Asking the layout costs a style resolve, and a page of API docs has a
     // great many `<code>` elements, so each one is asked once per walk.
     const codeBlocks = new Map();
@@ -315,6 +407,7 @@
       if (known === undefined) codeBlocks.set(element, (known = isCodeBlock(element)));
       return known;
     };
+    const citations = new Map();
 
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
@@ -338,10 +431,40 @@
     let node = walker.nextNode();
     while (node) {
       const clipped = clipToSelection(node, range);
-      if (clipped) slices.push({ node, start: clipped[0], end: clipped[1] });
+      if (clipped) {
+        slices.push({
+          node,
+          start: clipped[0],
+          end: clipped[1],
+          // Kept as a slice so the words on either side stay apart, and so a
+          // mark sitting against a comma does not grow a space of its own.
+          // Nothing in it is spoken.
+          gap: skipCitations && inCitation(node.parentElement, root, citations),
+        });
+      }
       node = walker.nextNode();
     }
     return slices;
+  }
+
+  /** First character a slice would actually speak, ignoring its own spaces. */
+  function firstSolidChar(slice) {
+    const data = slice.node.data;
+    for (let offset = slice.start; offset < slice.end; offset += 1) {
+      const char = data[offset];
+      if (!ns.util.isWhitespace(char)) return char;
+    }
+    return "";
+  }
+
+  /** The next character that will be spoken after `index`, skipping markers. */
+  function nextSpokenChar(slices, index) {
+    for (let i = index + 1; i < slices.length; i += 1) {
+      if (slices[i].gap) continue;
+      const char = firstSolidChar(slices[i]);
+      if (char) return char;
+    }
+    return "";
   }
 
   /**
@@ -364,6 +487,15 @@
 
     for (let sliceIndex = 0; sliceIndex < slices.length; sliceIndex += 1) {
       const slice = slices[sliceIndex];
+      if (slice.gap) {
+        // The mark is not spoken. Between two words it still has to leave
+        // them apart — `pond[1]lasts` is "pond lasts" — and against punctuation
+        // it has to leave no space, so `water[1],` stays "water,".
+        const previous = chars.length ? chars[chars.length - 1] : "";
+        const next = nextSpokenChar(slices, sliceIndex);
+        if (previous && next && WORD_CHAR.test(previous) && WORD_CHAR.test(next)) pendingSpace = true;
+        continue;
+      }
       const block = blockAncestor(slice.node);
       if (previousBlock && block !== previousBlock && chars.length) {
         while (chars.length && ns.util.isWhitespace(chars[chars.length - 1])) {
@@ -425,7 +557,7 @@
 
   /**
    * @param {"page"|"selection"} scope
-   * @param {{readCodeBlocks?: boolean, root?: Element}} options
+   * @param {{readCodeBlocks?: boolean, skipCitations?: boolean, root?: Element}} options
    *   `root` names the container to read, for a caller that already knows
    *   where the text is — the Google Docs editor, say. Nothing is guessed and
    *   nothing falls back to the body: a named container that holds no text is
@@ -445,13 +577,14 @@
     if (range) {
       let root = range.commonAncestorContainer;
       if (root.nodeType !== Node.ELEMENT_NODE) root = root.parentElement;
-      // A selection of nothing but a snippet is still text the user picked out
-      // and asked to hear, and silence is not an answer to that — so a
-      // selection the setting would empty is read with the setting set aside.
+      // A selection of nothing but a snippet, or nothing but a citation
+      // marker, is still text the user picked out and asked to hear, and
+      // silence is not an answer to that — so a selection the filters would
+      // empty is read with both set aside.
       const built =
         root &&
         (buildFrom(root, range, null, new Map(), options) ??
-          buildFrom(root, range, null, new Map(), { readCodeBlocks: true }));
+          buildFrom(root, range, null, new Map(), { readCodeBlocks: true, skipCitations: false }));
       return built ? { ...built, root, scope: "selection", mapped: true } : null;
     }
 

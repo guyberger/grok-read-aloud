@@ -293,6 +293,105 @@ test("text scrolled out of the window is still read", { skip }, async () => {
   assert.ok(!doc.text.includes("Fixed jump label"), "a fixed label parked off the viewport was read");
 });
 
+test("citation markers are left out of the sentence they interrupt", { skip }, async () => {
+  const { extract } = await read("citations.html");
+  const doc = await extract();
+
+  assert.ok(doc, "whole-page extraction returned nothing");
+  const kept = [
+    "The wheel turns for as long as the pond holds water.",
+    "A second gate lets the tide out, and a third is rarely used.",
+    "Two sources agree that the pond lasts three hours.",
+    "It drains the water, and then it waits.",
+    "The pond lasts until the gate opens.",
+    "The relation E = mc2 is not a footnote, and the 1st of May is a date.",
+    "An asterisk and a dagger mark the older notes in the margin.",
+    "See the pond section for the drawing",
+    "mill catalogue",
+    "[edit] stays, because those letters are a word.",
+    "The pond held three hours of water.",
+    "The second gate faces the sea.",
+    "Families who lived beside the pond",
+  ];
+  for (const phrase of kept) {
+    assert.ok(doc.text.includes(phrase), `missing "${phrase}"\n---\n${doc.text}`);
+  }
+
+  const dropped = ["[1]", "[note 3]", "[4]", "[5]", "[6]", "[7]", "pondlasts", "water ,", "gate2"];
+  for (const phrase of dropped) {
+    assert.ok(!doc.text.includes(phrase), `"${phrase}" was read\n---\n${doc.text}`);
+  }
+  assert.ok(!doc.text.includes("^"), "a backlink caret was read");
+  assert.ok(!doc.text.includes("↑"), "a backlink arrow was read");
+  assert.ok(!doc.text.includes("Navigation: mill index"), "navigation leaked in");
+  assert.ok(!doc.text.includes("Footer:"), "footer leaked in");
+});
+
+test("a word beside a citation still maps back to that word", { skip }, async () => {
+  const { page } = await read("citations.html");
+
+  const mapped = await page.evaluate(`
+    (() => {
+      const { extract } = globalThis.__readAloud;
+      const doc = extract.extract("page");
+      const word = (needle, say = needle) => {
+        const at = doc.text.indexOf(needle);
+        const range = at < 0 ? null : extract.rangeFor(doc, at, at + say.length);
+        const parent = range && range.startContainer.parentElement;
+        return { at, spoken: range ? range.toString() : "", parent: parent ? parent.tagName : "" };
+      };
+      // "lasts until" is the word the mark was glued to. The earlier "lasts"
+      // already had a space of its own.
+      return { turns: word("turns"), lasts: word("lasts until", "lasts") };
+    })()
+  `);
+
+  assert.ok(mapped.turns.at >= 0, "turns was not in the extracted text");
+  assert.equal(mapped.turns.spoken, "turns");
+  assert.equal(mapped.turns.parent, "P", "the word after a marker was mapped onto the marker");
+  assert.equal(mapped.lasts.spoken, "lasts");
+  assert.equal(mapped.lasts.parent, "P", "the word glued to a marker was mapped onto the marker");
+});
+
+test("a selection of nothing but a citation marker is read anyway", { skip }, async () => {
+  const { page, extract } = await read("citations.html");
+
+  await page.evaluate(`
+    (() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById("marker-1"));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()
+  `);
+
+  const doc = await extract("selection");
+  assert.ok(doc, "a selected citation marker extracted to nothing");
+  assert.equal(doc.scope, "selection");
+  assert.ok(doc.text.includes("[1]"), "the marker the user selected was dropped");
+});
+
+test("a selection around a citation marker still drops it", { skip }, async () => {
+  const { page, extract } = await read("citations.html");
+
+  await page.evaluate(`
+    (() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById("opening"));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()
+  `);
+
+  const doc = await extract("selection");
+  assert.ok(doc.text.includes("The wheel turns for as long as the pond holds water."));
+  assert.ok(!doc.text.includes("[1]"), "the marker inside the selection was read");
+});
+
 test("a selection is read wherever it is, including inside page furniture", { skip }, async () => {
   const { page, extract } = await read("empty-container.html");
 
