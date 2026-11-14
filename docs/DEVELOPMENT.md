@@ -14,7 +14,7 @@ dependencies, just the files in `src/` and a small copy script.
 ## What it does
 
 - Reads the readable body of a page, skipping navigation, sidebars, footers,
-  forms, code blocks and anything hidden with CSS.
+  forms, code blocks, citation marks and anything hidden with CSS.
 - Reads just the current selection instead, when you ask it to.
 - Reads a Google Doc, which no amount of walking the page can do: Docs paints
   the document onto a canvas, so the text is fetched from the same place File →
@@ -785,6 +785,38 @@ the element is positioned, because that is the only time the property does
 anything. A line clamp and `content-visibility: auto` are the opposite case,
 text that is still the page, and both are read — including after the page has
 been scrolled, since leaving the window is not the same as leaving the page.
+
+### Citation markers
+
+A referenced sentence is the sentence. The `[1]` at the end of a clause is not
+a word in it, and neither is a dagger, a `doc-noteref` link, or the number a
+superscript exists only to carry up to a note.
+
+Spoken, that mark is "left bracket one right bracket", or a bare number
+dropped into the clause, and a paragraph that cites on every sentence becomes
+a paragraph that cannot be followed. The mark is skipped. The note it points
+at is still read, later: it is ordinary text at the bottom of the page, and
+nothing about skipping the mark is a reason to drop the note.
+
+A mark is the whole of its element and nothing but the mark — `[1]`,
+`[note 2]`, `(3)`, `1,2`, `†`, or a run of those — and something has to say it
+is a reference rather than a word. That something is a `doc-noteref` role, a
+class or id a page uses for citations (`reference`, `footnote`, `fnref`,
+`cite_ref`), a link to a fragment on the same page, or the brackets and
+daggers themselves, which are not how any other word is written. A bare digit
+in a superscript, with none of those, stays. `mc²` is written with that same
+digit, and so is the occasional footnote that is only a superscript `2` with
+nowhere to go; keeping the digit is the miss that does not eat an exponent.
+An ordinal stays too, because `1st` is letters and a mark is not.
+
+A mark between two words leaves one space, including where the page wrote the
+mark with no space of its own (`pond[1]lasts` is read "pond lasts"). A mark
+before a comma or a full stop leaves none, so the punctuation stays against
+the word it belongs to.
+
+A selection of nothing but a mark is read anyway. It is the thing that was
+pointed at, and silence is not an answer to that. A selection that merely
+contains a mark still skips it, like any other read.
 
 ### Google Docs
 
@@ -1783,6 +1815,11 @@ plays, so that playback is really tested — out of the speakers.
   minus navigation, headers, sidebars and footers. On an unusual layout it may
   read too much or too little; selecting the text you want and reading the
   selection always works.
+- **A superscript number with no link and no citation class is read.** It is
+  how an exponent is written (`mc²`), and it is also how a few pages write a
+  footnote that points nowhere. Brackets, daggers, a `doc-noteref`, a citation
+  class and a link are skipped; a bare `2` in a superscript is kept. See
+  [Citation markers](#citation-markers).
 - **Whole code snippets are skipped by default**, on the grounds that
   punctuation and indentation rarely read well aloud. Code written into a
   sentence is always read — see [Code in a page](#code-in-a-page) — and
