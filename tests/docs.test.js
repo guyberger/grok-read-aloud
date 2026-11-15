@@ -67,8 +67,13 @@ test("blank runs collapse to one paragraph break", () => {
 
 test("inline images and invisible characters are dropped rather than spoken", () => {
   // An image, drawing or equation exports as U+FFFC, which a voice would
-  // either skip or stumble over, and neither is worth the characters.
+  // either skip or stumble over, and neither is worth the characters. A
+  // zero-width space at the end is a space, and the trim takes it.
   assert.equal(docs.clean("A diagram \uFFFC sits here.\u200B"), "A diagram  sits here.");
+  assert.equal(docs.clean("extra\u00ADordinary"), "extraordinary");
+  assert.equal(docs.clean("tide\u200Bmill"), "tide mill");
+  assert.equal(docs.clean("It stores 20\u00A0km.\u00A0Next."), "It stores 20 km. Next.");
+  assert.ok(docs.clean("A family \u{1F468}\u200D\u{1F469}\u200D\u{1F467} stays.").includes("\u200D"));
 });
 
 test("paragraph breaks survive, because that is where a sentence ends", () => {

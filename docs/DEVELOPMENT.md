@@ -414,6 +414,9 @@ checks cannot do
 - [ ] Hidden (`display: none`) text is never read, and neither is text hidden
       for assistive technology only — a one-pixel "skip" link, a label parked
       off the page. A paragraph clamped to a few lines still is, in full.
+- [ ] A space between two inline elements is spoken as a space, and a line
+      break starts a new sentence. A soft hyphen in the middle of a word is
+      not spoken.
 - [ ] Audio continues smoothly across a chunk boundary — watch the "Part *n* of
       *m*" label in the popup tick over without a long gap.
 
@@ -785,6 +788,23 @@ the element is positioned, because that is the only time the property does
 anything. A line clamp and `content-visibility: auto` are the opposite case,
 text that is still the page, and both are read — including after the page has
 been scrolled, since leaving the window is not the same as leaving the page.
+
+A space the page drew is kept, including one that sits in a text node of its
+own between two inline elements. `<em>only</em> <em>while</em>` is "only
+while", and so is the same pair with the line break of the source between the
+tags. A no-break space, a thin space and the other Unicode spaces are spaces
+too, so `20&nbsp;km` is two words the highlight can track, and a sentence can
+end in front of one. A zero-width space is a word boundary and becomes a
+space. A soft hyphen is not a boundary, and it is dropped, so a word broken
+only so the line can is spoken whole. Direction marks, a word joiner and an
+object-replacement character are dropped with it. A zero-width joiner is kept,
+because that is what holds an emoji sequence together.
+
+A `<br>` is a line break even though it is not an ancestor of either side, so
+the two lines become two sentences the way a paragraph break does. One the
+page has hidden is not a break. An ASCII hyphen at the end of a line in the
+source is left as a hyphen: once that newline has been folded into a space,
+nothing distinguishes it from the hyphen in a compound.
 
 ### Citation markers
 

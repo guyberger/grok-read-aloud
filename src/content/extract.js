@@ -411,7 +411,10 @@
 
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
-        if (!node.data || !node.data.trim()) return NodeFilter.FILTER_REJECT;
+        // A text node of nothing but a space is still a space. The one between
+        // `<em>only</em> <em>while</em>` is its own node, and dropping it
+        // speaks "onlywhile". A newline in the source is that same space.
+        if (!node.data) return NodeFilter.FILTER_REJECT;
         const parent = node.parentElement;
         // `visible` walks past the root as well, so a root that sits inside a
         // hidden container yields nothing rather than hidden text.
@@ -452,9 +455,79 @@
     const data = slice.node.data;
     for (let offset = slice.start; offset < slice.end; offset += 1) {
       const char = data[offset];
-      if (!ns.util.isWhitespace(char)) return char;
+      if (ns.util.isSilent(char) || ns.util.isWhitespace(char) || ns.util.isLineBreak(char)) continue;
+      return char;
     }
     return "";
+  }
+
+  /**
+   * What a slice contributes. A slice of only a soft hyphen contributes
+   * nothing: it joins the letters on either side. A slice of only a space,
+   * including the newline the source put between two elements, contributes
+   * a space. U+2028 and U+2029 are the exception, because they are breaks
+   * rather than spaces.
+   */
+  function sliceKind(slice) {
+    const data = slice.node.data;
+    let space = false;
+    let breakChar = false;
+    for (let offset = slice.start; offset < slice.end; offset += 1) {
+      const char = data[offset];
+      if (ns.util.isSilent(char)) continue;
+      if (ns.util.isLineBreak(char)) {
+        breakChar = true;
+        continue;
+      }
+      if (ns.util.isWhitespace(char)) {
+        space = true;
+        continue;
+      }
+      return "text";
+    }
+    if (breakChar) return "break";
+    if (space) return "space";
+    return "empty";
+  }
+
+  /** The next node in tree order, not descending into `node` itself. */
+  function nodeAfter(node) {
+    if (node.nextSibling) return node.nextSibling;
+    let parent = node.parentNode;
+    while (parent) {
+      if (parent.nextSibling) return parent.nextSibling;
+      parent = parent.parentNode;
+    }
+    return null;
+  }
+
+  /**
+   * Whether a visible `<br>` sits between two text nodes.
+   *
+   * A line break is not an ancestor of either side, so the block walk never
+   * sees it, and the two lines run together. One the page has hidden is not
+   * a break: the words on either side are one line.
+   */
+  function lineBreakBetween(fromNode, toNode, cache) {
+    if (!fromNode || !toNode || fromNode === toNode || fromNode.nextSibling === toNode) return false;
+    let current = nodeAfter(fromNode);
+    for (let guard = 0; current && guard < 200; guard += 1) {
+      if (current === toNode) return false;
+      if (current.nodeType === Node.ELEMENT_NODE && current.tagName === "BR" && visible(current, cache)) {
+        return true;
+      }
+      if (
+        current.nodeType === Node.ELEMENT_NODE &&
+        current.firstChild &&
+        !SKIP_TAGS.has(current.tagName) &&
+        visible(current, cache)
+      ) {
+        current = current.firstChild;
+        continue;
+      }
+      current = nodeAfter(current);
+    }
+    return false;
   }
 
   /** The next character that will be spoken after `index`, skipping markers. */
@@ -472,17 +545,34 @@
    * map back to (text node, offset), so any character range can become a DOM
    * Range later without re-walking the tree.
    */
-  function buildText(slices) {
+  function buildText(slices, cache) {
     const chars = [];
     const charNodes = [];
     const charOffsets = [];
     let pendingSpace = false;
+    let pendingBreak = false;
     let previousBlock = null;
+    let previousNode = null;
 
     const pushSynthetic = (char) => {
       chars.push(char);
       charNodes.push(-1);
       charOffsets.push(-1);
+    };
+
+    const emitBreak = () => {
+      while (
+        chars.length &&
+        ns.util.isWhitespace(chars[chars.length - 1]) &&
+        chars[chars.length - 1] !== "\n"
+      ) {
+        chars.pop();
+        charNodes.pop();
+        charOffsets.pop();
+      }
+      if (chars.length && chars[chars.length - 1] !== "\n") pushSynthetic("\n");
+      pendingSpace = false;
+      pendingBreak = false;
     };
 
     for (let sliceIndex = 0; sliceIndex < slices.length; sliceIndex += 1) {
@@ -497,20 +587,32 @@
         continue;
       }
       const block = blockAncestor(slice.node);
-      if (previousBlock && block !== previousBlock && chars.length) {
-        while (chars.length && ns.util.isWhitespace(chars[chars.length - 1])) {
-          chars.pop();
-          charNodes.pop();
-          charOffsets.pop();
-        }
-        pushSynthetic("\n");
-        pendingSpace = false;
+      const kind = sliceKind(slice);
+      // A blank slice is not a block of its own, and it is not a position to
+      // measure the next break from. The following word still sees a `<br>`
+      // that sat in front of the space.
+      if (kind !== "text") {
+        if (kind === "break") pendingBreak = true;
+        else if (kind === "space" && previousBlock && block === previousBlock && chars.length) pendingSpace = true;
+        continue;
       }
+
+      const blockBefore = previousBlock && block !== previousBlock;
+      const breakBefore =
+        pendingBreak ||
+        (!blockBefore && previousNode && lineBreakBetween(previousNode, slice.node, cache));
+      if ((blockBefore || breakBefore) && chars.length) emitBreak();
       previousBlock = block;
+      previousNode = slice.node;
 
       const data = slice.node.data;
       for (let offset = slice.start; offset < slice.end; offset += 1) {
         const char = data[offset];
+        if (ns.util.isSilent(char)) continue;
+        if (ns.util.isLineBreak(char)) {
+          emitBreak();
+          continue;
+        }
         if (ns.util.isWhitespace(char)) {
           pendingSpace = chars.length > 0;
           continue;
@@ -550,7 +652,7 @@
   function buildFrom(root, range, chromeTags, cache, options) {
     const slices = collectTextNodes(root, range, chromeTags, cache, options);
     if (!slices.length) return null;
-    const built = buildText(slices);
+    const built = buildText(slices, cache);
     if (!built.text.trim()) return null;
     return { ...built, slices };
   }
