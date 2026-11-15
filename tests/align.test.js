@@ -15,6 +15,25 @@ const ARTICLE = [
   "Long articles are split into parts so audio starts quickly.",
 ].join("\n");
 
+test("a no-break space is a word boundary and can end a sentence", () => {
+  const text = "It stores 20\u00A0km of head. The account ends here.\u00A0The next thought starts.";
+  assert.deepEqual(
+    own(words("20\u00A0km").map((token) => "20\u00A0km".slice(token.start, token.end))),
+    ["20", "km"],
+  );
+  const spoken = own(sentences(text).map((span) => text.slice(span.start, span.end).trim()));
+  assert.deepEqual(spoken, [
+    "It stores 20\u00A0km of head.",
+    "The account ends here.",
+    "The next thought starts.",
+  ]);
+});
+
+test("Dr. followed by a no-break space is still one sentence", () => {
+  const text = "Led by Dr.\u00A0Mair yesterday.";
+  assert.equal(sentences(text).length, 1);
+});
+
 test("chunkRanges keeps every chunk under the limit", () => {
   const text = `${ARTICLE}\n`.repeat(40);
   const ranges = chunkRanges(text, 600);

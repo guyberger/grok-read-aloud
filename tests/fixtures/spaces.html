@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Spaces between the words</title>
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.6 Georgia, serif;
+        color: #1d1d1f;
+      }
+      article {
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 80px;
+      }
+      br.hidden,
+      .off {
+        display: none;
+      }
+      nav,
+      footer {
+        background: #e8e8e4;
+        padding: 12px 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation: mill index</nav>
+    <article>
+      <h1>How the words stay apart</h1>
+
+      <p id="emphasis">The wheel turns <em>only</em> <em>while</em> the pond holds water.</p>
+
+      <p id="newline-inline">The miller
+        <em>sleeps</em>
+        <em>lightly</em>
+        near the wheel.</p>
+
+      <p id="links"><a href="#pond">The pond</a> <a href="#wheel">and the wheel</a> are the whole machine.</p>
+
+      <p id="spans">See <span>the gate</span> <span>and the marks</span> cut into the wall.</p>
+
+      <p id="measure">It stores <span>20</span>&nbsp;<span>km</span> of head and lifts 12&#8201;kg.</p>
+
+      <p id="nbsp-sentence">The account ends here.&nbsp;The next thought is a separate sentence.</p>
+
+      <p id="soft">A word split only for the line, extra&shy;ordinary in its reach, stays whole.</p>
+
+      <p id="zwsp">The compound tide&#8203;mill is two words, and mill&#8206;pond is one.</p>
+
+      <p id="break">Line one<br>Line two stays on its own line.</p>
+
+      <p id="wrapped-break">Wrapped one<span><br></span>Wrapped two stays on its own line.</p>
+
+      <p id="hidden-break">Keep together<br class="hidden"> please, this is one line.</p>
+
+      <p id="hidden-span-break">Stay together<span class="off"><br></span> on this line as well.</p>
+
+      <p id="separator">First line&#8232;Second line of the separator.</p>
+
+      <p id="family">A family 👨‍👩‍👧 stays one sequence.</p>
+
+      <p>
+        Enough ordinary sentences follow so the page is plainly an article and not a fragment that falls
+        back to the body. The families living nearest the water learned the hours by the moon, and the gate
+        opened when the tide had climbed the marks cut into the wall beside the wheel.
+      </p>
+
+      <p class="off">Hidden boilers must never be read.</p>
+    </article>
+    <footer>Footer: the mill shuts at dusk.</footer>
+  </body>
+</html>

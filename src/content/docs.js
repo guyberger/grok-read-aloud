@@ -73,12 +73,20 @@
    * sentence walk already read as a break.
    */
   function clean(raw) {
-    return String(raw)
-      .replace(/^\uFEFF/, "")
-      .replace(/\r\n?/g, "\n")
-      // An inline image, drawing or equation exports as an object replacement
-      // character, which has nothing to say out loud.
-      .replace(/[\uFFFC\u200B\u00AD]/g, "")
+    // The same characters the page walk drops or turns into spaces. A Doc
+    // export uses them too: a no-break space between a number and its unit,
+    // a soft hyphen, an object-replacement character where a drawing was.
+    const chars = [];
+    for (const char of String(raw).replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n")) {
+      if (ns.util.isSilent(char)) continue;
+      if (char === "\n" || ns.util.isLineBreak(char)) {
+        chars.push("\n");
+        continue;
+      }
+      chars.push(ns.util.isWhitespace(char) ? " " : char);
+    }
+    return chars
+      .join("")
       .replace(/[^\S\n]+\n/g, "\n")
       .replace(/\n{3,}/g, "\n\n")
       .trim()

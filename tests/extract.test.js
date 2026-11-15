@@ -392,6 +392,106 @@ test("a selection around a citation marker still drops it", { skip }, async () =
   assert.ok(!doc.text.includes("[1]"), "the marker inside the selection was read");
 });
 
+test("a space between inline elements is kept, and a line break is a break", { skip }, async () => {
+  const { extract } = await read("spaces.html");
+  const doc = await extract();
+
+  assert.ok(doc, "whole-page extraction returned nothing");
+  const kept = [
+    "The wheel turns only while the pond holds water.",
+    "The miller sleeps lightly near the wheel.",
+    "The pond and the wheel are the whole machine.",
+    "See the gate and the marks cut into the wall.",
+    "It stores 20 km of head and lifts 12 kg.",
+    "The account ends here. The next thought is a separate sentence.",
+    "extraordinary",
+    "The compound tide mill is two words, and millpond is one.",
+    "Line one\nLine two stays on its own line.",
+    "Wrapped one\nWrapped two stays on its own line.",
+    "Keep together please, this is one line.",
+    "Stay together on this line as well.",
+    "First line\nSecond line of the separator.",
+  ];
+  for (const phrase of kept) {
+    assert.ok(doc.text.includes(phrase), `missing "${phrase}"\n---\n${doc.text}`);
+  }
+
+  assert.ok(doc.text.includes("\u200D"), "a zero-width joiner inside an emoji was dropped");
+  const absent = ["\u00A0", "\u00AD", "\u200B", "\u200E", "\u2028", "onlywhile", "pondand", "20km", "Line oneLine", "sleeps\nlightly"];
+  for (const phrase of absent) {
+    assert.ok(!doc.text.includes(phrase), `"${phrase}" was read\n---\n${doc.text}`);
+  }
+  assert.ok(!doc.text.includes("Hidden boilers"), "a hidden paragraph was read");
+  assert.ok(!doc.text.includes("Navigation:"), "navigation leaked in");
+  assert.ok(!doc.text.includes("Footer:"), "footer leaked in");
+});
+
+test("a soft hyphen stays in the page and out of the spoken word", { skip }, async () => {
+  const { page } = await read("spaces.html");
+
+  const mapped = await page.evaluate(`
+    (() => {
+      const { extract } = globalThis.__readAloud;
+      const doc = extract.extract("page");
+      const at = doc.text.indexOf("extraordinary");
+      const range = at < 0 ? null : extract.rangeFor(doc, at, at + "extraordinary".length);
+      const whileAt = doc.text.indexOf("while");
+      const whileRange = whileAt < 0 ? null : extract.rangeFor(doc, whileAt, whileAt + "while".length);
+      const kmAt = doc.text.indexOf("km");
+      const kmRange = kmAt < 0 ? null : extract.rangeFor(doc, kmAt, kmAt + "km".length);
+      return {
+        spoken: range ? range.toString() : "",
+        whileParent: whileRange ? whileRange.startContainer.parentElement.tagName : "",
+        kmParent: kmRange ? kmRange.startContainer.parentElement.tagName : "",
+      };
+    })()
+  `);
+
+  assert.equal(mapped.spoken, "extra\u00ADordinary");
+  assert.equal(mapped.whileParent, "EM", "the word after a space of its own was glued to the one before");
+  assert.equal(mapped.kmParent, "SPAN", "a no-break space glued the unit to the number");
+});
+
+test("a line break ends the sentence, and a no-break space does not swallow the next one", { skip }, async () => {
+  const page = await browser.open(fixtureUrl("spaces.html"), contentBundle(["util.js", "extract.js", "align.js"]));
+  pages.push(page);
+
+  const spoken = await page.evaluate(`
+    (() => {
+      const ns = globalThis.__readAloud;
+      const doc = ns.extract.extract("page");
+      return ns.align.sentences(doc.text).map((span) => doc.text.slice(span.start, span.end).trim());
+    })()
+  `);
+
+  assert.ok(spoken.includes("Line one"));
+  assert.ok(spoken.includes("Line two stays on its own line."));
+  assert.ok(spoken.includes("The account ends here."));
+  assert.ok(spoken.includes("The next thought is a separate sentence."));
+  assert.ok(spoken.includes("The miller sleeps lightly near the wheel."));
+});
+
+test("a selection across a space of its own keeps the space", { skip }, async () => {
+  const { page, extract } = await read("spaces.html");
+
+  await page.evaluate(`
+    (() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById("emphasis"));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()
+  `);
+
+  const doc = await extract("selection");
+  assert.ok(doc, "the selection extracted to nothing");
+  assert.equal(doc.scope, "selection");
+  assert.ok(doc.text.includes("only while"));
+  assert.ok(!doc.text.includes("onlywhile"));
+});
+
 test("a selection is read wherever it is, including inside page furniture", { skip }, async () => {
   const { page, extract } = await read("empty-container.html");
 
