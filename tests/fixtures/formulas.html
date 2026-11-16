@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How a Mill Pond Holds a Formula — Formulas</title>
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.7 Georgia, "Times New Roman", serif;
+        color: #1d1d1f;
+        background: #fbfbf9;
+      }
+      nav,
+      footer {
+        background: #e8e8e4;
+        padding: 14px 20px;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+      article {
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 80px;
+      }
+      h1 {
+        font-size: 32px;
+        line-height: 1.2;
+      }
+      /* The two copies a formula is drawn as. The accessible one is clipped
+         to a pixel; the one on screen is aria-hidden so it is not read twice. */
+      .katex {
+        display: inline-block;
+        position: relative;
+      }
+      .katex-mathml {
+        position: absolute;
+        clip: rect(1px, 1px, 1px, 1px);
+        height: 1px;
+        width: 1px;
+        overflow: hidden;
+        padding: 0;
+        border: 0;
+      }
+      .katex-html {
+        display: inline-block;
+      }
+      .katex-display {
+        display: block;
+        margin: 1em 0;
+      }
+      mjx-container {
+        display: inline-block;
+        position: relative;
+      }
+      mjx-math {
+        display: inline-block;
+      }
+      mjx-assistive-mml {
+        position: absolute !important;
+        clip: rect(1px, 1px, 1px, 1px);
+        height: 1px !important;
+        width: 1px !important;
+        overflow: hidden !important;
+        padding: 0;
+        border: 0;
+      }
+      .mwe-math-mathml-a11y {
+        display: none;
+      }
+      /* Shown on purpose, so skipping it is the extractor's decision. */
+      #native annotation {
+        display: inline !important;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+      }
+      .gone {
+        display: none;
+      }
+      .formula-img {
+        width: 48px;
+        height: 18px;
+        vertical-align: middle;
+      }
+      .pond {
+        width: 96px;
+        height: 64px;
+        vertical-align: middle;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation: mill index, tide tables, and the archive.</nav>
+    <a class="sr-only" href="#pond">Skip to the formula</a>
+
+    <article>
+      <h1>How a mill pond holds a formula</h1>
+
+      <p id="katex-sentence">
+        The relation
+        <span class="katex">
+          <span class="katex-mathml">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">
+              <semantics>
+                <mrow><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow>
+                <annotation encoding="application/x-tex">E=mc^2</annotation>
+              </semantics>
+            </math>
+          </span>
+          <span class="katex-html" aria-hidden="true"><span class="mord">E</span><span class="mrel">=</span><span class="mord">m</span><span class="mord">c</span><span class="msupsub"><span class="mord">2</span></span></span>
+        </span>
+        holds for the wheel.
+      </p>
+
+      <p id="mjx-sentence">
+        Power is
+        <mjx-container jax="CHTML">
+          <mjx-math aria-hidden="true">
+            <mjx-mi>P</mjx-mi>
+            <mjx-mo>=</mjx-mo>
+            <mjx-mi>F</mjx-mi>
+            <mjx-mi>v</mjx-mi>
+          </mjx-math>
+          <mjx-assistive-mml>
+            <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>P</mi><mo>=</mo><mi>F</mi><mi>v</mi></math>
+          </mjx-assistive-mml>
+        </mjx-container>
+        when the gate is open.
+      </p>
+
+      <p id="svg-sentence">
+        Area is
+        <mjx-container jax="SVG">
+          <svg aria-hidden="true" width="64" height="20" viewBox="0 0 64 20">
+            <title>svg title of the area</title>
+            <rect width="64" height="20" fill="#f4e2b0"></rect>
+          </svg>
+          <mjx-assistive-mml>
+            <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>A</mi><mo>=</mo><mi>π</mi><mi>r</mi></math>
+          </mjx-assistive-mml>
+        </mjx-container>
+        of the pond.
+      </p>
+
+      <p id="img-sentence">
+        The old drawing
+        <span class="mwe-math-element">
+          <span class="mwe-math-mathml-a11y">
+            <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>h</mi><mo>=</mo><mn>3</mn></math>
+          </span>
+          <img class="formula-img" alt="h = 3" aria-hidden="true" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" />
+        </span>
+        is an image.
+      </p>
+
+      <p id="native-sentence">
+        Native
+        <math id="native" xmlns="http://www.w3.org/1998/Math/MathML">
+          <semantics>
+            <mrow><mi>a</mi><mo>+</mo><mi>b</mi></mrow>
+            <annotation encoding="application/x-tex">TEXSOURCE</annotation>
+          </semantics>
+        </math>
+        stays visible.
+      </p>
+
+      <p id="once-sentence">
+        Doubled
+        <span id="both">
+          <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>
+          <span aria-hidden="true">x</span>
+        </span>
+        once.
+      </p>
+
+      <p id="photo-sentence">
+        See
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>a</mi><mo>+</mo><mi>b</mi></math>
+        beside the mill
+        <img class="pond" alt="the mill at dusk" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" />
+        and then the gate.
+      </p>
+
+      <p id="star-sentence">
+        A mark
+        <span id="starred">
+          <span class="katex-mathml">
+            <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>y</mi><mo>=</mo><mi>x</mi></math>
+          </span>
+          <span aria-hidden="true">*</span>
+        </span>
+        sits beside the formula.
+      </p>
+
+      <p>Before the block.</p>
+      <div class="katex-display">
+        <span class="katex">
+          <span class="katex-mathml">
+            <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>F</mi><mo>=</mo><mi>m</mi><mi>a</mi></math>
+          </span>
+          <span class="katex-html" aria-hidden="true"><span>F</span><span>=</span><span>m</span><span>a</span></span>
+        </span>
+      </div>
+      <p>After the block.</p>
+
+      <p class="gone">
+        A hidden formula
+        <span class="katex gone">
+          <span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><mi>q</mi><mo>=</mo><mn>9</mn></math></span>
+          <span class="katex-html" aria-hidden="true">q=9</span>
+        </span>
+        stays hidden.
+      </p>
+
+      <p>
+        The pond stores the tide between one turning and the next, and the wheel waits until the head is
+        enough to move the stone. Millers wrote the hours down because the sea does not keep a clock, and a
+        formula was how they said what the water would do. Families who lived beside the pond learned to
+        read the marks cut into the wall the way other people read a timetable.
+      </p>
+
+      <footer>
+        Footer:
+        <span class="katex">
+          <span class="katex-mathml">
+            <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>z</mi><mo>=</mo><mn>0</mn></math>
+          </span>
+          <span class="katex-html" aria-hidden="true">z=0</span>
+        </span>
+        stays out.
+      </footer>
+    </article>
+  </body>
+</html>

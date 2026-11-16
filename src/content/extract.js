@@ -235,6 +235,10 @@
 
   const CITE_ROLES = new Set(["doc-noteref", "doc-endnoteref"]);
 
+  // The TeX source a `<semantics>` element carries beside the formula. It is
+  // not the formula, and speaking it says "E equals m c caret 2".
+  const FORMULA_NOISE = new Set(["ANNOTATION", "ANNOTATION-XML"]);
+
   function compactText(element) {
     return element.textContent.replace(/\s+/gu, "");
   }
@@ -309,6 +313,198 @@
   }
 
   const WORD_CHAR = /\p{L}|\p{N}/u;
+
+  /**
+   * Whether the element is painted, ancestors included. Memoised per walk.
+   *
+   * `aria-hidden` is deliberately not a reason. It takes an element out of
+   * the accessibility tree and leaves it on the screen, which is how the
+   * visible copy of a formula is marked so a screen reader will not read
+   * the equation twice. `visible` still honours it, for everything else.
+   */
+  function painted(element, cache) {
+    const pending = [];
+    let current = element;
+    let result = true;
+    while (current) {
+      const cached = cache.get(current);
+      if (cached !== undefined) {
+        result = cached;
+        break;
+      }
+      pending.push(current);
+      if (!selfPainted(current)) {
+        result = false;
+        break;
+      }
+      current = current.parentElement;
+    }
+    for (const node of pending) cache.set(node, result);
+    return result;
+  }
+
+  function selfPainted(element) {
+    if (element.hasAttribute("hidden")) return false;
+    const style = getComputedStyle(element);
+    if (style.display === "none") return false;
+    if (style.visibility === "hidden" || style.visibility === "collapse") return false;
+    if (style.contentVisibility === "hidden") return false;
+    return !takenOutOfSight(element, style);
+  }
+
+  /** HTML uppercases its own tags; MathML and SVG do not. Compare one way. */
+  function tagOf(element) {
+    return element.tagName.toUpperCase();
+  }
+
+  /** An image, an SVG, or the copy marked so a screen reader skips it. */
+  function isFace(element) {
+    const tag = tagOf(element);
+    return tag === "IMG" || tag === "SVG" || element.getAttribute("aria-hidden") === "true";
+  }
+
+  /** Whether `tags` contains the tag of `element` or of an ancestor below `stop`. */
+  function tagWithin(element, stop, tags) {
+    for (let current = element; current && current !== stop; current = current.parentElement) {
+      if (tags.has(tagOf(current))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Find every formula and decide which of its copies is read.
+   *
+   * A formula is drawn twice. The copy on the screen is what a listener
+   * should hear: letters laid out in HTML, an SVG of paths, or an image.
+   * The other copy is for assistive technology and is clipped to a pixel
+   * or `display: none`, while the screen copy is `aria-hidden` so it is not
+   * read twice. Honouring both rules drops the equation out of the sentence,
+   * and "the relation holds" is then a different sentence. Reading both says
+   * it twice.
+   *
+   * The element that holds the two copies and nothing else is the formula.
+   * Its screen copy is read. Where that copy has no letters — paths, or an
+   * image — the accessible copy or the image's alt is read instead, and the
+   * highlight is the drawing. A `<math>` that is itself on screen, with no
+   * twin, is not one of these and is read as it stands.
+   */
+  function indexFormulas(root, visibleCache) {
+    const paintCache = new Map();
+    const infoOf = new Map();
+    const sourceOf = new Map();
+    const glyphBlocked = new Set(["MATH", ...FORMULA_NOISE, ...SKIP_TAGS]);
+
+    const describe = (element) => {
+      let info = infoOf.get(element);
+      if (info) return info;
+      info = { widget: false, unpaintedMath: false, paintedPresentation: false, prose: false };
+      infoOf.set(element, info);
+      const tag = tagOf(element);
+
+      if (tag === "MATH" && !painted(element, paintCache)) info.unpaintedMath = true;
+      if (tag !== "MATH" && isFace(element) && painted(element, paintCache)) {
+        info.paintedPresentation = true;
+      }
+
+      let prose = false;
+      if (!SKIP_TAGS.has(tag)) {
+        for (const node of element.childNodes) {
+          if (node.nodeType === Node.TEXT_NODE && node.data.trim()) prose = true;
+        }
+      }
+      let childWidget = false;
+      for (const child of element.children) {
+        const childInfo = describe(child);
+        const childTag = tagOf(child);
+        if (childInfo.widget) childWidget = true;
+        if (childTag === "MATH") {
+          if (childInfo.unpaintedMath) info.unpaintedMath = true;
+          continue;
+        }
+        if (childInfo.unpaintedMath) info.unpaintedMath = true;
+        if (childInfo.paintedPresentation) info.paintedPresentation = true;
+        // Letters inside the drawing, the script, or the aria-hidden copy
+        // are the formula. Letters anywhere else are the sentence around it,
+        // and a sentence is not a formula.
+        if (!isFace(child) && !SKIP_TAGS.has(childTag) && childInfo.prose) prose = true;
+      }
+      info.prose = prose;
+      info.widget =
+        tag !== "MATH" &&
+        tag !== "SVG" &&
+        tag !== "IMG" &&
+        !SKIP_TAGS.has(tag) &&
+        !childWidget &&
+        info.unpaintedMath &&
+        info.paintedPresentation &&
+        !prose;
+      return info;
+    };
+
+    const top = root.ownerDocument?.documentElement;
+    if (top && (top === root || top.contains(root))) describe(top);
+    else describe(root);
+
+    const owningWidget = (element) => {
+      for (let current = element; current; current = current.parentElement) {
+        if (infoOf.get(current)?.widget) return current;
+      }
+      return null;
+    };
+
+    const hasGlyphs = (widget) => {
+      // A face that is only a mark — a decorative asterisk beside a clipped
+      // formula — is not the formula. Letters or digits are.
+      const walker = document.createTreeWalker(widget, NodeFilter.SHOW_TEXT);
+      let text = "";
+      let node = walker.nextNode();
+      while (node) {
+        const parent = node.parentElement;
+        if (parent && painted(parent, paintCache) && !tagWithin(parent, widget, glyphBlocked)) text += node.data;
+        node = walker.nextNode();
+      }
+      return /[\p{L}\p{N}]/u.test(text);
+    };
+
+    const altImage = (widget) => {
+      for (const img of widget.querySelectorAll("img")) {
+        if (img.closest("math")) continue;
+        if (!img.alt.trim() || !painted(img, paintCache)) continue;
+        return img;
+      }
+      return null;
+    };
+
+    const faceBox = (widget) => {
+      for (const svg of widget.querySelectorAll("svg")) {
+        if (!svg.closest("math") && painted(svg, paintCache)) return svg;
+      }
+      for (const img of widget.querySelectorAll("img")) {
+        if (!img.closest("math") && painted(img, paintCache)) return img;
+      }
+      return widget;
+    };
+
+    const choose = (widget) => {
+      const parent = widget.parentElement;
+      // An ancestor that is genuinely hidden hides the formula with it. The
+      // formula's own face is the one `aria-hidden` that does not.
+      if (parent && !visible(parent, visibleCache)) return { kind: "none" };
+      if (!painted(widget, paintCache)) return { kind: "none" };
+      if (hasGlyphs(widget)) return { kind: "visual" };
+      const img = altImage(widget);
+      if (img) return { kind: "alt", box: img, text: img.alt.trim() };
+      return { kind: "math", box: faceBox(widget) };
+    };
+
+    const sourceFor = (widget) => {
+      let source = sourceOf.get(widget);
+      if (!source) sourceOf.set(widget, (source = choose(widget)));
+      return source;
+    };
+
+    return { owningWidget, sourceFor, paintCache };
+  }
 
   /** Whether the element renders, ancestors included. Memoised per walk. */
   function visible(element, cache) {
@@ -408,6 +604,20 @@
       return known;
     };
     const citations = new Map();
+    const formulas = indexFormulas(root, cache);
+    const hiddenFormula = new Set(["MATH", ...FORMULA_NOISE]);
+    const mathTag = new Set(["MATH"]);
+
+    const skippedAncestor = (element) => {
+      for (let el = element; el && el !== root.parentElement; el = el.parentElement) {
+        const tag = tagOf(el);
+        if (FORMULA_NOISE.has(tag)) return true;
+        if (SKIP_TAGS.has(tag)) return true;
+        if (!readCodeBlocks && CODE_TAGS.has(tag) && inCodeBlock(el)) return true;
+        if (chromeTags?.has(tag) && el !== root) return true;
+      }
+      return false;
+    };
 
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
@@ -416,25 +626,48 @@
         // speaks "onlywhile". A newline in the source is that same space.
         if (!node.data) return NodeFilter.FILTER_REJECT;
         const parent = node.parentElement;
-        // `visible` walks past the root as well, so a root that sits inside a
-        // hidden container yields nothing rather than hidden text.
-        if (!parent || !visible(parent, cache)) return NodeFilter.FILTER_REJECT;
-        for (let el = parent; el && el !== root.parentElement; el = el.parentElement) {
-          if (SKIP_TAGS.has(el.tagName)) return NodeFilter.FILTER_REJECT;
-          if (!readCodeBlocks && CODE_TAGS.has(el.tagName) && inCodeBlock(el)) {
+        if (!parent) return NodeFilter.FILTER_REJECT;
+
+        const widget = formulas.owningWidget(parent);
+        if (widget) {
+          const source = formulas.sourceFor(widget);
+          // The copy that is not on screen, and a formula that is itself
+          // hidden, contribute nothing. An image formula is spoken from its
+          // alt, spliced in below, rather than from a text node.
+          if (source.kind === "visual") {
+            if (tagWithin(parent, widget, hiddenFormula)) return NodeFilter.FILTER_REJECT;
+            if (!formulasPainted(parent)) return NodeFilter.FILTER_REJECT;
+          } else if (source.kind === "math") {
+            if (!tagWithin(parent, widget, mathTag)) return NodeFilter.FILTER_REJECT;
+            if (tagWithin(parent, widget, FORMULA_NOISE)) return NodeFilter.FILTER_REJECT;
+          } else {
             return NodeFilter.FILTER_REJECT;
           }
-          if (chromeTags?.has(el.tagName) && el !== root) return NodeFilter.FILTER_REJECT;
+          if (skippedAncestor(parent)) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
         }
+
+        // `visible` walks past the root as well, so a root that sits inside a
+        // hidden container yields nothing rather than hidden text.
+        if (!visible(parent, cache)) return NodeFilter.FILTER_REJECT;
+        if (skippedAncestor(parent)) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       },
     });
+
+    // `painted` closes over the cache `indexFormulas` built. A glyph inside
+    // an `aria-hidden` face is still on screen; `visible` would drop it.
+    function formulasPainted(element) {
+      return painted(element, formulas.paintCache);
+    }
 
     const slices = [];
     let node = walker.nextNode();
     while (node) {
       const clipped = clipToSelection(node, range);
       if (clipped) {
+        const widget = formulas.owningWidget(node.parentElement);
+        const source = widget ? formulas.sourceFor(widget) : null;
         slices.push({
           node,
           start: clipped[0],
@@ -443,17 +676,78 @@
           // mark sitting against a comma does not grow a space of its own.
           // Nothing in it is spoken.
           gap: skipCitations && inCitation(node.parentElement, root, citations),
+          // A formula whose letters are not on the page — an SVG of paths —
+          // is highlighted as the drawing, which is.
+          box: source?.kind === "math" ? source.box : null,
         });
       }
       node = walker.nextNode();
     }
+    return mergeAltSlices(slices, altSlices(root, range, formulas, skippedAncestor));
+  }
+
+  /** Image formulas, in tree order, spoken from the alt the page gave them. */
+  function altSlices(root, range, formulas, skippedAncestor) {
+    const images = tagOf(root) === "IMG" ? [root] : [];
+    images.push(...root.querySelectorAll("img"));
+    const slices = [];
+    for (const img of images) {
+      const widget = formulas.owningWidget(img);
+      if (!widget) continue;
+      const source = formulas.sourceFor(widget);
+      if (source.kind !== "alt" || source.box !== img || !source.text) continue;
+      if (range && !range.intersectsNode(img)) continue;
+      if (skippedAncestor(img)) continue;
+      slices.push({
+        node: null,
+        literal: source.text,
+        box: img,
+        start: 0,
+        end: source.text.length,
+        gap: false,
+      });
+    }
     return slices;
+  }
+
+  /** Interleave alt slices with text slices. Both lists are in tree order. */
+  function mergeAltSlices(slices, alts) {
+    if (!alts.length) return slices;
+    const merged = [];
+    let index = 0;
+    for (const alt of alts) {
+      while (index < slices.length && !nodeFollows(alt.box, slices[index].node)) {
+        merged.push(slices[index]);
+        index += 1;
+      }
+      merged.push(alt);
+    }
+    while (index < slices.length) {
+      merged.push(slices[index]);
+      index += 1;
+    }
+    return merged;
+  }
+
+  function nodeFollows(element, node) {
+    if (!node) return false;
+    return Boolean(element.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+
+  /**
+   * The characters a slice contributes, and the node they sit at.
+   * An image formula has no text node; its alt is the characters and the
+   * image is where they sit.
+   */
+  function sliceText(slice) {
+    if (slice.literal != null) return { data: slice.literal, start: 0, end: slice.literal.length, at: slice.box };
+    return { data: slice.node.data, start: slice.start, end: slice.end, at: slice.node };
   }
 
   /** First character a slice would actually speak, ignoring its own spaces. */
   function firstSolidChar(slice) {
-    const data = slice.node.data;
-    for (let offset = slice.start; offset < slice.end; offset += 1) {
+    const { data, start, end } = sliceText(slice);
+    for (let offset = start; offset < end; offset += 1) {
       const char = data[offset];
       if (ns.util.isSilent(char) || ns.util.isWhitespace(char) || ns.util.isLineBreak(char)) continue;
       return char;
@@ -469,10 +763,10 @@
    * rather than spaces.
    */
   function sliceKind(slice) {
-    const data = slice.node.data;
+    const { data, start, end } = sliceText(slice);
     let space = false;
     let breakChar = false;
-    for (let offset = slice.start; offset < slice.end; offset += 1) {
+    for (let offset = start; offset < end; offset += 1) {
       const char = data[offset];
       if (ns.util.isSilent(char)) continue;
       if (ns.util.isLineBreak(char)) {
@@ -577,6 +871,7 @@
 
     for (let sliceIndex = 0; sliceIndex < slices.length; sliceIndex += 1) {
       const slice = slices[sliceIndex];
+      const source = sliceText(slice);
       if (slice.gap) {
         // The mark is not spoken. Between two words it still has to leave
         // them apart — `pond[1]lasts` is "pond lasts" — and against punctuation
@@ -586,7 +881,7 @@
         if (previous && next && WORD_CHAR.test(previous) && WORD_CHAR.test(next)) pendingSpace = true;
         continue;
       }
-      const block = blockAncestor(slice.node);
+      const block = blockAncestor(source.at);
       const kind = sliceKind(slice);
       // A blank slice is not a block of its own, and it is not a position to
       // measure the next break from. The following word still sees a `<br>`
@@ -600,13 +895,13 @@
       const blockBefore = previousBlock && block !== previousBlock;
       const breakBefore =
         pendingBreak ||
-        (!blockBefore && previousNode && lineBreakBetween(previousNode, slice.node, cache));
+        (!blockBefore && previousNode && lineBreakBetween(previousNode, source.at, cache));
       if ((blockBefore || breakBefore) && chars.length) emitBreak();
       previousBlock = block;
-      previousNode = slice.node;
+      previousNode = source.at;
 
-      const data = slice.node.data;
-      for (let offset = slice.start; offset < slice.end; offset += 1) {
+      const data = source.data;
+      for (let offset = source.start; offset < source.end; offset += 1) {
         const char = data[offset];
         if (ns.util.isSilent(char)) continue;
         if (ns.util.isLineBreak(char)) {
@@ -738,11 +1033,23 @@
       else spans.set(slice, [i, i]);
     }
     // The walk visits each text node once, so a node belongs to one slice.
+    // An image formula has no text node; the first character it contributed
+    // is what a click on the drawing lands on.
     const byNode = new Map();
+    const byBox = new Map();
     for (let i = 0; i < doc.slices.length; i += 1) {
-      if (!byNode.has(doc.slices[i].node)) byNode.set(doc.slices[i].node, i);
+      const node = doc.slices[i].node;
+      if (node && !byNode.has(node)) byNode.set(node, i);
     }
-    doc.reverse = { spans, byNode };
+    for (let i = 0; i < doc.charNodes.length; i += 1) {
+      const sliceIndex = doc.charNodes[i];
+      if (sliceIndex < 0) continue;
+      const box = doc.slices[sliceIndex].box;
+      // The space in front of a formula is charged to its first slice. A click
+      // on the drawing belongs on the formula, not on that space.
+      if (box && !byBox.has(box) && !ns.util.isWhitespace(doc.text[i])) byBox.set(box, i);
+    }
+    doc.reverse = { spans, byNode, byBox };
     return doc.reverse;
   }
 
@@ -839,10 +1146,23 @@
    */
   function charIndexFromPoint(doc, x, y) {
     const caret = caretAt(x, y);
-    if (!caret || caret.node.nodeType !== Node.TEXT_NODE) return -1;
-    const at = characterAt(caret.node, caret.offset, x, y);
-    if (at < 0) return -1;
-    return charIndexAt(doc, caret.node, at);
+    if (caret?.node?.nodeType === Node.TEXT_NODE) {
+      const at = characterAt(caret.node, caret.offset, x, y);
+      if (at >= 0) {
+        const index = charIndexAt(doc, caret.node, at);
+        if (index >= 0) return index;
+      }
+    }
+    // A formula drawn as an image or as paths has no character box to hit.
+    // The drawing itself is the word.
+    const element = document.elementFromPoint(x, y);
+    if (!element || !doc?.slices?.length) return -1;
+    const { byBox } = reverseIndex(doc);
+    for (let current = element; current; current = current.parentElement) {
+      const index = byBox.get(current);
+      if (index !== undefined) return index;
+    }
+    return -1;
   }
 
   /**
@@ -860,9 +1180,19 @@
     if (from > to) return null;
 
     const range = document.createRange();
+    const startSlice = slices[charNodes[from]];
+    const endSlice = slices[charNodes[to]];
     try {
-      range.setStart(slices[charNodes[from]].node, charOffsets[from]);
-      range.setEnd(slices[charNodes[to]].node, charOffsets[to] + 1);
+      // A formula with no letters of its own is one drawing, so the whole
+      // of it highlights together. Letters on the page highlight as letters.
+      if (startSlice.box && endSlice.box && startSlice.box === endSlice.box) {
+        range.selectNode(startSlice.box);
+        return range;
+      }
+      if (startSlice.box) range.setStartBefore(startSlice.box);
+      else range.setStart(startSlice.node, charOffsets[from]);
+      if (endSlice.box) range.setEndAfter(endSlice.box);
+      else range.setEnd(endSlice.node, charOffsets[to] + 1);
     } catch {
       return null;
     }
