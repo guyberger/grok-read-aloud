@@ -15,6 +15,9 @@ dependencies, just the files in `src/` and a small copy script.
 
 - Reads the readable body of a page, skipping navigation, sidebars, footers,
   forms, code blocks, citation marks and anything hidden with CSS.
+- Reads a formula once, from the copy on the screen. The hidden copy kept for
+  assistive technology is not also read, and an equation is not dropped out of
+  the sentence it belongs to.
 - Reads just the current selection instead, when you ask it to.
 - Reads a Google Doc, which no amount of walking the page can do: Docs paints
   the document onto a canvas, so the text is fetched from the same place File →
@@ -417,6 +420,8 @@ checks cannot do
 - [ ] A space between two inline elements is spoken as a space, and a line
       break starts a new sentence. A soft hyphen in the middle of a word is
       not spoken.
+- [ ] A formula in a sentence is read once and highlighted on the formula the
+      page shows. The hidden copy, and the TeX source beside it, are not.
 - [ ] Audio continues smoothly across a chunk boundary — watch the "Part *n* of
       *m*" label in the popup tick over without a long gap.
 
@@ -806,6 +811,10 @@ page has hidden is not a break. An ASCII hyphen at the end of a line in the
 source is left as a hyphen: once that newline has been folded into a space,
 nothing distinguishes it from the hyphen in a compound.
 
+A formula is drawn twice, once on the screen and once hidden for assistive
+technology, and neither "skip what is hidden" nor "skip what is aria-hidden"
+can be applied to both copies. See [Formulas](#formulas).
+
 ### Citation markers
 
 A referenced sentence is the sentence. The `[1]` at the end of a clause is not
@@ -837,6 +846,36 @@ the word it belongs to.
 A selection of nothing but a mark is read anyway. It is the thing that was
 pointed at, and silence is not an answer to that. A selection that merely
 contains a mark still skips it, like any other read.
+
+### Formulas
+
+A formula is drawn twice. One copy is the thing on the screen: the letters a
+page lays out, a drawing made of paths, or an image of the equation. The other
+is for assistive technology, and it is hidden — clipped to a pixel, or
+`display: none` — while the copy on screen is marked `aria-hidden` so a screen
+reader will not read the equation twice.
+
+Reading the page the way those two rules are written gets it backwards. The
+hidden copy is skipped because it is hidden, and the copy on screen is skipped
+because it is `aria-hidden`, so the sentence loses the equation. "The relation
+holds for the wheel" is still a sentence. It is no longer the one that was
+written. Reading both, where both copies are reached, says the equation twice.
+
+So a formula is read once, and the copy is the one on the screen. When that
+copy is letters, those are the letters that are spoken and highlighted, one at
+a time, the same as any other word. When it is an image, the alt text is
+spoken and the highlight is the image. When it is paths, which have no letters
+of their own, the hidden accessible copy is spoken and the highlight is the
+drawing. A click on that drawing jumps to the formula.
+
+The TeX source a `<semantics>` element carries in `<annotation>` is neither
+copy. It is never spoken: `E=mc^2` is not what the page shows, and a browser
+that paints the annotation does not change that.
+
+A `<math>` element that is itself on the screen, with no second copy beside
+it, is read as it stands. A formula the page has actually hidden stays hidden,
+and so does an `aria-hidden` label that is not a formula. An ordinary image
+keeps its alt to itself — the alt is read only where it is the formula.
 
 ### Google Docs
 
@@ -1840,6 +1879,11 @@ plays, so that playback is really tested — out of the speakers.
   footnote that points nowhere. Brackets, daggers, a `doc-noteref`, a citation
   class and a link are skipped; a bare `2` in a superscript is kept. See
   [Citation markers](#citation-markers).
+- **A formula is read as the characters on the screen.** `E=mc²` is not
+  rewritten into "E equals m c squared". An image whose alt text is the TeX
+  source is read as that source, because that is the text the page provided.
+  An SVG formula is highlighted as one drawing, since its glyphs are not
+  characters. See [Formulas](#formulas).
 - **Whole code snippets are skipped by default**, on the grounds that
   punctuation and indentation rarely read well aloud. Code written into a
   sentence is always read — see [Code in a page](#code-in-a-page) — and

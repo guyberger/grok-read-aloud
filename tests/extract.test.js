@@ -492,6 +492,124 @@ test("a selection across a space of its own keeps the space", { skip }, async ()
   assert.ok(!doc.text.includes("onlywhile"));
 });
 
+test("a formula is read once, from the copy on the screen", { skip }, async () => {
+  const { extract } = await read("formulas.html");
+  const doc = await extract();
+
+  assert.ok(doc, "whole-page extraction returned nothing");
+  const kept = [
+    "The relation E=mc2 holds for the wheel.",
+    "Power is P = F v when the gate is open.",
+    "Area is A=πr of the pond.",
+    "The old drawing h = 3 is an image.",
+    "Native a+b stays visible.",
+    "Doubled x once.",
+    "See a+b beside the mill",
+    "A mark y=x sits beside the formula.",
+    "Before the block.\nF=ma\nAfter the block.",
+    "The pond stores the tide",
+  ];
+  for (const phrase of kept) {
+    assert.ok(doc.text.includes(phrase), `missing "${phrase}"\n---\n${doc.text}`);
+  }
+
+  assert.equal(doc.text.split("E=mc2").length - 1, 1, `the formula was read more than once\n---\n${doc.text}`);
+  assert.equal(doc.text.split("a+b").length - 1, 2, `a visible formula was read twice or dropped\n---\n${doc.text}`);
+  const dropped = [
+    "E=mc^2",
+    "TEXSOURCE",
+    "h=3",
+    "svg title of the area",
+    "the mill at dusk",
+    "q=9",
+    "z=0",
+    "Skip to the formula",
+    "Navigation:",
+    "Footer:",
+    "P=Fv",
+    "Doubled x x",
+    "mark *",
+  ];
+  for (const phrase of dropped) {
+    assert.ok(!doc.text.includes(phrase), `"${phrase}" was read\n---\n${doc.text}`);
+  }
+});
+
+test("a formula is highlighted on the drawing the page shows", { skip }, async () => {
+  const { page } = await read("formulas.html");
+
+  const mapped = await page.evaluate(`
+    (() => {
+      const { extract } = globalThis.__readAloud;
+      const doc = extract.extract("page");
+      const hit = (selector) => {
+        const el = document.querySelector(selector);
+        el.scrollIntoView({ block: "center" });
+        const rect = el.getBoundingClientRect();
+        return extract.charIndexFromPoint(doc, rect.left + rect.width / 2, rect.top + rect.height / 2);
+      };
+      const word = (needle) => {
+        const at = doc.text.indexOf(needle);
+        const range = at < 0 ? null : extract.rangeFor(doc, at, at + needle.length);
+        let node = range && range.startContainer;
+        if (node && node.nodeType === Node.ELEMENT_NODE && node.childNodes[range.startOffset]?.nodeType === Node.ELEMENT_NODE) {
+          node = node.childNodes[range.startOffset];
+        } else if (node && node.nodeType !== Node.ELEMENT_NODE) {
+          node = node.parentElement;
+        }
+        const box = node && node.closest("svg, img, .katex-html, .katex-mathml, mjx-math");
+        return {
+          at,
+          spoken: range ? range.toString().replace(/\\s+/g, "") : "",
+          box: box ? box.tagName + (box.className && box.className.baseVal === undefined ? "." + String(box.className).split(" ")[0] : "") : "",
+          width: range ? Math.round(range.getBoundingClientRect().width) : 0,
+        };
+      };
+      return {
+        katex: word("E=mc2"),
+        letter: word("E"),
+        svg: word("A=πr"),
+        image: word("h = 3"),
+        svgHit: hit("mjx-container[jax=SVG] svg"),
+        imageHit: hit("#img-sentence img"),
+      };
+    })()
+  `);
+
+  assert.equal(mapped.katex.box, "SPAN.katex-html", `the formula was mapped onto ${mapped.katex.box}`);
+  assert.ok(mapped.katex.spoken.includes("E=mc2"), "the highlighted formula was not the one on screen");
+  assert.equal(mapped.letter.box, "SPAN.katex-html", "a letter of the formula was mapped onto the hidden copy");
+  assert.equal(mapped.svg.box, "svg", `the path formula was mapped onto ${mapped.svg.box}`);
+  assert.ok(mapped.svg.width >= 60, "the path formula was highlighted as a clipped pixel");
+  assert.equal(mapped.image.box, "IMG.formula-img", `the image formula was mapped onto ${mapped.image.box}`);
+  assert.ok(mapped.image.width >= 40, "the image formula was highlighted as nothing");
+
+  const text = await page.evaluate(`globalThis.__readAloud.extract.extract("page").text`);
+  assert.equal(text.slice(mapped.svgHit, mapped.svgHit + 4), "A=πr", "a click on the drawing missed the formula");
+  assert.equal(text.slice(mapped.imageHit, mapped.imageHit + 5), "h = 3", "a click on the image missed its alt");
+});
+
+test("a selection of the on-screen formula reads that copy", { skip }, async () => {
+  const { page, extract } = await read("formulas.html");
+
+  await page.evaluate(`
+    (() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.querySelector("#katex-sentence .katex-html"));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()
+  `);
+
+  const doc = await extract("selection");
+  assert.ok(doc, "a selected formula extracted to nothing");
+  assert.equal(doc.scope, "selection");
+  assert.ok(doc.text.includes("E=mc2"), "the formula on screen was dropped");
+  assert.ok(!doc.text.includes("E=mc^2"), "the hidden TeX source was read with the selection");
+});
+
 test("a selection is read wherever it is, including inside page furniture", { skip }, async () => {
   const { page, extract } = await read("empty-container.html");
 
