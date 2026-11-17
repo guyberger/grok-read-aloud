@@ -610,6 +610,109 @@ test("a selection of the on-screen formula reads that copy", { skip }, async () 
   assert.ok(!doc.text.includes("E=mc^2"), "the hidden TeX source was read with the selection");
 });
 
+test("a closed disclosure is left folded, and its summary is read", { skip }, async () => {
+  const { extract } = await read("details.html");
+  const doc = await extract();
+
+  assert.ok(doc, "whole-page extraction returned nothing");
+  const kept = [
+    "How a mill pond holds the tide",
+    "the miller watches the gate.\nHow the gate works",
+    "How the gate works\nWhat stays open",
+    "What stays open\nThe open answer describes the head race and the wheel.",
+    "The open contents phrase stays in the sentence.",
+    "The open relation E=mc2 is on the page.",
+    "is on the page.\nNested gate",
+    "Nested gate\nExclusive gate one",
+    "Exclusive gate one\nExclusive gate two",
+    "Exclusive open answer about the second pond.",
+    "still read in full, including the words past the second line.",
+    "Millers slept in shifts",
+    "This paragraph sits below the fold and is still part of the page.",
+  ];
+  for (const phrase of kept) {
+    assert.ok(doc.text.includes(phrase), `missing "${phrase}"\n---\n${doc.text}`);
+  }
+
+  const absent = [
+    "Folded loose words",
+    "folded answer explains the sluice",
+    "Q=ir",
+    "Q=ir-tex",
+    "E=mc^2",
+    "stays shut",
+    "A second label",
+    "Folded contents phrase",
+    "nested folded answer",
+    "Exclusive folded answer",
+    "No summary element",
+    "Navigation:",
+    "Footer:",
+  ];
+  for (const phrase of absent) {
+    assert.ok(!doc.text.includes(phrase), `"${phrase}" was read\n---\n${doc.text}`);
+  }
+  assert.equal(doc.text.split("E=mc2").length - 1, 1, `the open formula was read more than once\n---\n${doc.text}`);
+});
+
+test("a closed disclosure's summary is highlighted on the summary", { skip }, async () => {
+  const { page } = await read("details.html");
+
+  const mapped = await page.evaluate(`
+    (() => {
+      const { extract } = globalThis.__readAloud;
+      const doc = extract.extract("page");
+      const at = doc.text.indexOf("How the gate works");
+      const range = at < 0 ? null : extract.rangeFor(doc, at, at + "How the gate works".length);
+      const openAt = doc.text.indexOf("head race");
+      const openRange = openAt < 0 ? null : extract.rangeFor(doc, openAt, openAt + "head race".length);
+      return {
+        summary: range ? range.startContainer.parentElement.closest("summary").id : "",
+        spoken: range ? range.toString().replace(/\\s+/g, " ") : "",
+        answer: openRange ? openRange.startContainer.parentElement.closest("p").id : "",
+      };
+    })()
+  `);
+
+  assert.equal(mapped.summary, "closed-summary");
+  assert.equal(mapped.spoken, "How the gate works");
+  assert.equal(mapped.answer, "open-answer");
+});
+
+test("a selection inside an open disclosure is read, and a folded one is not", { skip }, async () => {
+  const { page, extract } = await read("details.html");
+
+  await page.evaluate(`
+    (() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById("open-answer"));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()
+  `);
+
+  const open = await extract("selection");
+  assert.ok(open, "the open answer extracted to nothing");
+  assert.equal(open.scope, "selection");
+  assert.ok(open.text.includes("head race and the wheel"));
+
+  await page.evaluate(`
+    (() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById("closed-answer"));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()
+  `);
+
+  const folded = await extract("selection");
+  assert.equal(folded, null);
+});
+
 test("a selection is read wherever it is, including inside page furniture", { skip }, async () => {
   const { page, extract } = await read("empty-container.html");
 
