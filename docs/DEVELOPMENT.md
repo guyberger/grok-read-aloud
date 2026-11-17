@@ -14,7 +14,8 @@ dependencies, just the files in `src/` and a small copy script.
 ## What it does
 
 - Reads the readable body of a page, skipping navigation, sidebars, footers,
-  forms, code blocks, citation marks and anything hidden with CSS.
+  forms, code blocks, citation marks, anything hidden with CSS, and the body
+  of a disclosure that is still closed.
 - Reads a formula once, from the copy on the screen. The hidden copy kept for
   assistive technology is not also read, and an equation is not dropped out of
   the sentence it belongs to.
@@ -417,6 +418,8 @@ checks cannot do
 - [ ] Hidden (`display: none`) text is never read, and neither is text hidden
       for assistive technology only — a one-pixel "skip" link, a label parked
       off the page. A paragraph clamped to a few lines still is, in full.
+- [ ] A closed disclosure reads its summary only. The answer, a second
+      summary, and a disclosure nested inside it wait until it is opened.
 - [ ] A space between two inline elements is spoken as a space, and a line
       break starts a new sentence. A soft hyphen in the middle of a word is
       not spoken.
@@ -793,6 +796,18 @@ the element is positioned, because that is the only time the property does
 anything. A line clamp and `content-visibility: auto` are the opposite case,
 text that is still the page, and both are read — including after the page has
 been scrolled, since leaving the window is not the same as leaving the page.
+
+A closed disclosure is the same kind of absence, and it does not show up in
+those styles. The answer stays `display: block` with an ordinary box; the
+browser has simply not rendered it yet. The first `<summary>` is on the page
+and is read. The rest is not — the answer, a second summary (the browser
+shows one label), text written directly into the `<details>`, and a
+disclosure nested inside one that is still closed, summary included.
+Opening it renders that rest, which is then read like any other block, so
+the summary and the answer are two sentences rather than one line. A
+`display: contents` wrapper does not let the folded text through, and it
+does not hide the summary it sits in. A line clamp, text below the fold and
+`content-visibility: auto` are unchanged.
 
 A space the page drew is kept, including one that sits in a text node of its
 own between two inline elements. `<em>only</em> <em>while</em>` is "only

@@ -37,11 +37,13 @@
   // short page, and the body is read instead.
   const MIN_PAGE_CHARS = 200;
 
+  // DETAILS and SUMMARY are blocks so a folded question does not run on into
+  // the next one, and an open answer does not run on from its summary.
   const BLOCK_TAGS = new Set([
-    "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "BR", "DD", "DIV", "DL", "DT",
-    "FIELDSET", "FIGCAPTION", "FIGURE", "FOOTER", "FORM", "H1", "H2", "H3",
+    "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "BR", "DD", "DETAILS", "DIV", "DL",
+    "DT", "FIELDSET", "FIGCAPTION", "FIGURE", "FOOTER", "FORM", "H1", "H2", "H3",
     "H4", "H5", "H6", "HEADER", "HR", "LI", "MAIN", "NAV", "OL", "P", "PRE",
-    "SECTION", "TABLE", "TD", "TH", "TR", "UL",
+    "SECTION", "SUMMARY", "TABLE", "TD", "TH", "TR", "UL",
   ]);
 
   const MAIN_SELECTORS = [
@@ -62,10 +64,12 @@
    * without a layout box as invisible, which includes `display: contents`
    * wrappers — whose children render perfectly well, and which component
    * frameworks emit freely. Treating one as hidden silently drops everything
-   * underneath it.
+   * underneath it. A closed disclosure is decided separately, in
+   * `disclosureHides`, because the folded answer still has a box.
    */
   function selfRendered(element) {
     if (element.hasAttribute("hidden") || element.getAttribute("aria-hidden") === "true") return false;
+    if (disclosureHides(element)) return false;
     const style = getComputedStyle(element);
     if (style.display === "none") return false;
     if (style.visibility === "hidden" || style.visibility === "collapse") return false;
@@ -109,6 +113,48 @@
     // Both axes, so a hairline rule is not mistaken for a hidden paragraph.
     // The screen-reader-only box is one pixel by one pixel.
     return width !== null && height !== null && width <= 1 && height <= 1;
+  }
+
+  /**
+   * Whether this node is the folded part of a disclosure.
+   *
+   * A closed `<details>` keeps its answer in the tree as an ordinary block.
+   * `display`, `visibility` and the box size all still say it is there — the
+   * summary is a normal line, and the answer is a normal paragraph the
+   * browser has simply not rendered. Reading it speaks a paragraph the page
+   * is still holding back, and pays for the characters.
+   *
+   * The first `<summary>` child is the part on the page. A second summary is
+   * not: the browser shows one label. Text parented by the `<details>` itself
+   * is the answer, not the label, which is why a text node has to be asked
+   * and not only its parent — the disclosure element is on the page, because
+   * it draws the summary. Opening it renders the rest. A disclosure inside
+   * one that is still closed is folded with it, summary included.
+   */
+  function disclosureHides(node) {
+    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    if (!element) return false;
+    for (
+      let details = element.tagName === "DETAILS" ? element : element.parentElement;
+      details;
+      details = details.parentElement
+    ) {
+      if (details.tagName !== "DETAILS" || details.open) continue;
+      const summary = disclosureSummary(details);
+      if (summary?.contains(node)) continue;
+      // The disclosure element itself stays. Hiding it would hide its summary,
+      // which is the one line actually on the page.
+      if (node !== details) return true;
+    }
+    return false;
+  }
+
+  /** The summary the browser shows: the first `<summary>` child, or none. */
+  function disclosureSummary(details) {
+    for (const child of details.children) {
+      if (child.tagName === "SUMMARY") return child;
+    }
+    return null;
   }
 
   function cssPx(value) {
@@ -345,6 +391,9 @@
 
   function selfPainted(element) {
     if (element.hasAttribute("hidden")) return false;
+    // A formula inside a folded disclosure is not on the page, even when its
+    // face is `aria-hidden` and would otherwise be the copy that is read.
+    if (disclosureHides(element)) return false;
     const style = getComputedStyle(element);
     if (style.display === "none") return false;
     if (style.visibility === "hidden" || style.visibility === "collapse") return false;
@@ -627,6 +676,9 @@
         if (!node.data) return NodeFilter.FILTER_REJECT;
         const parent = node.parentElement;
         if (!parent) return NodeFilter.FILTER_REJECT;
+        // Before the formula branch, so a folded equation is not rescued by
+        // being the copy that would have been spoken.
+        if (disclosureHides(node)) return NodeFilter.FILTER_REJECT;
 
         const widget = formulas.owningWidget(parent);
         if (widget) {

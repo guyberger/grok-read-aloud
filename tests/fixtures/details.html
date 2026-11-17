@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How a Mill Pond Holds the Tide — Disclosures</title>
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.6 Georgia, "Times New Roman", serif;
+        color: #1d1d1f;
+        background: #fbfbf9;
+      }
+      nav,
+      footer {
+        background: #e8e8e4;
+        padding: 14px 20px;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+      article {
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 80px;
+      }
+      h1 {
+        font-size: 32px;
+        line-height: 1.2;
+      }
+      details {
+        margin: 16px 0;
+      }
+      summary {
+        cursor: pointer;
+      }
+      .clamp {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        width: 240px;
+      }
+      .contents {
+        display: contents;
+      }
+      .spacer {
+        height: 2400px;
+      }
+      .below {
+        content-visibility: auto;
+      }
+      .katex {
+        display: inline-block;
+        position: relative;
+      }
+      .katex-mathml {
+        position: absolute;
+        clip: rect(1px, 1px, 1px, 1px);
+        height: 1px;
+        width: 1px;
+        overflow: hidden;
+        padding: 0;
+        border: 0;
+      }
+      .katex-html {
+        display: inline-block;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation: site furniture that must stay unread</nav>
+
+    <article>
+      <h1>How a mill pond holds the tide</h1>
+      <p id="opening">
+        A tide mill fills a pond on the way in and empties it through a wheel on the way out. The wheel turns
+        the stone for as long as the pond lasts, and the miller watches the gate.
+      </p>
+
+      <details id="closed">
+        <summary id="closed-summary">How the <span class="contents">gate</span> works</summary>
+        Folded loose words about the rack.
+        <p id="closed-answer">The folded answer explains the sluice and the penstock.</p>
+        <p id="closed-formula">
+          The folded relation
+          <span class="katex">
+            <span class="katex-mathml">
+              <math xmlns="http://www.w3.org/1998/Math/MathML">
+                <semantics>
+                  <mrow><mi>Q</mi><mo>=</mo><mi>i</mi><mi>r</mi></mrow>
+                  <annotation encoding="application/x-tex">Q=ir-tex</annotation>
+                </semantics>
+              </math>
+            </span>
+            <span class="katex-html" aria-hidden="true"><span>Q</span><span>=</span><span>i</span><span>r</span></span>
+          </span>
+          stays shut.
+        </p>
+        <summary id="second-summary">A second label for the same gate</summary>
+        <span class="contents" id="closed-contents">Folded contents phrase beside the gate.</span>
+      </details>
+
+      <details id="open" open>
+        <summary id="open-summary">What stays open</summary>
+        <p id="open-answer">The open answer describes the head race and the wheel.</p>
+        <p id="open-contents-sentence">The <span class="contents">open contents phrase</span> stays in the sentence.</p>
+        <p id="open-formula">
+          The open relation
+          <span class="katex">
+            <span class="katex-mathml">
+              <math xmlns="http://www.w3.org/1998/Math/MathML">
+                <semantics>
+                  <mrow><mi>E</mi><mo>=</mo><mi>m</mi><mi>c</mi><mn>2</mn></mrow>
+                  <annotation encoding="application/x-tex">E=mc^2</annotation>
+                </semantics>
+              </math>
+            </span>
+            <span class="katex-html" aria-hidden="true"><span>E</span><span>=</span><span>m</span><span>c</span><span>2</span></span>
+          </span>
+          is on the page.
+        </p>
+        <details id="nested">
+          <summary id="nested-summary">Nested gate</summary>
+          <p id="nested-answer">The nested folded answer about the eel trap.</p>
+        </details>
+      </details>
+
+      <details id="exclusive-closed" name="tide">
+        <summary>Exclusive gate one</summary>
+        <p>Exclusive folded answer about the first pond.</p>
+      </details>
+      <details id="exclusive-open" name="tide" open>
+        <summary>Exclusive gate two</summary>
+        <p>Exclusive open answer about the second pond.</p>
+      </details>
+
+      <details id="no-summary">
+        <p>No summary element folded body.</p>
+      </details>
+
+      <p class="clamp">
+        The overflow of this sentence is clamped on screen and still read in full, including the words past the
+        second line.
+      </p>
+
+      <p>
+        Millers slept in shifts because the tide does not keep office hours, and the families living nearest the
+        pond learned the sound of the gate the way other people learn a clock.
+      </p>
+
+      <div class="spacer"></div>
+      <p class="below">This paragraph sits below the fold and is still part of the page.</p>
+    </article>
+
+    <footer>Footer: terms, credits, and a list of links.</footer>
+  </body>
+</html>
