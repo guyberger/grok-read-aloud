@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How a Mill Pond Holds the Tide — Collapsed Boxes</title>
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.6 Georgia, "Times New Roman", serif;
+        color: #1d1d1f;
+        background: #fbfbf9;
+      }
+      nav,
+      footer {
+        background: #e8e8e4;
+        padding: 14px 20px;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+      article {
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 80px;
+      }
+      h1 {
+        font-size: 32px;
+        line-height: 1.2;
+      }
+      h2 {
+        font-size: 22px;
+        line-height: 1.3;
+      }
+      .shut {
+        max-height: 0;
+        overflow: hidden;
+      }
+      .height-zero {
+        height: 0;
+        overflow: hidden;
+      }
+      .clip {
+        height: 0;
+        overflow: clip;
+      }
+      .axis {
+        height: 0;
+        overflow-y: hidden;
+      }
+      .drawer {
+        width: 0;
+        overflow: hidden;
+      }
+      .grid {
+        display: grid;
+        grid-template-rows: 0fr;
+      }
+      .grid > div {
+        overflow: hidden;
+        min-height: 0;
+      }
+      .rel {
+        position: relative;
+        height: 0;
+        overflow: hidden;
+      }
+      .transformed {
+        height: 0;
+        overflow: hidden;
+        transform: translateZ(0);
+      }
+      .filtered {
+        height: 0;
+        overflow: hidden;
+        filter: opacity(1);
+      }
+      .ib-shut {
+        display: inline-block;
+        height: 0;
+        overflow: hidden;
+        vertical-align: bottom;
+      }
+      .inline-zero {
+        height: 0;
+        overflow: hidden;
+      }
+      .contents {
+        display: contents;
+        height: 0;
+        overflow: hidden;
+      }
+      .clip-visible {
+        overflow: hidden;
+      }
+      .partial {
+        max-height: 1.6em;
+        overflow: hidden;
+      }
+      .scroll {
+        height: 1.6em;
+        overflow: auto;
+      }
+      .clamp {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        width: 240px;
+      }
+      .fixed-bar {
+        position: fixed;
+        bottom: 8px;
+        left: 8px;
+        margin: 0;
+        background: #fbfbf9;
+      }
+      .abs-out {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        margin: 0;
+        background: #fbfbf9;
+      }
+      .abs-in {
+        position: absolute;
+        top: 28px;
+        left: 8px;
+        margin: 0;
+      }
+      .sticky {
+        position: sticky;
+        top: 0;
+      }
+      .spacer {
+        height: 2400px;
+      }
+      .below {
+        content-visibility: auto;
+      }
+      .katex {
+        display: inline-block;
+        position: relative;
+      }
+      .katex-mathml {
+        position: absolute;
+        clip: rect(1px, 1px, 1px, 1px);
+        height: 1px;
+        width: 1px;
+        overflow: hidden;
+        padding: 0;
+        border: 0;
+      }
+      .katex-html {
+        display: inline-block;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation: site furniture that must stay unread</nav>
+
+    <article>
+      <h1>How a mill pond holds the tide</h1>
+
+      <h2 id="shut-heading">How the gate works</h2>
+      <div class="shut" id="shut-max">
+        Folded loose words about the rack.
+        <p id="shut-answer">The folded answer explains the sluice and the penstock.</p>
+        <p id="shut-formula">
+          The folded relation
+          <span class="katex">
+            <span class="katex-mathml">
+              <math xmlns="http://www.w3.org/1998/Math/MathML">
+                <semantics>
+                  <mrow><mi>Q</mi><mo>=</mo><mi>i</mi><mi>r</mi></mrow>
+                  <annotation encoding="application/x-tex">Q=ir-tex</annotation>
+                </semantics>
+              </math>
+            </span>
+            <span class="katex-html" aria-hidden="true"><span>Q</span><span>=</span><span>i</span><span>r</span></span>
+          </span>
+          stays shut.
+        </p>
+      </div>
+      <p id="after-shut">The pond lasts until the next tide.</p>
+
+      <h2>What stays open</h2>
+      <div class="open">
+        <p id="open-answer">The open answer describes the head race and the wheel.</p>
+        <div class="shut">
+          <p id="nested-answer">The nested folded answer stays shut.</p>
+        </div>
+      </div>
+
+      <div class="height-zero"><p>Height zero answer about the head race.</p></div>
+      <div class="clip"><p>Clip answer about the wheel.</p></div>
+      <div class="axis"><p>Vertical clip answer about the tide.</p></div>
+      <div class="drawer"><p>Drawer answer about the side gate.</p></div>
+      <div class="grid"><div><p>Grid answer about the mill race.</p></div></div>
+      <div class="height-zero"><p class="sticky">Sticky line inside a collapsed box.</p></div>
+
+      <p id="inline-sentence">
+        The wheel turns <span class="ib-shut">secretly</span> for as long as the pond lasts.
+      </p>
+      <p>Passed <span class="inline-zero">through an inline box</span> the words stay on the page.</p>
+      <p>Passed <span class="contents">through a boxless wrapper</span> the sentence is still one sentence.</p>
+      <p class="clip-visible">A paragraph that clips its overflow and is still read in full.</p>
+      <p class="partial">
+        The partial answer is still read in full, including the words past the painted edge of the box.
+      </p>
+      <div class="scroll">
+        <p>First line of the scrollport stays.</p>
+        <p>Scrolled out line of the scrollport stays too.</p>
+      </div>
+
+      <div class="shut">
+        <p id="fixed-bar" class="fixed-bar">Fixed bar still on screen.</p>
+      </div>
+      <div class="transformed">
+        <p class="fixed-bar">Fixed bar inside a transformed box.</p>
+      </div>
+      <div class="filtered">
+        <p class="fixed-bar">Fixed bar behind a filter.</p>
+      </div>
+      <div class="height-zero">
+        <p id="abs-out" class="abs-out">Absolute note outside a static box.</p>
+      </div>
+      <div class="rel">
+        <p id="abs-in" class="abs-in">Absolute note inside a positioned box.</p>
+      </div>
+
+      <p id="open-formula">
+        The open relation
+        <span class="katex">
+          <span class="katex-mathml">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">
+              <semantics>
+                <mrow><mi>E</mi><mo>=</mo><mi>m</mi><mi>c</mi><mn>2</mn></mrow>
+                <annotation encoding="application/x-tex">E=mc^2</annotation>
+              </semantics>
+            </math>
+          </span>
+          <span class="katex-html" aria-hidden="true"><span>E</span><span>=</span><span>m</span><span>c</span><span>2</span></span>
+        </span>
+        is on the page.
+      </p>
+
+      <p class="clamp">
+        The overflow of this sentence is clamped on screen and still read in full, including the words past the
+        second line.
+      </p>
+
+      <p>
+        Millers slept in shifts because the tide does not keep office hours, and the families living nearest the
+        pond learned the sound of the gate the way other people learn a clock.
+      </p>
+
+      <div class="spacer"></div>
+      <p class="below">This paragraph sits below the fold and is still part of the page.</p>
+    </article>
+
+    <footer>Footer: terms, credits, and a list of links.</footer>
+  </body>
+</html>
