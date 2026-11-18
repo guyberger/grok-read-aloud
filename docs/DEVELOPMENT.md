@@ -14,8 +14,9 @@ dependencies, just the files in `src/` and a small copy script.
 ## What it does
 
 - Reads the readable body of a page, skipping navigation, sidebars, footers,
-  forms, code blocks, citation marks, anything hidden with CSS, and the body
-  of a disclosure that is still closed.
+  forms, code blocks, citation marks, anything hidden with CSS, the body of a
+  disclosure that is still closed, and the text inside a box collapsed to
+  nothing.
 - Reads a formula once, from the copy on the screen. The hidden copy kept for
   assistive technology is not also read, and an equation is not dropped out of
   the sentence it belongs to.
@@ -420,6 +421,9 @@ checks cannot do
       off the page. A paragraph clamped to a few lines still is, in full.
 - [ ] A closed disclosure reads its summary only. The answer, a second
       summary, and a disclosure nested inside it wait until it is opened.
+- [ ] A box collapsed to nothing — a shut accordion, a closed drawer — is not
+      read. A line clamp, a short scrollport, and a fixed bar the page still
+      shows still are.
 - [ ] A space between two inline elements is spoken as a space, and a line
       break starts a new sentence. A soft hyphen in the middle of a word is
       not spoken.
@@ -808,6 +812,25 @@ the summary and the answer are two sentences rather than one line. A
 `display: contents` wrapper does not let the folded text through, and it
 does not hide the summary it sits in. A line clamp, text below the fold and
 `content-visibility: auto` are unchanged.
+
+A box the page has collapsed to nothing is the same kind of absence, and the
+styles above do not catch it either. A shut accordion that is not a
+disclosure — `max-height: 0`, `height: 0`, `overflow: clip`, a grid row of
+`0fr`, a drawer shut to zero width — keeps the answer `display: block` with
+an ordinary computed style and simply gives the box no size on the axis it
+clips. Reading it speaks a paragraph the page is still holding back, and
+pays for the characters. The box has to be clipping (`hidden` or `clip`) and
+down to a pixel or less; a line clamp, a short scrollport and a panel still
+showing a few lines have a real box and are read in full, including the
+lines past the clip.
+
+The collapsed box itself stays. A fixed bar nested in it is painted on the
+viewport, and an absolute note escapes a clip that is not its containing
+block, so both are still read. A transform, a filter, a perspective or
+`contain: paint` captures that note, and then it is left out with the rest.
+An inline box ignores a height, so the words in it stay, and a
+`display: contents` wrapper has no box for a height to collapse. Opening the
+box — giving it a size again — reads what it was holding.
 
 A space the page drew is kept, including one that sits in a text node of its
 own between two inline elements. `<em>only</em> <em>while</em>` is "only

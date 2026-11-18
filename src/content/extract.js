@@ -37,6 +37,15 @@
   // short page, and the body is read instead.
   const MIN_PAGE_CHARS = 200;
 
+  // A box this small, on an axis it clips, shows nothing. The same threshold
+  // as a screen-reader-only box: a hairline can be a rule, and a line clamp
+  // is many times this.
+  const COLLAPSED_PX = 1;
+
+  // Whether a box clips to nothing. Reset on every extract: opening a panel
+  // changes the answer, and a cached rect would keep the panel shut.
+  let clipCache = new WeakMap();
+
   // DETAILS and SUMMARY are blocks so a folded question does not run on into
   // the next one, and an open answer does not run on from its summary.
   const BLOCK_TAGS = new Set([
@@ -65,11 +74,14 @@
    * wrappers — whose children render perfectly well, and which component
    * frameworks emit freely. Treating one as hidden silently drops everything
    * underneath it. A closed disclosure is decided separately, in
-   * `disclosureHides`, because the folded answer still has a box.
+   * `disclosureHides`, because the folded answer still has a box. A box
+   * collapsed to nothing is decided in `collapsedHides`, because a fixed bar
+   * drawn out of that box is still on the page.
    */
   function selfRendered(element) {
     if (element.hasAttribute("hidden") || element.getAttribute("aria-hidden") === "true") return false;
     if (disclosureHides(element)) return false;
+    if (collapsedHides(element)) return false;
     const style = getComputedStyle(element);
     if (style.display === "none") return false;
     if (style.visibility === "hidden" || style.visibility === "collapse") return false;
@@ -245,6 +257,94 @@
   }
 
   /**
+   * Whether this node is inside a box the page has collapsed to nothing.
+   *
+   * A shut accordion that is not a disclosure — `max-height: 0`, `height: 0`,
+   * a grid row of `0fr`, a drawer of zero width — keeps its answer in the
+   * tree as an ordinary block and clips the overflow. `display`, `visibility`
+   * and `opacity` all still say the answer is there. Reading it speaks a
+   * paragraph the page is holding back, and pays for the characters.
+   *
+   * The box itself stays rendered. A fixed bar nested inside it is painted
+   * on the viewport, and an absolute note escapes a clip that is not its
+   * containing block; both are still the page. A line clamp and a scrollport
+   * have a real box, so neither matches, and the lines they clip are read
+   * in full. `display: contents` has no box at all.
+   */
+  function collapsedHides(node) {
+    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    if (!element) return false;
+    // A text node is in the flow of its parent, so the parent is the first
+    // box that might clip it. An element is clipped only by an ancestor:
+    // calling the collapsed box itself hidden would hide the fixed bar too.
+    const start = node.nodeType === Node.ELEMENT_NODE ? element.parentElement : element;
+    for (let clip = start; clip; clip = clip.parentElement) {
+      if (!boxCollapsed(clip)) continue;
+      if (escapesClip(element, clip)) continue;
+      return true;
+    }
+    return false;
+  }
+
+  /** Whether `element`'s border box clips an axis down to nothing. */
+  function boxCollapsed(element) {
+    const known = clipCache.get(element);
+    if (known !== undefined) return known;
+    const style = getComputedStyle(element);
+    let collapsed = false;
+    if (style.display !== "contents" && style.display !== "none") {
+      const clipY = style.overflowY === "hidden" || style.overflowY === "clip";
+      const clipX = style.overflowX === "hidden" || style.overflowX === "clip";
+      if (clipY || clipX) {
+        const rect = element.getBoundingClientRect();
+        collapsed = (clipY && rect.height <= COLLAPSED_PX) || (clipX && rect.width <= COLLAPSED_PX);
+      }
+    }
+    clipCache.set(element, collapsed);
+    return collapsed;
+  }
+
+  /**
+   * Whether `element` is painted outside `clip`.
+   *
+   * Fixed boxes are painted against the viewport, and absolute boxes against
+   * the nearest positioned ancestor. A collapsed box clips them only once
+   * something in between — the clip included — has become their containing
+   * block: a transform, a filter, a perspective, `contain: paint`, or a
+   * position other than static for an absolute box. Until then the browser
+   * still draws them, and they are part of the page.
+   */
+  function escapesClip(element, clip) {
+    if (element === clip) return false;
+    let mode = null;
+    for (let current = element; current && current !== clip; current = current.parentElement) {
+      const position = getComputedStyle(current).position;
+      if (position === "fixed") mode = "fixed";
+      else if (position === "absolute" && mode !== "fixed") mode = "absolute";
+    }
+    if (mode !== "fixed" && mode !== "absolute") return false;
+    for (let current = element.parentElement; current; current = current.parentElement) {
+      if (capturesPositioned(getComputedStyle(current), mode)) return false;
+      if (current === clip) break;
+    }
+    return true;
+  }
+
+  /** Whether `style` makes the element a containing block for `mode`. */
+  function capturesPositioned(style, mode) {
+    if (mode === "absolute" && style.position !== "static") return true;
+    if (style.transform && style.transform !== "none") return true;
+    if (style.filter && style.filter !== "none") return true;
+    if (style.perspective && style.perspective !== "none") return true;
+    if (style.backdropFilter && style.backdropFilter !== "none") return true;
+    const contain = style.contain || "";
+    if (contain === "strict" || /\bpaint\b/.test(contain)) return true;
+    const will = style.willChange || "";
+    if (will.includes("transform") || will.includes("filter") || will.includes("perspective")) return true;
+    return style.contentVisibility === "auto" || style.contentVisibility === "hidden";
+  }
+
+  /**
    * Whether this element is a code *block* rather than code written into a
    * sentence.
    *
@@ -391,9 +491,11 @@
 
   function selfPainted(element) {
     if (element.hasAttribute("hidden")) return false;
-    // A formula inside a folded disclosure is not on the page, even when its
-    // face is `aria-hidden` and would otherwise be the copy that is read.
+    // A formula inside a folded disclosure, or inside a box collapsed to
+    // nothing, is not on the page, even when its face is `aria-hidden` and
+    // would otherwise be the copy that is read.
     if (disclosureHides(element)) return false;
+    if (collapsedHides(element)) return false;
     const style = getComputedStyle(element);
     if (style.display === "none") return false;
     if (style.visibility === "hidden" || style.visibility === "collapse") return false;
@@ -600,6 +702,7 @@
    * text on this page".
    */
   function findMainContent(cache = new Map()) {
+    clipCache = new WeakMap();
     let best = null;
     let bestScore = 0;
     for (const selector of MAIN_SELECTORS) {
@@ -700,8 +803,12 @@
         }
 
         // `visible` walks past the root as well, so a root that sits inside a
-        // hidden container yields nothing rather than hidden text.
-        if (!visible(parent, cache)) return NodeFilter.FILTER_REJECT;
+        // hidden container yields nothing rather than hidden text. A collapsed
+        // box stays rendered — a fixed bar inside it may still be on the page
+        // — so its own text has to be asked separately. This stays after the
+        // formula branch: the accessible copy of an equation is a one-pixel
+        // box on purpose, and that copy is the one a path drawing is read from.
+        if (collapsedHides(node) || !visible(parent, cache)) return NodeFilter.FILTER_REJECT;
         if (skippedAncestor(parent)) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       },
@@ -1014,6 +1121,7 @@
    * @returns {{text, charNodes, charOffsets, slices, root, scope, mapped}|null}
    */
   function extract(scope, { readCodeBlocks = false, root: given = null } = {}) {
+    clipCache = new WeakMap();
     const options = { readCodeBlocks };
     const range = scope === "selection" ? activeSelectionRange() : null;
     if (scope === "selection" && !range) return null;

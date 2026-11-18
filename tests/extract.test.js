@@ -713,6 +713,161 @@ test("a selection inside an open disclosure is read, and a folded one is not", {
   assert.equal(folded, null);
 });
 
+test("a box collapsed to nothing is left shut, and the text around it is read", { skip }, async () => {
+  const { extract } = await read("collapsed.html");
+  const doc = await extract();
+
+  assert.ok(doc, "whole-page extraction returned nothing");
+  const kept = [
+    "How a mill pond holds the tide",
+    "How the gate works\nThe pond lasts until the next tide.",
+    "What stays open\nThe open answer describes the head race and the wheel.",
+    "The wheel turns for as long as the pond lasts.",
+    "through an inline box",
+    "through a boxless wrapper",
+    "A paragraph that clips its overflow and is still read in full.",
+    "including the words past the painted edge",
+    "First line of the scrollport stays.",
+    "Scrolled out line of the scrollport stays too.",
+    "Fixed bar still on screen.",
+    "Absolute note outside a static box.",
+    "The open relation E=mc2 is on the page.",
+    "still read in full, including the words past the second line.",
+    "Millers slept in shifts",
+    "This paragraph sits below the fold and is still part of the page.",
+  ];
+  for (const phrase of kept) {
+    assert.ok(doc.text.includes(phrase), `missing "${phrase}"\n---\n${doc.text}`);
+  }
+
+  const absent = [
+    "Folded loose words",
+    "folded answer explains the sluice",
+    "Height zero answer",
+    "Clip answer about the wheel",
+    "Vertical clip answer",
+    "Drawer answer",
+    "Grid answer",
+    "Sticky line",
+    "secretly",
+    "turnsfor",
+    "Fixed bar inside a transformed box",
+    "Fixed bar behind a filter",
+    "Absolute note inside a positioned box",
+    "nested folded answer",
+    "Q=ir",
+    "Q=ir-tex",
+    "E=mc^2",
+    "Navigation:",
+    "Footer:",
+  ];
+  for (const phrase of absent) {
+    assert.ok(!doc.text.includes(phrase), `"${phrase}" was read\n---\n${doc.text}`);
+  }
+  assert.equal(doc.text.split("E=mc2").length - 1, 1, `the open formula was read more than once\n---\n${doc.text}`);
+});
+
+test("a word beside a collapsed box still maps back to that word", { skip }, async () => {
+  const { page } = await read("collapsed.html");
+
+  const mapped = await page.evaluate(`
+    (() => {
+      const { extract } = globalThis.__readAloud;
+      const doc = extract.extract("page");
+      const at = (needle) => {
+        const index = doc.text.indexOf(needle);
+        const range = index < 0 ? null : extract.rangeFor(doc, index, index + needle.length);
+        const parent = range && range.startContainer.parentElement;
+        return {
+          spoken: range ? range.toString() : "",
+          id: parent ? parent.id : "",
+          tag: parent ? parent.tagName : "",
+        };
+      };
+      const sentence = doc.text.indexOf("for as long as the pond lasts");
+      const lastsAt = sentence < 0 ? -1 : sentence + "for as long as the pond ".length;
+      const lastsRange = lastsAt < 0 ? null : extract.rangeFor(doc, lastsAt, lastsAt + "lasts".length);
+      const lastsParent = lastsRange && lastsRange.startContainer.parentElement;
+      return {
+        lasts: {
+          spoken: lastsRange ? lastsRange.toString() : "",
+          tag: lastsParent ? lastsParent.tagName : "",
+        },
+        bar: at("Fixed bar still on screen."),
+        open: at("head race"),
+      };
+    })()
+  `);
+
+  assert.equal(mapped.lasts.spoken, "lasts");
+  assert.equal(mapped.lasts.tag, "P", "the word after a collapsed box was mapped onto the box");
+  assert.equal(mapped.bar.id, "fixed-bar");
+  assert.equal(mapped.bar.spoken, "Fixed bar still on screen.");
+  assert.equal(mapped.open.id, "open-answer");
+});
+
+test("opening a collapsed box reads the answer it was holding", { skip }, async () => {
+  const { page, extract } = await read("collapsed.html");
+
+  const shut = await extract();
+  assert.ok(!shut.text.includes("folded answer explains the sluice"));
+
+  await page.evaluate(`document.getElementById("shut-max").style.maxHeight = "none"`);
+  const open = await extract();
+  assert.ok(open.text.includes("The folded answer explains the sluice and the penstock."));
+  assert.ok(open.text.includes("Folded loose words about the rack."));
+  assert.ok(!open.text.includes("Q=ir-tex"), "opening the box read the formula's TeX source");
+  assert.equal(open.text.split("Q=ir").length - 1, 1, "the folded formula was not read once it was open");
+});
+
+test("a selection inside a collapsed box reads only what the page still paints", { skip }, async () => {
+  const { page, extract } = await read("collapsed.html");
+
+  const select = async (id) => {
+    await page.evaluate(`
+      (() => {
+        const range = document.createRange();
+        range.selectNodeContents(document.getElementById(${JSON.stringify(id)}));
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return true;
+      })()
+    `);
+    return extract("selection");
+  };
+
+  assert.equal(await select("shut-answer"), null);
+  assert.equal(await select("abs-in"), null);
+
+  const open = await select("open-answer");
+  assert.ok(open, "the open answer extracted to nothing");
+  assert.equal(open.scope, "selection");
+  assert.ok(open.text.includes("head race and the wheel"));
+
+  const bar = await select("fixed-bar");
+  assert.ok(bar, "the fixed bar extracted to nothing");
+  assert.ok(bar.text.includes("Fixed bar still on screen."));
+
+  const note = await select("abs-out");
+  assert.ok(note, "the absolute note extracted to nothing");
+  assert.ok(note.text.includes("Absolute note outside a static box."));
+
+  await page.evaluate(`
+    (() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById("inline-sentence"));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()
+  `);
+  const around = await extract("selection");
+  assert.ok(around.text.includes("The wheel turns for as long as the pond lasts."));
+  assert.ok(!around.text.includes("secretly"), "the collapsed word inside the selection was read");
+});
+
 test("a selection is read wherever it is, including inside page furniture", { skip }, async () => {
   const { page, extract } = await read("empty-container.html");
 
