@@ -887,3 +887,121 @@ test("a selection is read wherever it is, including inside page furniture", { sk
   assert.equal(doc.scope, "selection");
   assert.ok(doc.text.includes("Related notes on chain ferries"));
 });
+
+test("landmark roles are left out, and the article around them is read", { skip }, async () => {
+  const { page, extract, mainTag } = await read("landmarks.html");
+
+  assert.equal(await mainTag(), "ARTICLE", "the article should be the content root");
+
+  const doc = await extract();
+  assert.ok(doc, "whole-page extraction returned nothing");
+
+  const kept = [
+    "How a harbour keeps its tide",
+    "Article masthead: the pond in March.",
+    "A harbour mill holds the tide behind a gate",
+    "The wheel turns for as long as the pond lasts.",
+    "Region note: the gate is oak and iron.",
+    "Region first: the sluice was rebuilt in oak.",
+    "Note: the hours drift by fifty minutes a day.",
+    "Presentation: the wheel is six feet across.",
+    "Article header: the pond in April.",
+    "Families who lived beside the pond",
+    "There is only a gate, a pond, and a wheel",
+  ];
+  for (const phrase of kept) {
+    assert.ok(doc.text.includes(phrase), `missing "${phrase}"\n---\n${doc.text}`);
+  }
+
+  const absent = [
+    "Site banner:",
+    "Site navigation:",
+    "Masthead navigation:",
+    "Breadcrumb:",
+    "Search the notes",
+    "turnsfor",
+    "Capital navigation:",
+    "Menu list:",
+    "Related:",
+    "Contents sidebar:",
+    "Search landmark:",
+    "Content info:",
+    "Form:",
+    "Dialog:",
+    "Alert:",
+    "Header nav:",
+    "Footer landmark:",
+    "Footer:",
+  ];
+  for (const phrase of absent) {
+    assert.ok(!doc.text.includes(phrase), `"${phrase}" was read\n---\n${doc.text}`);
+  }
+
+  const mapped = await page.evaluate(`
+    (() => {
+      const { extract } = globalThis.__readAloud;
+      const built = extract.extract("page");
+      const at = built.text.indexOf("for as long as the pond lasts");
+      const range = at < 0 ? null : extract.rangeFor(built, at, at + "for".length);
+      const parent = range && range.startContainer.parentElement;
+      return { spoken: range ? range.toString() : "", id: parent ? parent.id : "" };
+    })()
+  `);
+  assert.equal(mapped.spoken, "for");
+  assert.equal(mapped.id, "around", "the word after an inline landmark was mapped onto the landmark");
+});
+
+test("a selection of a landmark is read, including one inside a sentence", { skip }, async () => {
+  const { page, extract } = await read("landmarks.html");
+
+  const select = async (id) => {
+    await page.evaluate(`
+      (() => {
+        const range = document.createRange();
+        range.selectNodeContents(document.getElementById(${JSON.stringify(id)}));
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return true;
+      })()
+    `);
+    return extract("selection");
+  };
+
+  const only = await select("breadcrumb");
+  assert.ok(only, "a selected landmark extracted to nothing");
+  assert.equal(only.scope, "selection");
+  assert.ok(only.text.includes("Breadcrumb: Home / Mills / Pond."));
+
+  const around = await select("around");
+  assert.ok(
+    around.text.includes("The wheel turns Search the notes for as long as the pond lasts."),
+    `selection dropped the landmark\n---\n${around?.text}`,
+  );
+});
+
+test("the body fallback drops furniture written as a landmark role", { skip }, async () => {
+  const { extract, mainTag } = await read("landmark-page.html");
+
+  assert.equal(await mainTag(), "BODY", "a container should not have won the scoring");
+
+  const doc = await extract();
+  assert.ok(doc, "body fallback produced nothing");
+  assert.ok(doc.text.includes("A rope ferry crosses a river without an engine"));
+  assert.ok(doc.text.includes("The cable is the whole machine"));
+  assert.ok(doc.text.includes("Region note: the cable sags on purpose."));
+  assert.ok(doc.text.length > 400, `only ${doc.text.length} characters were extracted`);
+
+  const absent = [
+    "Site banner:",
+    "Navigation:",
+    "Site header:",
+    "Sidebar:",
+    "Search the ferry notes",
+    "Footer landmark:",
+    "Footer:",
+  ];
+  for (const phrase of absent) {
+    assert.ok(!doc.text.includes(phrase), `"${phrase}" was read\n---\n${doc.text}`);
+  }
+});

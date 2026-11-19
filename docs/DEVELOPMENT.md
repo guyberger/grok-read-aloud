@@ -16,7 +16,7 @@ dependencies, just the files in `src/` and a small copy script.
 - Reads the readable body of a page, skipping navigation, sidebars, footers,
   forms, code blocks, citation marks, anything hidden with CSS, the body of a
   disclosure that is still closed, and the text inside a box collapsed to
-  nothing.
+  nothing. The same furniture written as a landmark role is skipped too.
 - Reads a formula once, from the copy on the screen. The hidden copy kept for
   assistive technology is not also read, and an equation is not dropped out of
   the sentence it belongs to.
@@ -415,7 +415,9 @@ checks cannot do
 - [ ] The sentence around the spoken word carries a lighter tint.
 - [ ] The page scrolls to follow the highlight, moving only when the word
       leaves the middle of the window.
-- [ ] Navigation, sidebar and footer text is never read or highlighted.
+- [ ] Navigation, sidebar and footer text is never read or highlighted,
+      including when the page wrote them as landmark roles on a div. The
+      article's own header still is.
 - [ ] Hidden (`display: none`) text is never read, and neither is text hidden
       for assistive technology only — a one-pixel "skip" link, a label parked
       off the page. A paragraph clamped to a few lines still is, in full.
@@ -831,6 +833,23 @@ block, so both are still read. A transform, a filter, a perspective or
 An inline box ignores a height, so the words in it stay, and a
 `display: contents` wrapper has no box for a height to collapse. Opening the
 box — giving it a size again — reads what it was holding.
+
+Page furniture is skipped whether or not the page used the element for it. A
+banner, a navigation, a sidebar, a footer, a search, a form and a dialog are
+the same things as `<header>`, `<nav>`, `<aside>`, `<footer>`, `<form>` and
+`<dialog>` when the page writes them as a landmark role on a `<div>` — a
+breadcrumb trail, a related-reading box, a site header that is not a
+`<header>`. The first token of the role is the one that counts, so a region
+that names navigation only as a fallback is still a region and is read. A
+note, a region and anything with no role are read. A `display: contents`
+wrapper does not let the landmark through.
+
+A `<header>` inside the article is still the masthead that holds the title,
+including when a template has also marked that header `banner`. A banner that
+is not a header is the site header and is left out. On the body, when the
+read has fallen back to the whole page, the site banner goes with the rest of
+the furniture. A selection of the landmark is read anyway: it is the thing
+that was pointed at, and a selection that merely contains one reads it too.
 
 A space the page drew is kept, including one that sits in a text node of its
 own between two inline elements. `<em>only</em> <em>while</em>` is "only
@@ -1909,7 +1928,8 @@ plays, so that playback is really tested — out of the speakers.
 - **Readable-content detection is heuristic.** It looks for `<article>`,
   `[role=main]` and `<main>` first, then falls back to scoring text density,
   and if the winner yields almost nothing it reads the visible body instead,
-  minus navigation, headers, sidebars and footers. On an unusual layout it may
+  minus navigation, headers, sidebars and footers, including when those are
+  landmark roles on a div. On an unusual layout it may
   read too much or too little; selecting the text you want and reading the
   selection always works.
 - **A superscript number with no link and no citation class is read.** It is

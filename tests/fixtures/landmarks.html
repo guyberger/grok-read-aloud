@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>How a Harbour Keeps Its Tide — Landmark Roles</title>
+    <!--
+      The article is the content root. Furniture inside it is written as
+      landmark roles on divs, which is the case a tag check never sees. The
+      article's own header, including one a template also called a banner,
+      is the title and stays.
+    -->
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.7 Georgia, "Times New Roman", serif;
+        color: #1d1d1f;
+        background: #fbfbf9;
+      }
+      article {
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 80px;
+      }
+      h1 {
+        font-size: 32px;
+        line-height: 1.2;
+      }
+      .contents {
+        display: contents;
+      }
+      [role="navigation"],
+      [role="complementary"],
+      [role="contentinfo"],
+      [role="search"],
+      [role="banner"],
+      [role="form"],
+      [role="dialog"],
+      [role="alertdialog"] {
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <div role="banner">Site banner: harbour notes and the mill index.</div>
+    <div role="navigation">Site navigation: Home, Archive, About.</div>
+
+    <article>
+      <h1>How a harbour keeps its tide</h1>
+
+      <header role="banner">
+        Article masthead: the pond in March.
+        <div role="navigation">Masthead navigation: sections of the pond.</div>
+      </header>
+
+      <p>
+        A harbour mill holds the tide behind a gate and spends it through a wheel. The pond fills on the
+        rise, the gate shuts at the turn, and the wheel runs until the basin is back to the level of the sea
+        outside it.
+      </p>
+
+      <div id="breadcrumb" role="navigation" aria-label="Breadcrumb">Breadcrumb: Home / Mills / Pond.</div>
+
+      <p id="around">
+        The wheel turns <span id="inline-search" role="search">Search the notes</span> for as long as the pond
+        lasts.
+      </p>
+
+      <div role="Navigation">Capital navigation: the upper walkway.</div>
+      <div role="navigation list">Menu list: settings and account.</div>
+      <div role="complementary">Related: chain ferries and cable cars.</div>
+      <div role="complementary" class="contents">
+        <p>Contents sidebar: the newsletter signup nobody asked to hear.</p>
+      </div>
+      <div role="search">Search landmark: find a mill by its creek.</div>
+      <div role="contentinfo">Content info: sources and corrections.</div>
+      <div role="form">Form: send a correction to the editor.</div>
+      <div role="dialog">Dialog: the overlay asks for an email address.</div>
+      <div role="alertdialog">Alert: the gate is stuck open.</div>
+      <header role="navigation">Header nav: jump to the gate.</header>
+
+      <div role="region" aria-label="Gate">Region note: the gate is oak and iron.</div>
+      <div role="region navigation">Region first: the sluice was rebuilt in oak.</div>
+      <div role="note">Note: the hours drift by fifty minutes a day.</div>
+      <div role="presentation">Presentation: the wheel is six feet across.</div>
+
+      <header>Article header: the pond in April.</header>
+
+      <p>
+        Families who lived beside the pond learned to read the water the way other people read a clock, and
+        the hours of work drifted forward by about fifty minutes every day.
+      </p>
+
+      <p>
+        There is only a gate, a pond, and a wheel, arranged so that the ocean does the lifting and the miller
+        does the waiting. Steam did not care about the moon, and most of the mills went quiet once it arrived.
+      </p>
+    </article>
+
+    <div role="contentinfo">Footer landmark: copyright and credits.</div>
+    <footer>Footer: sources on the harbour wall.</footer>
+  </body>
+</html>
