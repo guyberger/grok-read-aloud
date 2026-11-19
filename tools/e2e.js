@@ -341,6 +341,40 @@ async function main() {
   // measured; all that belongs here is that the request was made at all.
   check("the chunk after the first is fetched before it is needed", opening.length > 1, `${opening.length} requests`);
 
+  const sameSpeech = (entry) =>
+    entry.voiceId === opening[0].voiceId &&
+    entry.language === opening[0].language &&
+    entry.speed === 1 &&
+    entry.codec === "mp3" &&
+    entry.sampleRate === 24000 &&
+    entry.bitRate === 64000 &&
+    entry.textNormalization === false &&
+    entry.withTimestamps === true;
+  check(
+    "every request in the read uses the same voice and speech settings",
+    opening.length > 1 && opening.every(sameSpeech),
+    opening
+      .map((entry) => `${entry.voiceId}/${entry.language}/speed=${entry.speed}/${entry.codec}@${entry.sampleRate}/${entry.bitRate}`)
+      .join(", "),
+  );
+  const seam = (opening[0]?.text ?? "").trimEnd().slice(-24);
+  check(
+    "the next request is spoken as a continuation of the previous one",
+    seam.length > 8 && (opening[1]?.text ?? "").slice(0, 240).includes(seam),
+    JSON.stringify((opening[1]?.text ?? "").slice(0, 80)),
+  );
+  const playbackNow = await page.evaluate(`globalThis.__readAloud.reader.playback()`, world);
+  check(
+    "playback rate, pitch and volume are set on the chunk that is playing",
+    playbackNow?.pitchPreserving === true && playbackNow?.volume === 1 && playbackNow?.rate === 2.5,
+    JSON.stringify(playbackNow),
+  );
+  check(
+    "playback starts after the unspoken lead-in once the read has left the first chunk",
+    (playbackNow?.lead ?? 0) > 0,
+    JSON.stringify(playbackNow),
+  );
+
   // 5. The highlighted words must come from the article, in document order.
   const articleText = await page.evaluate(`document.querySelector("article").innerText.replace(/\\s+/g, " ")`);
   const found = observed.map((entry) => entry.word.trim()).filter(Boolean);
@@ -708,10 +742,13 @@ async function main() {
     `chunk ${beforeFar.chunkIndex} → ${afterFar.chunkIndex} of ${afterFar.chunkCount}`,
   );
   check("the read keeps playing after the jump", afterFar.status === "playing", afterFar.status);
+  const jumpAt = (newRequests[0]?.text ?? "").indexOf("What remains interesting");
   check(
     "the audio fetched for the jump starts on the first word of that sentence",
-    newRequests[0]?.head.startsWith("What remains interesting"),
-    newRequests.map((entry) => `${entry.chars} chars: ${JSON.stringify(entry.head.slice(0, 24))}`).join(", "),
+    jumpAt >= 0 && jumpAt <= 240,
+    newRequests
+      .map((entry) => `${entry.chars} chars: ${JSON.stringify((entry.text ?? entry.head).slice(0, 48))}`)
+      .join(", "),
   );
   check(
     "the tint covers the sentence the click landed in",
@@ -1035,22 +1072,15 @@ async function main() {
   const continued = await awaitStatus("playing", { timeoutMs: 20000 });
   const continueRequests = (await synthesised()).slice(beforeContinue);
   check("continuing a page starts playing", continued.status === "playing", continued.status || continued.error);
-  // The request begins on the word the read was left on rather than carrying
-  // the part of the page already heard — the same economy a jump gets.
-  const continuedHead = continueRequests[0]?.head.slice(0, 30) ?? "";
-  const headInParagraph = await page.evaluate(
-    `
-    (() => {
-      const paragraph = document.querySelectorAll("article p")[4].innerText.replace(/\\s+/g, " ").trim();
-      return paragraph.includes(${JSON.stringify(continuedHead)});
-    })()
-  `,
-    world,
-  );
+  // The spoken audio begins on the sentence the read was left on. The request
+  // may open with the sentence before it, so the voice continues rather than
+  // starting cold, but it does not carry the page from the top.
+  const continuedText = continueRequests[0]?.text ?? "";
+  const continuedAt = continuedText.indexOf("What remains interesting");
   check(
     "the audio it asks for begins where the read left off, not at the top of the page",
-    Boolean(continuedHead) && headInParagraph,
-    `${continueRequests.length} request(s), first ${JSON.stringify(continuedHead)}`,
+    continuedAt >= 0 && continuedAt <= 240 && !continuedText.startsWith("How tide mills"),
+    `${continueRequests.length} request(s), first ${JSON.stringify(continuedText.slice(0, 60))}`,
   );
   const landed = await page.evaluate(
     `

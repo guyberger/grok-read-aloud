@@ -256,11 +256,18 @@
 
     const requestId = `${sessionId}-${nextRequestId++}`;
     const text = request.text;
+    // The sentence this chunk follows, submitted with it and not played. A
+    // request that holds only the chunk is a new utterance: the model starts
+    // its delivery over, which is the voice changing between one paragraph
+    // and the next. Hearing the chunk from where its own text starts keeps
+    // the highlight and the click targets on the page.
+    const context = align.leadingContext(doc.text, request.start);
+    const submission = context + text;
     const promise = (async () => {
       const response = await ext.runtime.sendMessage({
         type: "synthesize",
         requestId,
-        text,
+        text: submission,
         voiceId: request.voiceId,
         language: request.language,
       });
@@ -272,19 +279,29 @@
         emit();
       }
 
+      const spoken = align.withoutContext({
+        submission,
+        contextChars: context.length,
+        graphChars: response.graphChars,
+        graphTimes: response.graphTimes,
+        duration: response.duration,
+      });
+
       // What this chunk cost in audio seconds per character of text, which is
-      // what the estimate of the time left is built from.
-      pacing.record(text.length, response.duration);
+      // what the estimate of the time left is built from. The context is not
+      // part of the chunk, so it is not part of the pace either.
+      pacing.record(text.length, spoken.duration);
 
       cache.set(request, {
         bytes: util.base64ToBytes(response.audio),
         contentType: response.contentType,
+        lead: spoken.lead,
         timeline: align.buildChunkTimeline({
           text,
-          graphChars: response.graphChars,
-          graphTimes: response.graphTimes,
+          graphChars: spoken.graphChars,
+          graphTimes: spoken.graphTimes,
           globalStart: request.start,
-          duration: response.duration,
+          duration: spoken.duration,
         }),
       });
     })().finally(() => {
@@ -368,7 +385,7 @@
 
     const audio = ensurePlayer();
     try {
-      await audio.load(entry.bytes, entry.contentType);
+      await audio.load(entry.bytes, entry.contentType, { lead: entry.lead || 0 });
     } catch (error) {
       if (session !== sessionId) return;
       throw error;

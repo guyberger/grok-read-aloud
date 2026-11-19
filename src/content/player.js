@@ -19,8 +19,6 @@
   function mediaEngine({ onPausedOutside, onResumedOutside } = {}) {
     const audio = new Audio();
     audio.preload = "auto";
-    // Never used to change speed, but if anything ever does, keep the pitch.
-    audio.preservesPitch = true;
     let objectUrl = "";
 
     /**
@@ -43,6 +41,12 @@
     /** The rate asked for, and the rate the loaded source plays at. */
     let rate = 1;
     let shownRate = 1;
+    /**
+     * Seconds of audio at the start of the file that are context for the
+     * synthesiser and are not part of this chunk. Playback starts after them,
+     * and every time this engine reports is measured from there.
+     */
+    let leadSeconds = 0;
     /**
      * Bumped by every load, and by every rate change, so that work for a
      * chunk or a speed nobody wants any more drops out.
@@ -72,11 +76,26 @@
       if (!swapping) endedHandler();
     });
 
+    /**
+     * The same transport on every chunk. Setting `src` can drop these back to
+     * the defaults, and a later chunk that kept a different rate, pitch
+     * handling or volume is the voice changing at the join. `playbackRate`
+     * stays at 1 even when the read is faster: speed is a stretch of the
+     * bytes, and a rate other than 1 is what moves the pitch.
+     */
+    function holdVoice() {
+      audio.playbackRate = 1;
+      audio.preservesPitch = true;
+      audio.mozPreservesPitch = true;
+      audio.webkitPreservesPitch = true;
+      audio.volume = 1;
+    }
+
     function setSource(data, type) {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       objectUrl = URL.createObjectURL(new Blob([data], { type }));
       audio.src = objectUrl;
-      audio.playbackRate = 1;
+      holdVoice();
       return new Promise((resolve, reject) => {
         const done = () => {
           cleanup();
@@ -109,6 +128,21 @@
 
     const originalTime = () => (swapping ? heldTime : audio.currentTime * shownRate);
 
+    /**
+     * Park at the start of the spoken audio. A position already past the
+     * lead-in — a resume, a seek — is left where it is; one still inside the
+     * context, which is where a freshly loaded element sits, is moved past it.
+     */
+    function parkAtLead() {
+      if (!(leadSeconds > 0) || swapping) return;
+      const target = leadSeconds / (shownRate || 1);
+      try {
+        if (audio.currentTime < target - 0.02) audio.currentTime = target;
+      } catch {
+        // Not seekable yet. The next play tries again.
+      }
+    }
+
     return {
       name: "media",
       get pitchPreserving() {
@@ -117,7 +151,13 @@
       get stretchedRate() {
         return shownRate;
       },
-      async load(nextBytes, nextType, atRate = rate) {
+      get volume() {
+        return audio.volume;
+      },
+      get lead() {
+        return leadSeconds;
+      },
+      async load(nextBytes, nextType, atRate = rate, nextLead = 0) {
         // Loading a new source stops whatever was playing, which is this
         // engine's own doing rather than anything outside it.
         wanted = "paused";
@@ -151,11 +191,17 @@
         }
         swapping = false;
         await setSource(source.data, source.type);
+        if (mine !== loadId) return;
         shownRate = source.rate;
+        holdVoice();
         if (undecodable) audio.playbackRate = rate;
+        const full = Number.isFinite(audio.duration) ? audio.duration * shownRate : nextLead;
+        leadSeconds = Math.min(Math.max(0, nextLead), full || nextLead);
+        parkAtLead();
       },
       play() {
         wanted = "playing";
+        parkAtLead();
         const playing = audio.src;
         // A speed change swaps the source under a play that is still
         // starting, which aborts it; the swap starts the new source itself.
@@ -172,24 +218,29 @@
         wanted = "paused";
         audio.pause();
         try {
-          audio.currentTime = 0;
+          // The start of the chunk, which is past the unspoken context.
+          audio.currentTime = leadSeconds / (shownRate || 1);
         } catch {
           // Ignore seeks on an unloaded element.
         }
       },
       seek(time) {
+        const fileTime = Math.max(0, time) + leadSeconds;
         if (swapping) {
-          heldTime = Math.max(0, time);
+          heldTime = fileTime;
           return;
         }
         try {
-          audio.currentTime = Math.max(0, time) / shownRate;
+          audio.currentTime = fileTime / shownRate;
         } catch {
           // Nothing loaded to seek within.
         }
       },
-      getTime: originalTime,
-      getDuration: () => (Number.isFinite(audio.duration) ? audio.duration * shownRate : 0),
+      getTime: () => Math.max(0, originalTime() - leadSeconds),
+      getDuration: () => {
+        const full = Number.isFinite(audio.duration) ? audio.duration * shownRate : 0;
+        return Math.max(0, full - leadSeconds);
+      },
       /**
        * The new speed takes over once its audio is rendered — tens of
        * milliseconds — and from the same word: the swap keeps the place in
@@ -201,6 +252,8 @@
         if (!bytes || loading) return;
         if (undecodable) {
           audio.playbackRate = next;
+          audio.preservesPitch = true;
+          audio.volume = 1;
           return;
         }
         const mine = ++rateId;
@@ -246,12 +299,17 @@
 
   function webAudioEngine() {
     const context = new (globalThis.AudioContext || globalThis.webkitAudioContext)();
+    const gain = context.createGain();
+    gain.gain.value = 1;
+    gain.connect(context.destination);
     let bytes = null;
     /** The buffer playing, and the rate its audio was stretched to. */
     let buffer = null;
     let shownRate = 1;
     let duration = 0;
     let rate = 1;
+    /** Seconds at the start of the buffer that are context, not this chunk. */
+    let leadSeconds = 0;
     let loadId = 0;
     let rateId = 0;
     let loading = false;
@@ -283,7 +341,8 @@
       source = context.createBufferSource();
       source.buffer = buffer;
       source.playbackRate.value = 1;
-      source.connect(context.destination);
+      gain.gain.value = 1;
+      source.connect(gain);
       source.onended = () => {
         if (!playing) return;
         playing = false;
@@ -311,7 +370,13 @@
       get stretchedRate() {
         return shownRate;
       },
-      async load(nextBytes, _contentType, atRate = rate) {
+      get volume() {
+        return gain.gain.value;
+      },
+      get lead() {
+        return leadSeconds;
+      },
+      async load(nextBytes, _contentType, atRate = rate, nextLead = 0) {
         teardown(true);
         playing = false;
         offset = 0;
@@ -330,6 +395,9 @@
             duration = decoded.duration;
             buffer = next.buffer;
             shownRate = next.rate;
+            gain.gain.value = 1;
+            leadSeconds = Math.min(Math.max(0, nextLead), duration);
+            offset = leadSeconds;
             return;
           }
         } finally {
@@ -339,7 +407,7 @@
       play: () => startPlayback(),
       // A buffer source cannot move, so seeking means replacing it.
       seek(time) {
-        const target = Math.max(0, Math.min(time, duration));
+        const target = Math.max(0, Math.min(time + leadSeconds, duration));
         const wasPlaying = playing;
         teardown(true);
         playing = false;
@@ -355,10 +423,10 @@
       stop() {
         playing = false;
         teardown(true);
-        offset = 0;
+        offset = leadSeconds;
       },
-      getTime: currentTime,
-      getDuration: () => duration,
+      getTime: () => Math.max(0, currentTime() - leadSeconds),
+      getDuration: () => Math.max(0, duration - leadSeconds),
       async setRate(next) {
         if (next === rate) return;
         rate = next;
@@ -413,11 +481,11 @@
       return engine;
     }
 
-    async function engineFor(bytes, contentType) {
+    async function engineFor(bytes, contentType, lead) {
       if (engine) {
         const current = engine;
         try {
-          await current.load(bytes, contentType, rate);
+          await current.load(bytes, contentType, rate, lead);
           return;
         } catch (error) {
           if (current.name !== "media") throw error;
@@ -429,12 +497,12 @@
       }
       const media = adopt(mediaEngine({ onPausedOutside, onResumedOutside }));
       try {
-        await media.load(bytes, contentType, rate);
+        await media.load(bytes, contentType, rate, lead);
       } catch {
         if (engine !== media) return;
         media.destroy();
         const fallback = adopt(webAudioEngine());
-        await fallback.load(bytes, contentType, rate);
+        await fallback.load(bytes, contentType, rate, lead);
       }
     }
 
@@ -479,10 +547,13 @@
           rate,
           stretchedRate: engine?.stretchedRate ?? 1,
           pitchPreserving: engine ? engine.pitchPreserving : true,
+          volume: engine?.volume ?? 1,
+          lead: engine?.lead ?? 0,
         };
       },
-      async load(bytes, contentType) {
-        await engineFor(bytes, contentType);
+      async load(bytes, contentType, options = {}) {
+        const lead = Number(options?.lead) || 0;
+        await engineFor(bytes, contentType, lead);
       },
       play: () => playWithGestureFallback(),
       pause: () => engine?.pause(),
