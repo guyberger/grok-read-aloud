@@ -33,9 +33,49 @@
   // sidebar or a footer in there is still a sidebar or a footer.
   const CONTENT_CHROME_TAGS = new Set(["NAV", "FOOTER", "ASIDE", "FORM", "DIALOG"]);
 
+  // The same furniture written as a landmark on a div, which is how a page
+  // that never used the element still marks it. `search` has no element of
+  // its own; it is the landmark a search form gets. `alertdialog` is a dialog.
+  // The first token of `role` is the one the page gave it.
+  const CHROME_ROLES = new Set([
+    "banner",
+    "navigation",
+    "contentinfo",
+    "complementary",
+    "search",
+    "form",
+    "dialog",
+    "alertdialog",
+  ]);
+
   // Below this, a whole-page read is treated as a failed guess rather than a
   // short page, and the body is read instead.
   const MIN_PAGE_CHARS = 200;
+
+  /** The landmark role on `element`, or "" when it has none. */
+  function landmarkRole(element) {
+    const raw = element.getAttribute("role");
+    if (!raw) return "";
+    return raw.trim().toLowerCase().split(/\s+/)[0] || "";
+  }
+
+  /**
+   * Whether `element` is page furniture for this read.
+   *
+   * Tags and landmark roles name the same things. A `<header>` inside the
+   * article is the exception the tag list already makes: it holds the title,
+   * and a template that also called it a banner has not turned the title
+   * into a site header. A banner that is not a header is the site header
+   * either way. Selections pass no chrome set and drop nothing.
+   */
+  function marksChrome(element, tag, chromeTags) {
+    if (!chromeTags) return false;
+    if (chromeTags.has(tag)) return true;
+    const role = landmarkRole(element);
+    if (!role || !CHROME_ROLES.has(role)) return false;
+    if (role === "banner" && tag === "HEADER" && chromeTags === CONTENT_CHROME_TAGS) return false;
+    return true;
+  }
 
   // A box this small, on an axis it clips, shows nothing. The same threshold
   // as a screen-reader-only box: a hairline can be a rule, and a line clamp
@@ -766,7 +806,7 @@
         if (FORMULA_NOISE.has(tag)) return true;
         if (SKIP_TAGS.has(tag)) return true;
         if (!readCodeBlocks && CODE_TAGS.has(tag) && inCodeBlock(el)) return true;
-        if (chromeTags?.has(tag) && el !== root) return true;
+        if (el !== root && marksChrome(el, tag, chromeTags)) return true;
       }
       return false;
     };
