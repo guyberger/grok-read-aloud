@@ -231,7 +231,14 @@ test("a faster rate plays stretched audio at 1x, from the same place, at the sam
 
   assert.equal(result.elementRate, 1, "the element itself was sped up");
   assert.equal(result.preservesPitch, true);
-  assert.deepEqual(result.playback, { engine: "media", rate: 2, stretchedRate: 2, pitchPreserving: true });
+  assert.deepEqual(result.playback, {
+    engine: "media",
+    rate: 2,
+    stretchedRate: 2,
+    pitchPreserving: true,
+    volume: 1,
+    lead: 0,
+  });
   // Half a second of 2x is a second of the original audio.
   assert.ok(result.advanced > 0.75 && result.advanced < 1.25, `advanced ${result.advanced.toFixed(3)}s in 0.5s`);
   assert.ok(result.swapped >= result.before, `the swap went back from ${result.before} to ${result.swapped}`);
@@ -291,10 +298,75 @@ test("on a page that refuses blob media, Web Audio keeps the pitch as well", { s
       return { advanced, held: player.getTime() - paused, playback: player.playback, duration: player.getDuration() };
     })()
   `);
-  assert.deepEqual(result.playback, { engine: "webaudio", rate: 2, stretchedRate: 2, pitchPreserving: true });
+  assert.deepEqual(result.playback, {
+    engine: "webaudio",
+    rate: 2,
+    stretchedRate: 2,
+    pitchPreserving: true,
+    volume: 1,
+    lead: 0,
+  });
   assert.ok(result.advanced > 0.75 && result.advanced < 1.25, `advanced ${result.advanced.toFixed(3)}s in 0.5s`);
   assert.equal(result.held, 0);
   assert.ok(Math.abs(result.duration - 4) < 0.05, `duration reads ${result.duration}s`);
+});
+
+test("every chunk gets the same rate, pitch handling and volume", { skip }, async () => {
+  const page = await browser.open(fixtureUrl("article.html"), PREAMBLE);
+  pages.push(page);
+  const first = JSON.stringify([...toneWav({ seconds: 1.5, hz: 440 })]);
+  const second = JSON.stringify([...toneWav({ seconds: 1.5, hz: 330 })]);
+  const result = await page.evaluate(`
+    (async () => {
+      const player = (globalThis.player = globalThis.__readAloud.player.createPlayer({}));
+      player.setRate(1.25);
+      await player.load(new Uint8Array(${first}), "audio/wav");
+      const element = globalThis.__elements[0];
+      const afterFirst = {
+        playbackRate: element.playbackRate,
+        preservesPitch: element.preservesPitch,
+        volume: element.volume,
+        playback: player.playback,
+      };
+      element.playbackRate = 1.8;
+      element.preservesPitch = false;
+      element.volume = 0.2;
+      await player.load(new Uint8Array(${second}), "audio/wav", { lead: 0.4 });
+      const afterSecond = {
+        playbackRate: element.playbackRate,
+        preservesPitch: element.preservesPitch,
+        volume: element.volume,
+        time: player.getTime(),
+        elementTime: element.currentTime,
+        duration: player.getDuration(),
+        playback: player.playback,
+      };
+      return { elements: globalThis.__elements.length, afterFirst, afterSecond };
+    })()
+  `);
+
+  assert.equal(result.elements, 1, "a new element was built for the second chunk");
+  for (const sample of [result.afterFirst, result.afterSecond]) {
+    assert.equal(sample.playbackRate, 1);
+    assert.equal(sample.preservesPitch, true);
+    assert.equal(sample.volume, 1);
+    assert.equal(sample.playback.volume, 1);
+    assert.equal(sample.playback.pitchPreserving, true);
+    assert.equal(sample.playback.rate, 1.25);
+  }
+  assert.equal(result.afterFirst.playback.lead, 0);
+  assert.ok(Math.abs(result.afterSecond.playback.lead - 0.4) < 0.02, `lead is ${result.afterSecond.playback.lead}`);
+  assert.ok(Math.abs(result.afterSecond.time) < 0.05, `spoken time is ${result.afterSecond.time}`);
+  // The element plays stretched audio, so 0.4s of the original lead-in is
+  // 0.4/1.25s into the file it is holding.
+  assert.ok(
+    Math.abs(result.afterSecond.elementTime - 0.4 / 1.25) < 0.05,
+    `the element is at ${result.afterSecond.elementTime}s, inside the lead-in`,
+  );
+  assert.ok(
+    Math.abs(result.afterSecond.duration - 1.1) < 0.05,
+    `spoken duration is ${result.afterSecond.duration}`,
+  );
 });
 
 test("a speed change while play is still starting does not fail the play", { skip }, async () => {

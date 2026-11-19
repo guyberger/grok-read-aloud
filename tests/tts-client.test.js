@@ -97,6 +97,28 @@ test("a server error is still retried", async () => {
   assert.equal(calls.length, 2);
 });
 
+test("every request in a read uses the same voice and speech settings", async () => {
+  const calls = stubFetch([{ status: 200, body: { audio: "AAA", duration: 1, content_type: "audio/mpeg" } }]);
+
+  await synthesize({ ...OPTIONS, text: "The pond fills slowly." });
+  await synthesize({ ...OPTIONS, text: "The wheel begins to turn.", speed: 2 });
+
+  const bodies = calls.map((call) => JSON.parse(call.init.body));
+  const settingsOf = ({ text, ...settings }) => settings;
+  assert.notEqual(bodies[0].text, bodies[1].text);
+  assert.deepEqual(settingsOf(bodies[0]), settingsOf(bodies[1]));
+  assert.equal(bodies[0].voice_id, "eve");
+  assert.equal(bodies[0].language, "en");
+  // A speed handed in by a caller is the page's playback rate. It must not
+  // reach the API, where it would change the delivery of one chunk only.
+  assert.equal(bodies[0].speed, 1);
+  assert.equal(bodies[1].speed, 1);
+  assert.equal(bodies[0].text_normalization, false);
+  assert.equal(bodies[0].with_timestamps, true);
+  assert.deepEqual(bodies[0].output_format, { codec: "mp3", sample_rate: 24000, bit_rate: 64000 });
+  assert.deepEqual(bodies[1].output_format, bodies[0].output_format);
+});
+
 test("a rejected key is reported as such and never retried", async () => {
   const calls = stubFetch([{ status: 401, body: { error: "Incorrect API key provided." } }]);
 

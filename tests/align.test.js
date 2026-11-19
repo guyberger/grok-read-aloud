@@ -3,7 +3,15 @@ import test from "node:test";
 import { fakeTimestamps, loadContentNamespace } from "./load-content.js";
 
 const ns = loadContentNamespace();
-const { chunkRanges, characterTimes, words, sentences, buildChunkTimeline } = ns.align;
+const {
+  chunkRanges,
+  characterTimes,
+  words,
+  sentences,
+  buildChunkTimeline,
+  leadingContext,
+  withoutContext,
+} = ns.align;
 
 // Values produced inside the script context belong to another realm, so copy
 // them before comparing structurally.
@@ -257,6 +265,83 @@ test("buildChunkTimeline falls back to proportional timing without timestamps", 
   for (let i = 1; i < timeline.words.length; i += 1) {
     assert.ok(timeline.words[i].t0 >= timeline.words[i - 1].t0);
   }
+});
+
+test("a short line is kept with the paragraph it introduces", () => {
+  const sentence = "The wheel turns while the pond drains back out through the sluice. ";
+  const heading = "At the sluice";
+  const text = `${sentence.repeat(8)}\n${heading}\n${sentence.repeat(4)}`;
+  const ranges = own(chunkRanges(text, 320));
+  const headingAt = text.indexOf(heading);
+
+  assert.ok(ranges.length > 1, "fixture should span more than one chunk");
+  for (const range of ranges) {
+    const piece = text.slice(range.start, range.end).trimEnd();
+    assert.ok(!piece.endsWith(heading), `a chunk ended on the heading: ${JSON.stringify(piece.slice(-40))}`);
+  }
+  const holding = ranges.find((range) => headingAt >= range.start && headingAt < range.end);
+  assert.ok(holding, "the heading was dropped");
+  const piece = text.slice(holding.start, holding.end);
+  assert.ok(piece.includes(heading));
+  assert.ok(
+    piece.includes("The wheel turns"),
+    "the heading was synthesised apart from the paragraph under it",
+  );
+});
+
+test("leading context is the previous sentence, and empty at the top", () => {
+  const text = "The pond fills slowly. The wheel begins to turn once the gate is open.";
+  assert.equal(leadingContext(text, 0), "");
+  assert.equal(leadingContext(text, text.indexOf("The wheel")), "The pond fills slowly. ");
+});
+
+test("leading context crosses a paragraph break and keeps a closing quote", () => {
+  const paragraph = "First paragraph ends.\nSecond paragraph starts here.";
+  assert.equal(leadingContext(paragraph, paragraph.indexOf("Second")), "First paragraph ends.\n");
+
+  const quoted = 'Hello. He said "Stop." Then he left.';
+  assert.equal(leadingContext(quoted, quoted.indexOf("Then")), 'He said "Stop." ');
+});
+
+test("leading context does not stop on an abbreviation", () => {
+  const text = "The survey was led by Dr. Mair of the institute. She filed it.";
+  assert.equal(leadingContext(text, text.indexOf("She")), "The survey was led by Dr. Mair of the institute. ");
+});
+
+test("leading context is capped on a word boundary", () => {
+  const long = `${"word ".repeat(80)}end. Next sentence starts now.`;
+  const context = leadingContext(long, long.indexOf("Next"), 40);
+  assert.ok(context.length > 0 && context.length <= 40, `context is ${context.length} characters`);
+  assert.ok(context.endsWith("end. "), JSON.stringify(context));
+  assert.equal(context[0], "w", "the cap opened in the middle of a word");
+});
+
+test("the unspoken lead-in is removed from the timeline and the chunk starts at zero", () => {
+  const text = "The pond fills slowly. The wheel begins to turn once the gate is open.";
+  const start = text.indexOf("The wheel");
+  const context = leadingContext(text, start);
+  const submission = context + text.slice(start);
+  const { graphChars, graphTimes, duration } = fakeTimestamps(submission, 0.05);
+  const spoken = withoutContext({
+    submission,
+    contextChars: context.length,
+    graphChars,
+    graphTimes,
+    duration,
+  });
+
+  assert.ok(Math.abs(spoken.lead - context.length * 0.05) < 1e-6, `lead is ${spoken.lead}`);
+  assert.equal(spoken.graphChars[0], "T");
+  assert.equal(spoken.graphTimes[0][0], 0);
+  const timeline = buildChunkTimeline({
+    text: text.slice(start),
+    graphChars: spoken.graphChars,
+    graphTimes: spoken.graphTimes,
+    duration: spoken.duration,
+  });
+  assert.equal(text.slice(start).slice(timeline.words[0].start, timeline.words[0].end), "The");
+  assert.ok(Math.abs(timeline.words[0].t0) < 1e-6, `first word starts at ${timeline.words[0].t0}`);
+  assert.ok(timeline.words.every((word) => text.slice(start).slice(word.start, word.end) !== "pond"));
 });
 
 test("lastAtOrBefore returns -1 before the first span", () => {

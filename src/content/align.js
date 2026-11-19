@@ -128,10 +128,127 @@
       }
       if (cut < 0) cut = window.length;
 
-      const end = start + cut;
+      // A heading or other short line left as the tail of this request is
+      // spoken as the end of an utterance, and the paragraph under it starts
+      // the next request from cold — which is the voice changing between the
+      // two. Keep the short line with the text it introduces instead.
+      const end = joinShortLine(text, start, start + cut, limit);
       ranges.push({ start, end });
       start = end;
     }
+  }
+
+  /**
+   * How short a line has to be before it is kept with the text after it.
+   * A heading, or a one-line fragment, is about this long; a sentence of
+   * prose is longer, and still ends a chunk on its own.
+   */
+  const SHORT_LINE_CHARS = 64;
+
+  /** Index of the line `end` closes, or `start` when the chunk is one line. */
+  function lineStart(text, start, end) {
+    for (let i = end - 1; i >= start; i -= 1) {
+      if (text[i] === "\n") return i + 1;
+    }
+    return start;
+  }
+
+  /**
+   * Move a cut that would finish on a short line back to the start of that
+   * line, so the line opens the next chunk. Only when the chunk that remains
+   * is still a reasonable size — the same floor the search above uses.
+   */
+  function joinShortLine(text, start, end, limit) {
+    const from = lineStart(text, start, end);
+    if (from <= start) return end;
+    const line = text.slice(from, end).trim();
+    if (!line || line.length >= SHORT_LINE_CHARS) return end;
+    if (from - start < limit * 0.4) return end;
+    return from;
+  }
+
+  /**
+   * How much of the text before a chunk is submitted with it, so the model
+   * speaks the chunk as a continuation of that sentence rather than as a new
+   * utterance. The audio for this prefix is not played.
+   */
+  const CONTEXT_CHARS = 200;
+
+  /**
+   * The sentence immediately before `start`, capped at `maxChars`.
+   *
+   * Empty at the top of the text, where starting fresh is the right delivery.
+   * The returned string is exactly the slice of `text` that ends at `start`,
+   * so concatenating it with the chunk reconstructs the original text and the
+   * timestamps stay aligned to it.
+   */
+  function leadingContext(text, start, maxChars = CONTEXT_CHARS) {
+    if (!text || start <= 0) return "";
+    let cursor = Math.min(start, text.length) - 1;
+    while (cursor >= 0 && isSpace(text[cursor])) cursor -= 1;
+    if (cursor < 0) return "";
+    // Step off this sentence's own terminator. The break it ends on is not
+    // the one before it, and a quote closing over a stop is the terminator
+    // even though the stop itself is not followed by whitespace.
+    while (cursor >= 0 && sentenceEndsAt(text, cursor)) cursor -= 1;
+    if (cursor < 0) return "";
+
+    const from = Math.max(0, start - maxChars);
+    let contextStart = from;
+    for (let i = cursor; i >= from; i -= 1) {
+      if (sentenceEndsAt(text, i)) {
+        contextStart = i + 1;
+        break;
+      }
+    }
+    while (contextStart < start && isSpace(text[contextStart])) contextStart += 1;
+    // The cap opened in the middle of a word. Advance to the next one so the
+    // model is not handed a stump.
+    if (
+      contextStart === from &&
+      from > 0 &&
+      !isSpace(text[from - 1]) &&
+      !sentenceEndsAt(text, from - 1)
+    ) {
+      while (contextStart < start && !isSpace(text[contextStart])) contextStart += 1;
+      while (contextStart < start && isSpace(text[contextStart])) contextStart += 1;
+    }
+    if (contextStart >= start || !text.slice(contextStart, start).trim()) return "";
+    return text.slice(contextStart, start);
+  }
+
+  /**
+   * Timestamps and duration for the spoken part of a submission.
+   *
+   * `submission` is the context prefix plus the chunk. The prefix is what
+   * keeps the voice continuous, and it is skipped on playback: `lead` is how
+   * far into the audio the chunk itself starts, and the returned timestamps
+   * are shifted so the chunk's first character is at time 0.
+   */
+  function withoutContext({ submission, contextChars = 0, graphChars, graphTimes, duration = 0 }) {
+    if (!contextChars) return { graphChars, graphTimes, duration, lead: 0 };
+    const times = characterTimes(submission, graphChars, graphTimes);
+    if (!times) {
+      const lead = duration > 0 ? (duration * contextChars) / submission.length : 0;
+      return { graphChars: null, graphTimes: null, duration: Math.max(0, duration - lead), lead };
+    }
+    const rawLead = times.starts[contextChars];
+    const lead = Number.isNaN(rawLead) || rawLead == null ? 0 : Math.max(0, rawLead);
+    const spoken = submission.slice(contextChars);
+    const chars = [];
+    const pairs = [];
+    for (let i = 0; i < spoken.length; i += 1) {
+      const at = contextChars + i;
+      const start = times.starts[at];
+      const end = times.ends[at];
+      chars.push(spoken[i]);
+      pairs.push([
+        Math.max(0, (Number.isNaN(start) ? lead : start) - lead),
+        Math.max(0, (Number.isNaN(end) ? lead : end) - lead),
+      ]);
+    }
+    const full = duration || times.ends[submission.length - 1] || lead;
+    return { graphChars: chars, graphTimes: pairs, duration: Math.max(0, full - lead), lead };
   }
 
   /**
@@ -149,6 +266,12 @@
    * there has been ample time to fetch a full-sized one. The ramp restarts at
    * every forced boundary, because jumping somewhere new has exactly the same
    * problem as starting does.
+   *
+   * A short line — a heading, a single fragment — is not left as the tail of a
+   * chunk. Spoken there, it finishes the utterance, and the paragraph it
+   * introduces starts the next request as a new one, which is the voice
+   * changing between them. The line opens the next chunk instead, so it is
+   * synthesised with the text under it.
    *
    * @returns {{start:number,end:number}[]} global character ranges
    */
@@ -371,5 +494,8 @@
     chunkIndexFor,
     sentenceStartFrom,
     timeForCharIndex,
+    leadingContext,
+    withoutContext,
+    CONTEXT_CHARS,
   };
 })(globalThis.__readAloud);

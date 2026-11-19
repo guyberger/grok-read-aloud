@@ -681,14 +681,25 @@ async function handle(request, response) {
     }
     const text = String(body.text ?? "");
     const duration = Number((text.length * SECONDS_PER_CHAR).toFixed(3));
+    const format = body.output_format ?? {};
     const entry = {
       chars: text.length,
       head: text.slice(0, 60),
       tail: text.slice(-30),
+      // The whole submission, so a check can see the unspoken lead-in as well
+      // as the words that are played. The bearer token is not recorded.
+      text,
       receivedAt: Date.now(),
       // Which voice it was asked in, so a test can tell audio that had to be
       // fetched again from audio that was merely replayed.
       voiceId: String(body.voice_id ?? ""),
+      language: String(body.language ?? ""),
+      speed: typeof body.speed === "number" ? body.speed : null,
+      codec: String(format.codec ?? ""),
+      sampleRate: typeof format.sample_rate === "number" ? format.sample_rate : null,
+      bitRate: typeof format.bit_rate === "number" ? format.bit_rate : null,
+      textNormalization: typeof body.text_normalization === "boolean" ? body.text_normalization : null,
+      withTimestamps: typeof body.with_timestamps === "boolean" ? body.with_timestamps : null,
       // Which credential carried it, so a test can assert the fallback
       // actually fell back rather than merely not erroring.
       auth: isOAuthToken(bearer) ? "oauth" : "apiKey",

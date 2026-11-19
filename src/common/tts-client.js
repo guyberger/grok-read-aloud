@@ -82,10 +82,29 @@ export async function listVoices(apiKey) {
 }
 
 /**
+ * Speech settings that every request in a read must share.
+ *
+ * Reading speed is not one of them. It is a time-stretch in the page, so the
+ * API is always asked for 1× — a speed that differed between chunks would be
+ * a different delivery, and the API's own speed tops out at 1.5× anyway.
+ * Codec, sample rate and bitrate are pinned the same way: the decoder and the
+ * player assume 24 kHz, and a chunk that came back at another rate would play
+ * at another pitch.
+ */
+export const SPEECH_FORMAT = {
+  codec: "mp3",
+  sampleRate: 24000,
+  bitRate: 64000,
+  speed: 1,
+};
+
+/**
  * Synthesise one chunk and return the audio plus per-character timings.
  *
  * `text_normalization` stays off so `graph_chars` mirrors the submitted text
  * one-for-one, which is what keeps the alignment to on-page characters exact.
+ * Every other setting is `SPEECH_FORMAT`: a read that sent a different speed,
+ * sample rate or codec on a later chunk would change the voice at the join.
  */
 export async function synthesize({
   apiKey,
@@ -93,8 +112,8 @@ export async function synthesize({
   voiceId,
   language,
   signal,
-  bitRate = 64000,
-  sampleRate = 24000,
+  bitRate = SPEECH_FORMAT.bitRate,
+  sampleRate = SPEECH_FORMAT.sampleRate,
 }) {
   if (!apiKey) throw new TtsError("No API key set. Open the extension options and paste your xAI key.");
   if (!text?.trim()) throw new TtsError("Nothing to read.");
@@ -110,9 +129,10 @@ export async function synthesize({
       text,
       voice_id: voiceId,
       language: language || "en",
+      speed: SPEECH_FORMAT.speed,
       with_timestamps: true,
       text_normalization: false,
-      output_format: { codec: "mp3", sample_rate: sampleRate, bit_rate: bitRate },
+      output_format: { codec: SPEECH_FORMAT.codec, sample_rate: sampleRate, bit_rate: bitRate },
     }),
   });
 
