@@ -1005,3 +1005,113 @@ test("the body fallback drops furniture written as a landmark role", { skip }, a
     assert.ok(!doc.text.includes(phrase), `"${phrase}" was read\n---\n${doc.text}`);
   }
 });
+
+test("a ruby annotation is left out, and the word under it is read in order", { skip }, async () => {
+  const { page, extract } = await read("ruby.html");
+
+  const rpDisplay = await page.evaluate(`getComputedStyle(document.querySelector("rp")).display`);
+  assert.equal(rpDisplay, "inline", "the parentheses are no longer on the page, so the tag is not what hides them");
+
+  const doc = await extract();
+  assert.ok(doc, "whole-page extraction returned nothing");
+
+  const kept = [
+    "How a mill pond holds the tide",
+    "The gate is marked 漢字 in the ledger.",
+    "She said 明日 we leave.",
+    "See the WWW note in the margin.",
+    "A 漢字 through a boxless wrapper.",
+    "Before 漢字 after the mark.",
+    "The wheel turns for as long as the pond lasts.",
+    "Millers wrote the hours down",
+  ];
+  for (const phrase of kept) {
+    assert.ok(doc.text.includes(phrase), `missing "${phrase}"\n---\n${doc.text}`);
+  }
+
+  const absent = [
+    "かん",
+    "じ",
+    "よみ",
+    "あした",
+    "World Wide Web",
+    "(",
+    ")",
+    "Navigation:",
+    "Footer:",
+    "marked漢字",
+    "漢字in",
+    "said明日",
+    "明日we",
+    "theWWW",
+    "WWWnote",
+  ];
+  for (const phrase of absent) {
+    assert.ok(!doc.text.includes(phrase), `"${phrase}" was read\n---\n${doc.text}`);
+  }
+  assert.ok(!doc.text.includes("漢\n字"), `a break inside the reading split the word\n---\n${doc.text}`);
+
+  const mapped = await page.evaluate(`
+    (() => {
+      const { extract } = globalThis.__readAloud;
+      const built = extract.extract("page");
+      const at = (needle) => {
+        const index = built.text.indexOf(needle);
+        const range = index < 0 ? null : extract.rangeFor(built, index, index + needle.length);
+        const parent = range && range.startContainer.parentElement;
+        return {
+          spoken: range ? range.toString() : "",
+          id: parent ? parent.id : "",
+          tag: parent ? parent.tagName : "",
+        };
+      };
+      return { word: at("明日"), after: at("in the ledger") };
+    })()
+  `);
+  assert.equal(mapped.word.spoken, "明日");
+  assert.equal(mapped.word.id, "ashita", "the word was mapped onto its reading");
+  assert.equal(mapped.after.tag, "P", "the words after a ruby were mapped onto the reading");
+  assert.equal(mapped.after.id, "interleaved");
+});
+
+test("a selection of nothing but a ruby annotation is read anyway", { skip }, async () => {
+  const { page, extract } = await read("ruby.html");
+
+  await page.evaluate(`
+    (() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById("www-reading"));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()
+  `);
+
+  const doc = await extract("selection");
+  assert.ok(doc, "the annotation extracted to nothing");
+  assert.equal(doc.scope, "selection");
+  assert.equal(doc.text, "World Wide Web");
+});
+
+test("a selection around a ruby annotation still drops it", { skip }, async () => {
+  const { page, extract } = await read("ruby.html");
+
+  await page.evaluate(`
+    (() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById("group"));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()
+  `);
+
+  const doc = await extract("selection");
+  assert.ok(doc, "the selection extracted to nothing");
+  assert.equal(doc.scope, "selection");
+  assert.ok(doc.text.includes("She said 明日 we leave."));
+  assert.ok(!doc.text.includes("あした"), "the reading inside the selection was read");
+  assert.ok(!doc.text.includes("("), "the ruby parentheses inside the selection were read");
+});

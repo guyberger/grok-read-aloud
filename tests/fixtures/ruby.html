@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How a Mill Pond Holds the Tide — Ruby</title>
+    <!--
+      A word and the reading written above it. The parentheses are forced
+      onto the page, which is what a browser shows when it does not lay ruby
+      out, so skipping them has to be because they are the annotation and
+      not because they are hidden.
+    -->
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.6 Georgia, "Times New Roman", serif;
+        color: #1d1d1f;
+        background: #fbfbf9;
+      }
+      nav,
+      footer {
+        background: #e8e8e4;
+        padding: 14px 20px;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+      article {
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 80px;
+      }
+      h1 {
+        font-size: 32px;
+        line-height: 1.2;
+      }
+      rt {
+        font-size: 0.6em;
+      }
+      rp {
+        display: inline !important;
+      }
+      .contents {
+        display: contents;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation: mill index</nav>
+
+    <article>
+      <h1>How a mill pond holds the tide</h1>
+
+      <p id="interleaved">
+        The gate is marked <ruby id="kanji">漢<rt>かん</rt>字<rt>じ</rt></ruby> in the ledger.
+      </p>
+
+      <p id="group">
+        She said <ruby id="ashita">明日<rp>(</rp><rt id="ashita-reading">あした</rt><rp>)</rp></ruby> we leave.
+      </p>
+
+      <p id="gloss">
+        See the <ruby id="www">WWW<rt id="www-reading">World Wide Web</rt></ruby> note in the margin.
+      </p>
+
+      <p id="wrapped">
+        A <span class="contents"><ruby>漢<rt>かん</rt>字<rt>じ</rt></ruby></span> through a boxless wrapper.
+      </p>
+
+      <p id="broken">
+        Before <ruby>漢<rt>かん<br />よみ</rt>字</ruby> after the mark.
+      </p>
+
+      <p>
+        The pond stores the tide between one turning and the next, and the wheel waits until the head is
+        enough to move the stone. Millers wrote the hours down because the sea does not keep a clock, and a
+        mark on the wall was how they said what the water would do. Families who lived beside the pond
+        learned to read those marks the way other people read a timetable.
+      </p>
+
+      <p id="plain">The wheel turns for as long as the pond lasts.</p>
+    </article>
+
+    <footer>Footer: the harbour board</footer>
+  </body>
+</html>
