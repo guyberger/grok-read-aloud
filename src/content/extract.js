@@ -48,6 +48,12 @@
     "alertdialog",
   ]);
 
+  // The reading written above a word, and the parentheses a page shows when
+  // ruby is not laid out. The word is the base. Speaking the reading too says
+  // the word and then its pronunciation, and a reading on each character
+  // interleaves the two so neither can be followed.
+  const RUBY_ANNOTATION = new Set(["RT", "RP", "RTC"]);
+
   // Below this, a whole-page read is treated as a failed guess rather than a
   // short page, and the body is read instead.
   const MIN_PAGE_CHARS = 200;
@@ -786,7 +792,13 @@
     return end > start ? [start, end] : null;
   }
 
-  function collectTextNodes(root, range, chromeTags, cache = new Map(), { readCodeBlocks = false, skipCitations = true } = {}) {
+  function collectTextNodes(
+    root,
+    range,
+    chromeTags,
+    cache = new Map(),
+    { readCodeBlocks = false, skipCitations = true, skipRuby = true } = {},
+  ) {
     // Asking the layout costs a style resolve, and a page of API docs has a
     // great many `<code>` elements, so each one is asked once per walk.
     const codeBlocks = new Map();
@@ -805,6 +817,7 @@
         const tag = tagOf(el);
         if (FORMULA_NOISE.has(tag)) return true;
         if (SKIP_TAGS.has(tag)) return true;
+        if (skipRuby && RUBY_ANNOTATION.has(tag)) return true;
         if (!readCodeBlocks && CODE_TAGS.has(tag) && inCodeBlock(el)) return true;
         if (el !== root && marksChrome(el, tag, chromeTags)) return true;
       }
@@ -999,7 +1012,9 @@
    *
    * A line break is not an ancestor of either side, so the block walk never
    * sees it, and the two lines run together. One the page has hidden is not
-   * a break: the words on either side are one line.
+   * a break: the words on either side are one line. One inside a ruby
+   * annotation is not a break either: it belongs to the reading, which is
+   * not spoken, and the bases on either side of it are one word.
    */
   function lineBreakBetween(fromNode, toNode, cache) {
     if (!fromNode || !toNode || fromNode === toNode || fromNode.nextSibling === toNode) return false;
@@ -1008,6 +1023,12 @@
       if (current === toNode) return false;
       if (current.nodeType === Node.ELEMENT_NODE && current.tagName === "BR" && visible(current, cache)) {
         return true;
+      }
+      // The annotation sits between the bases in the tree. A break inside it
+      // is part of the reading, and descending would split the word.
+      if (current.nodeType === Node.ELEMENT_NODE && RUBY_ANNOTATION.has(tagOf(current))) {
+        current = nodeAfter(current);
+        continue;
       }
       if (
         current.nodeType === Node.ELEMENT_NODE &&
@@ -1174,14 +1195,18 @@
     if (range) {
       let root = range.commonAncestorContainer;
       if (root.nodeType !== Node.ELEMENT_NODE) root = root.parentElement;
-      // A selection of nothing but a snippet, or nothing but a citation
-      // marker, is still text the user picked out and asked to hear, and
+      // A selection of nothing but a snippet, a citation marker, or a ruby
+      // annotation is still text the user picked out and asked to hear, and
       // silence is not an answer to that — so a selection the filters would
-      // empty is read with both set aside.
+      // empty is read with those set aside.
       const built =
         root &&
         (buildFrom(root, range, null, new Map(), options) ??
-          buildFrom(root, range, null, new Map(), { readCodeBlocks: true, skipCitations: false }));
+          buildFrom(root, range, null, new Map(), {
+            readCodeBlocks: true,
+            skipCitations: false,
+            skipRuby: false,
+          }));
       return built ? { ...built, root, scope: "selection", mapped: true } : null;
     }
 

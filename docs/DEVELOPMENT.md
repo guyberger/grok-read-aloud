@@ -20,6 +20,8 @@ dependencies, just the files in `src/` and a small copy script.
 - Reads a formula once, from the copy on the screen. The hidden copy kept for
   assistive technology is not also read, and an equation is not dropped out of
   the sentence it belongs to.
+- Reads a word written with ruby from the characters on the line. The reading
+  above them is not spoken in the middle of the word.
 - Reads just the current selection instead, when you ask it to.
 - Reads a Google Doc, which no amount of walking the page can do: Docs paints
   the document onto a canvas, so the text is fetched from the same place File →
@@ -431,6 +433,8 @@ checks cannot do
       not spoken.
 - [ ] A formula in a sentence is read once and highlighted on the formula the
       page shows. The hidden copy, and the TeX source beside it, are not.
+- [ ] A word with a reading written above it is read once, from the characters
+      on the line. The reading, and the parentheses around it, are not.
 - [ ] Audio continues smoothly across a chunk boundary — watch the "Part *n* of
       *m*" label in the popup tick over without a long gap.
 
@@ -867,6 +871,20 @@ the two lines become two sentences the way a paragraph break does. One the
 page has hidden is not a break. An ASCII hyphen at the end of a line in the
 source is left as a hyphen: once that newline has been folded into a space,
 nothing distinguishes it from the hyphen in a compound.
+
+A ruby annotation is not part of the word it sits on. The base is the word,
+and the `<rt>` above the characters is how to say them. Reading both says
+the word and then its pronunciation, and a reading on each character
+interleaves the two: `漢` with `かん` above it and `字` with `じ` above it
+comes out as something no one can follow. The annotation is skipped, and so
+is an `<rtc>` that groups several readings. The `<rp>` parentheses a page
+shows when ruby is not laid out are skipped with them, including when the
+page has forced those parentheses onto the screen — hiding is not what
+makes them the annotation. The bases stay in order and keep the space the
+sentence already had around them, so the words on either side do not run
+together. A break inside the reading does not split the word. A
+`display: contents` wrapper does not let the reading through. A selection
+of nothing but the annotation is read anyway: it is what was pointed at.
 
 A formula is drawn twice, once on the screen and once hidden for assistive
 technology, and neither "skip what is hidden" nor "skip what is aria-hidden"
@@ -1942,6 +1960,11 @@ plays, so that playback is really tested — out of the speakers.
   source is read as that source, because that is the text the page provided.
   An SVG formula is highlighted as one drawing, since its glyphs are not
   characters. See [Formulas](#formulas).
+- **A ruby annotation is not read with the word.** The base text is spoken.
+  The reading above it, and the fallback parentheses, are left out, including
+  when the page has put those parentheses on the screen. A selection of the
+  annotation alone is read. See
+  [Picking the text to read](#picking-the-text-to-read).
 - **Whole code snippets are skipped by default**, on the grounds that
   punctuation and indentation rarely read well aloud. Code written into a
   sentence is always read — see [Code in a page](#code-in-a-page) — and
