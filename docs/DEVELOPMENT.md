@@ -807,6 +807,28 @@ anything. A line clamp and `content-visibility: auto` are the opposite case,
 text that is still the page, and both are read — including after the page has
 been scrolled, since leaving the window is not the same as leaving the page.
 
+An indent can hide a line without any of those, and the box gives no sign of
+it. `text-indent: -9999px`, and `text-indent: 100%` on a line the box clips,
+are how a page shows a picture in place of a heading and keeps the words for
+assistive technology, or parks a label off to one side. The box is a normal
+size, so it is not a collapsed box, and the element is not positioned, so the
+off-page check never asks. The glyphs are what get asked. When every one of
+them falls outside the box that clips them — the element, or an ancestor that
+clips and is not a scrollport — the line is not on the page and is left out.
+The same glyphs parked where the document does not scroll, off its left edge
+with no clip at all, are left out too. A positive indent with nothing
+clipping it is the line drawn beside its box, and it is read.
+
+A first-line indent of a couple of ems, and a hanging indent, are a small
+fraction of the line. They stay. So does a line the indent only partly
+covers: the tail of a `-100%` indent that reaches back into the box is still
+ink, and that line is read. A paragraph whose first line is pushed out while
+the lines under it stay put is read in full, including that first line,
+because the two share a text node and the lines still on the page are the
+paragraph. A `display: contents` wrapper does not let the indented line
+through, and it does not hide the sentence it sits in. Giving the indent a
+normal size reads the line.
+
 A closed disclosure is the same kind of absence, and it does not show up in
 those styles. The answer stays `display: block` with an ordinary box; the
 browser has simply not rendered it yet. The first `<summary>` is on the page
@@ -1964,6 +1986,13 @@ plays, so that playback is really tested — out of the speakers.
   The reading above it, and the fallback parentheses, are left out, including
   when the page has put those parentheses on the screen. A selection of the
   annotation alone is read. See
+  [Picking the text to read](#picking-the-text-to-read).
+- **An indent that pushes one line out and leaves the next one in is read
+  in full.** A label indented by the whole width of its box and clipped, or
+  by a few thousand pixels, is left out, because none of it is on the page.
+  A paragraph that keeps its later lines is the page, and the line the indent
+  pushed out is read with them. A short first-line indent and a hanging
+  indent are read as well. See
   [Picking the text to read](#picking-the-text-to-read).
 - **Whole code snippets are skipped by default**, on the grounds that
   punctuation and indentation rarely read well aloud. Code written into a

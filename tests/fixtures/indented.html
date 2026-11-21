@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How a Mill Pond Holds the Tide — Indented Text</title>
+    <!--
+      Lines pushed out of their box by text-indent. The box stays a normal
+      size, so this is not a collapsed box, and nothing here is positioned.
+      A short indent, a hanging indent, and a line that still reaches back
+      into its box are the page and have to be read.
+    -->
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.6 Georgia, "Times New Roman", serif;
+        color: #1d1d1f;
+        background: #fbfbf9;
+      }
+      nav,
+      footer {
+        background: #e8e8e4;
+        padding: 14px 20px;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+      article {
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 80px;
+      }
+      h1 {
+        font-size: 32px;
+        line-height: 1.2;
+      }
+      .logo {
+        display: inline-block;
+        width: 140px;
+        height: 22px;
+        overflow: hidden;
+        text-indent: -9999px;
+        white-space: nowrap;
+        background: #d5e3cf;
+        vertical-align: bottom;
+      }
+      .contents {
+        display: contents;
+      }
+      .replaced {
+        display: inline-block;
+        width: 160px;
+        height: 22px;
+        overflow: hidden;
+        text-indent: -9999px;
+        white-space: nowrap;
+        background: #e7e0c8;
+        vertical-align: bottom;
+      }
+      .full {
+        width: 220px;
+        height: 28px;
+        overflow: hidden;
+        text-indent: 100%;
+        white-space: nowrap;
+        background: #d9e2ef;
+      }
+      .opposite {
+        width: 180px;
+        height: 28px;
+        overflow: hidden;
+        text-indent: 100%;
+        white-space: nowrap;
+        background: #eadfef;
+      }
+      .offpage {
+        text-indent: -9999px;
+        white-space: nowrap;
+      }
+      .framed {
+        overflow: hidden;
+        width: 420px;
+      }
+      .framed p {
+        margin: 0 0 8px;
+      }
+      .framed-label {
+        text-indent: -9999px;
+        white-space: nowrap;
+      }
+      .spill {
+        width: 8em;
+        text-indent: 100%;
+        white-space: nowrap;
+        background: #f3e2c4;
+      }
+      .hang {
+        text-indent: -1.25em;
+        padding-left: 1.25em;
+        overflow: hidden;
+      }
+      .first {
+        text-indent: 2em;
+      }
+      .short-out {
+        width: 160px;
+        height: 24px;
+        overflow: hidden;
+        text-indent: -100%;
+        white-space: nowrap;
+      }
+      .peek {
+        width: 160px;
+        height: 24px;
+        overflow: hidden;
+        text-indent: -100%;
+        white-space: nowrap;
+      }
+      .wrapped {
+        width: 220px;
+        overflow: hidden;
+        text-indent: 100%;
+      }
+      .scrollport {
+        overflow: auto;
+        width: 280px;
+        height: 4.5em;
+      }
+      .in-scroll {
+        width: 200px;
+        text-indent: 100%;
+        white-space: nowrap;
+      }
+      .hidden-in-scroll {
+        width: 200px;
+        height: 22px;
+        overflow: hidden;
+        text-indent: -9999px;
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation: site furniture that must stay unread</nav>
+
+    <article>
+      <h1>How a mill pond holds the tide</h1>
+
+      <p id="opening">
+        The wheel turns <a class="logo" id="logo" href="#pond">Mill pond home</a> for as long as the pond lasts.
+      </p>
+
+      <p id="contents-sentence">
+        A label
+        <span class="contents"><span class="replaced" id="contents-label">Skip to the sluice</span></span>
+        sits in the sentence.
+      </p>
+
+      <h2 class="full" id="full">Replaced heading words</h2>
+
+      <p class="opposite" dir="rtl" id="opposite">Opposite label stays unread</p>
+
+      <p class="offpage" id="offpage">Parked by a wide indent</p>
+
+      <div class="framed" id="frame">
+        <p class="framed-label" id="framed-label">Framed label off to the side</p>
+        <p id="framed-note">The framed note stays.</p>
+      </div>
+
+      <p class="spill" id="spill">Spilled indent stays visible beside its box.</p>
+
+      <p class="hang" id="hang">The hanging line starts early and is still the sentence.</p>
+
+      <p class="first" id="first">The first line is indented a little and the rest of the paragraph stays with it.</p>
+
+      <p class="short-out" id="short-out">Secret</p>
+
+      <p class="peek" id="peek">The tail of the line still shows in the box.</p>
+
+      <p class="wrapped" id="wrapped">
+        Alpha begins the indented paragraph and the lines under it stay on the page for the miller to read.
+      </p>
+
+      <div class="scrollport">
+        <p class="in-scroll" id="in-scroll">Indented inside a scrollport and still read in full.</p>
+        <p class="hidden-in-scroll" id="hidden-in-scroll">Hidden inside a scrollport</p>
+      </div>
+
+      <p>
+        Millers slept in shifts beside the wheel, and the pond held three hours of water when the gate was shut.
+        The stone turned only while the head lasted, and then the mill waited on the next tide.
+      </p>
+    </article>
+
+    <footer>Footer: site furniture that must stay unread</footer>
+  </body>
+</html>
