@@ -302,6 +302,169 @@
     return top + rect.height < -slop || left + rect.width < -slop;
   }
 
+  // Which element lays out a text node's line, and whether that element's
+  // indent is large enough to push a whole line out. Reset with the clip
+  // cache: changing the indent changes the answer.
+  let blockOf = new WeakMap();
+  let indentOf = new WeakMap();
+
+  /**
+   * Whether `display` is a block container, the box `text-indent` applies to.
+   *
+   * An inline sets the property and nothing happens: the indent belongs to
+   * the block that lays the line out. `inline-block` is that block for its
+   * own text. `display: contents` is neither, and the walk continues through
+   * it.
+   */
+  function isBlockContainer(display) {
+    return (
+      display === "block" ||
+      display === "flow-root" ||
+      display === "inline-block" ||
+      display === "inline-flex" ||
+      display === "inline-grid" ||
+      display === "flex" ||
+      display === "grid" ||
+      display === "list-item" ||
+      display === "table-cell" ||
+      display === "table-caption"
+    );
+  }
+
+  /** The block container that lays `element`'s line out, or null. */
+  function blockContainer(element) {
+    const known = blockOf.get(element);
+    if (known !== undefined) return known;
+    let block = null;
+    for (let current = element; current && block === null; current = current.parentElement) {
+      const cached = blockOf.get(current);
+      if (cached !== undefined) {
+        block = cached;
+        break;
+      }
+      const display = getComputedStyle(current).display;
+      if (display === "none") break;
+      if (isBlockContainer(display)) block = current;
+    }
+    blockOf.set(element, block);
+    return block;
+  }
+
+  /**
+   * Whether `textIndent` is large enough that a whole line might sit outside
+   * its box. A couple of ems — a first-line indent, a hanging indent — is
+   * not. `100%` and a few thousand pixels are.
+   *
+   * Percentages come back unresolved, unlike a length in ems. They refer to
+   * the width of this block, so `100%` is exactly one box wide.
+   */
+  function largeIndent(textIndent, width) {
+    const token = (textIndent || "").trim().split(/\s+/)[0] || "";
+    if (!token || token === "0" || token === "0px") return null;
+    if (token.endsWith("%")) {
+      const pct = Number.parseFloat(token);
+      if (!Number.isFinite(pct) || Math.abs(pct) < 100) return null;
+      return { negative: pct < 0 };
+    }
+    if (!token.endsWith("px")) return null;
+    const px = Number.parseFloat(token);
+    if (!Number.isFinite(px) || Math.abs(px) + 0.5 < width) return null;
+    return { negative: px < 0 };
+  }
+
+  /**
+   * The box that clips `block` on the inline axis, or null when nothing does.
+   *
+   * The search stops at a scrollport. Text inside one can be scrolled back
+   * into view, and a clip outside it is the scrollport's own edge, not a
+   * reason to drop the text.
+   */
+  function inlineClip(block) {
+    for (let current = block; current; current = current.parentElement) {
+      const overflow = getComputedStyle(current).overflowX;
+      if (overflow === "hidden" || overflow === "clip") return current;
+      if (overflow === "auto" || overflow === "scroll") return null;
+    }
+    return null;
+  }
+
+  /** Resolved indent for `block`, or null when it cannot hide a line. */
+  function indentInfo(block) {
+    const known = indentOf.get(block);
+    if (known !== undefined) return known;
+    const width = block.clientWidth;
+    const amount = width > 0 ? largeIndent(getComputedStyle(block).textIndent, width) : null;
+    const info = amount ? { negative: amount.negative, clip: inlineClip(block) } : null;
+    indentOf.set(block, info);
+    return info;
+  }
+
+  /** Glyph boxes of `node`, ignoring fragments that have no ink. */
+  function textRects(node) {
+    const range = node.ownerDocument.createRange();
+    range.selectNodeContents(node);
+    const rects = [];
+    for (const rect of range.getClientRects()) {
+      if (rect.width > 0.5 && rect.height > 0.5) rects.push(rect);
+    }
+    return rects;
+  }
+
+  /** Whether `rect` draws inside `box`. A pixel of slop is subpixel rounding. */
+  function overlapsBox(rect, box) {
+    const slop = 1;
+    return (
+      rect.right > box.left + slop &&
+      rect.left < box.right - slop &&
+      rect.bottom > box.top + slop &&
+      rect.top < box.bottom - slop
+    );
+  }
+
+  /**
+   * Whether `node`'s glyphs have all been pushed off the page by an indent.
+   *
+   * `text-indent: -9999px`, and `text-indent: 100%` on a line the box clips,
+   * are how a page shows a picture in place of a heading and keeps the words
+   * for assistive technology. The box is a normal size, so it is not a
+   * collapsed box, and the element is not positioned, so nothing above asks
+   * where the glyphs went. The glyphs are what get asked.
+   *
+   * Every glyph outside the clip means the line is not on the page. A line
+   * that reaches back into the box, and a later line the indent never
+   * applied to, still have ink, and then the whole text is read — the two
+   * share a node whenever the page did not split them. With no clip, only a
+   * negative indent can hide anything, and only by leaving the glyphs where
+   * the document does not scroll. A positive indent with nothing clipping it
+   * is the line drawn beside its box, and it stays.
+   */
+  function indentHides(node) {
+    if (node.nodeType !== Node.TEXT_NODE) return false;
+    const element = node.parentElement;
+    if (!element) return false;
+    const block = blockContainer(element);
+    if (!block) return false;
+    const info = indentInfo(block);
+    if (!info) return false;
+    const rects = textRects(node);
+    if (!rects.length) return false;
+    if (info.clip) {
+      const box = info.clip.getBoundingClientRect();
+      for (const rect of rects) {
+        if (overlapsBox(rect, box)) return false;
+      }
+      return true;
+    }
+    if (!info.negative) return false;
+    const slop = 8;
+    for (const rect of rects) {
+      const top = rect.top + window.scrollY;
+      const left = rect.left + window.scrollX;
+      if (!(top + rect.height < -slop || left + rect.width < -slop)) return false;
+    }
+    return true;
+  }
+
   /**
    * Whether this node is inside a box the page has collapsed to nothing.
    *
@@ -862,6 +1025,9 @@
         // formula branch: the accessible copy of an equation is a one-pixel
         // box on purpose, and that copy is the one a path drawing is read from.
         if (collapsedHides(node) || !visible(parent, cache)) return NodeFilter.FILTER_REJECT;
+        // After visibility, so a hidden subtree is not measured. A line the
+        // indent pushed out has a normal box and would otherwise be read.
+        if (indentHides(node)) return NodeFilter.FILTER_REJECT;
         if (skippedAncestor(parent)) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       },
@@ -1183,6 +1349,8 @@
    */
   function extract(scope, { readCodeBlocks = false, root: given = null } = {}) {
     clipCache = new WeakMap();
+    blockOf = new WeakMap();
+    indentOf = new WeakMap();
     const options = { readCodeBlocks };
     const range = scope === "selection" ? activeSelectionRange() : null;
     if (scope === "selection" && !range) return null;

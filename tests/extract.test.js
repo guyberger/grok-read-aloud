@@ -1115,3 +1115,116 @@ test("a selection around a ruby annotation still drops it", { skip }, async () =
   assert.ok(!doc.text.includes("あした"), "the reading inside the selection was read");
   assert.ok(!doc.text.includes("("), "the ruby parentheses inside the selection were read");
 });
+
+test("text an indent has pushed out of sight is left unread", { skip }, async () => {
+  const { page, extract } = await read("indented.html");
+
+  const displays = await page.evaluate(`
+    (() => {
+      const of = (selector) => getComputedStyle(document.querySelector(selector)).display;
+      return { contents: of(".contents"), logo: of(".logo") };
+    })()
+  `);
+  assert.equal(displays.contents, "contents", "fixture no longer exercises the boxless wrapper");
+  assert.equal(displays.logo, "inline-block", "the logo is no longer its own block");
+
+  const doc = await extract();
+  assert.ok(doc, "whole-page extraction returned nothing");
+
+  const kept = [
+    "How a mill pond holds the tide",
+    "The wheel turns for as long as the pond lasts.",
+    "A label sits in the sentence.",
+    "The framed note stays.",
+    "Spilled indent stays visible beside its box.",
+    "The hanging line starts early and is still the sentence.",
+    "The first line is indented a little and the rest of the paragraph stays with it.",
+    "The tail of the line still shows in the box.",
+    "Alpha begins the indented paragraph and the lines under it stay on the page for the miller to read.",
+    "Indented inside a scrollport and still read in full.",
+    "Millers slept in shifts beside the wheel",
+  ];
+  for (const phrase of kept) {
+    assert.ok(doc.text.includes(phrase), `missing "${phrase}"\n---\n${doc.text}`);
+  }
+
+  const absent = [
+    "Mill pond home",
+    "Skip to the sluice",
+    "Replaced heading words",
+    "Opposite label stays unread",
+    "Parked by a wide indent",
+    "Framed label off to the side",
+    "Secret",
+    "Hidden inside a scrollport",
+    "Navigation:",
+    "Footer:",
+    "turnsfor",
+    "labelsits",
+  ];
+  for (const phrase of absent) {
+    assert.ok(!doc.text.includes(phrase), `"${phrase}" was read\n---\n${doc.text}`);
+  }
+
+  const mapped = await page.evaluate(`
+    (() => {
+      const { extract } = globalThis.__readAloud;
+      const built = extract.extract("page");
+      const at = built.text.indexOf("for as long as the pond lasts");
+      const range = at < 0 ? null : extract.rangeFor(built, at, at + "for".length);
+      const parent = range && range.startContainer.parentElement;
+      return { spoken: range ? range.toString() : "", id: parent ? parent.id : "" };
+    })()
+  `);
+  assert.equal(mapped.spoken, "for");
+  assert.equal(mapped.id, "opening", "the word after an indented label was mapped onto the label");
+});
+
+test("giving the indent a normal size reads the line it was hiding", { skip }, async () => {
+  const { page, extract } = await read("indented.html");
+
+  const hidden = await extract();
+  assert.ok(!hidden.text.includes("Replaced heading words"));
+  assert.ok(!hidden.text.includes("Parked by a wide indent"));
+
+  await page.evaluate(`
+    (() => {
+      document.getElementById("full").style.textIndent = "0px";
+      document.getElementById("offpage").style.textIndent = "0px";
+      return true;
+    })()
+  `);
+
+  const shown = await extract();
+  assert.ok(shown.text.includes("Replaced heading words"), "clearing the indent left the heading unread");
+  assert.ok(shown.text.includes("Parked by a wide indent"), "clearing the indent left the parked line unread");
+  assert.ok(shown.text.includes("The wheel turns for as long as the pond lasts."));
+  assert.ok(!shown.text.includes("Mill pond home"), "a different indent was cleared along with this one");
+});
+
+test("a selection of an indented label reads nothing, and one around it drops the label", { skip }, async () => {
+  const { page, extract } = await read("indented.html");
+
+  const select = async (id) => {
+    await page.evaluate(`
+      (() => {
+        const range = document.createRange();
+        range.selectNodeContents(document.getElementById(${JSON.stringify(id)}));
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return true;
+      })()
+    `);
+    return extract("selection");
+  };
+
+  assert.equal(await select("full"), null);
+  assert.equal(await select("offpage"), null);
+
+  const around = await select("opening");
+  assert.ok(around, "the sentence extracted to nothing");
+  assert.equal(around.scope, "selection");
+  assert.ok(around.text.includes("The wheel turns for as long as the pond lasts."));
+  assert.ok(!around.text.includes("Mill pond home"), "the indented label inside the selection was read");
+});
