@@ -860,6 +860,25 @@ An inline box ignores a height, so the words in it stay, and a
 `display: contents` wrapper has no box for a height to collapse. Opening the
 box — giving it a size again — reads what it was holding.
 
+`inert` is the same kind of absence, and it does not show up in the box
+either. The attribute leaves the subtree painted and takes it out of reach:
+a slide waiting off to the side of a carousel, a panel the page has not
+opened, a second article that is still in the tree. Reading it speaks that
+slide and pays for the characters. The part that carries `inert` is left
+out, including a panel nested inside one that is already held, a formula
+inside it, and a fixed bar drawn out of it — inert is not a clip a bar can
+escape. A `display: contents` wrapper does not let the held text through,
+and it does not hide the sentence it sits in. A line break inside the held
+part does not split the sentence around it. Taking the attribute off reads
+what it was holding.
+
+The article the read chose is still read when a dialog has marked that
+article inert to trap focus in front of it. That article is the page that
+was asked for. A slide marked inert beside it does not take its place,
+however much text the slide holds. A selection of nothing but the held part
+is read anyway: it is what was pointed at. A selection that merely contains
+it still skips it.
+
 Page furniture is skipped whether or not the page used the element for it. A
 banner, a navigation, a sidebar, a footer, a search, a form and a dialog are
 the same things as `<header>`, `<nav>`, `<aside>`, `<footer>`, `<form>` and
@@ -1993,6 +2012,11 @@ plays, so that playback is really tested — out of the speakers.
   A paragraph that keeps its later lines is the page, and the line the indent
   pushed out is read with them. A short first-line indent and a hanging
   indent are read as well. See
+  [Picking the text to read](#picking-the-text-to-read).
+- **Text the page has marked inert is left unread.** A slide, a closed
+  panel, or a second article that carries the attribute is held back,
+  including a formula inside it. The article the read chose is still read
+  when it is itself inert. A selection of the held part is read. See
   [Picking the text to read](#picking-the-text-to-read).
 - **Whole code snippets are skipped by default**, on the grounds that
   punctuation and indentation rarely read well aloud. Code written into a
