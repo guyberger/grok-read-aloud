@@ -888,14 +888,36 @@
     return result;
   }
 
-  function textWeight(element, cache) {
+  /**
+   * Whether `element` sits in a subtree the page has marked `inert`, not
+   * counting `root` itself.
+   *
+   * The container the read chose may be inert. A dialog traps focus by
+   * marking the article, and the article is still the page that was asked
+   * for. What gets left out is a part that carries its own `inert`: a slide
+   * held off to the side, a panel the page has not opened.
+   *
+   * The cache stores whether an element itself has the attribute. Ancestors
+   * are asked on the way up, so one cache is right for every root.
+   */
+  function inInert(element, root, cache) {
+    for (let current = element; current && current !== root; current = current.parentElement) {
+      let known = cache.get(current);
+      if (known === undefined) cache.set(current, (known = current.hasAttribute("inert")));
+      if (known) return true;
+    }
+    return false;
+  }
+
+  function textWeight(element, cache, inert) {
     let total = 0;
     let linked = 0;
+    const counts = (node) => visible(node, cache) && !inInert(node, element, inert);
     for (const node of element.querySelectorAll("p, li, h1, h2, h3, h4, blockquote")) {
-      if (visible(node, cache)) total += node.textContent.length;
+      if (counts(node)) total += node.textContent.length;
     }
     for (const node of element.querySelectorAll("a")) {
-      if (visible(node, cache)) linked += node.textContent.length;
+      if (counts(node)) linked += node.textContent.length;
     }
     return total - linked * 1.5;
   }
@@ -909,33 +931,57 @@
    * every post beats one post. Scoring it would hand back a container whose
    * every text node is then correctly rejected as hidden, which reads as "no
    * text on this page".
+   *
+   * An inert candidate loses to a rendered one. A slide that is a second
+   * article, still painted and marked inert, can hold more text than the
+   * article on screen; scoring it would read the slide. Held-back text
+   * inside a candidate does not count toward it either. When the only
+   * candidate above the threshold is itself inert, it is still the page.
    */
   function findMainContent(cache = new Map()) {
     clipCache = new WeakMap();
+    const inert = new Map();
     let best = null;
     let bestScore = 0;
-    for (const selector of MAIN_SELECTORS) {
-      for (const element of document.querySelectorAll(selector)) {
-        if (!visible(element, cache)) continue;
-        const score = textWeight(element, cache);
-        if (score > bestScore) {
-          best = element;
-          bestScore = score;
-        }
-      }
-    }
-    if (best && bestScore > 400) return best;
+    let inertBest = null;
+    let inertScore = 0;
 
-    for (const element of document.body?.querySelectorAll("div, section, td") ?? []) {
-      if (element.querySelectorAll("p").length < 3) continue;
-      if (!visible(element, cache)) continue;
-      const score = textWeight(element, cache);
+    const rank = (element) => {
+      if (!visible(element, cache)) return;
+      const score = textWeight(element, cache, inert);
+      if (element.hasAttribute("inert")) {
+        if (score > inertScore) {
+          inertBest = element;
+          inertScore = score;
+        }
+        return;
+      }
       if (score > bestScore) {
         best = element;
         bestScore = score;
       }
+    };
+
+    // A rendered article wins outright. An inert one is the page only when
+    // nothing rendered cleared the threshold, and a sidebar div does not get
+    // to outscore that article by being considered in the same pass.
+    for (const selector of MAIN_SELECTORS) {
+      for (const element of document.querySelectorAll(selector)) rank(element);
     }
-    return bestScore > 400 ? best : document.body;
+    if (best && bestScore > 400) return best;
+    if (inertBest && inertScore > 400) return inertBest;
+
+    best = null;
+    bestScore = 0;
+    inertBest = null;
+    inertScore = 0;
+    for (const element of document.body?.querySelectorAll("div, section, td") ?? []) {
+      if (element.querySelectorAll("p").length < 3) continue;
+      rank(element);
+    }
+    if (best && bestScore > 400) return best;
+    if (inertBest && inertScore > 400) return inertBest;
+    return document.body;
   }
 
   function blockAncestor(node) {
@@ -960,7 +1006,7 @@
     range,
     chromeTags,
     cache = new Map(),
-    { readCodeBlocks = false, skipCitations = true, skipRuby = true } = {},
+    { readCodeBlocks = false, skipCitations = true, skipRuby = true, skipInert = true } = {},
   ) {
     // Asking the layout costs a style resolve, and a page of API docs has a
     // great many `<code>` elements, so each one is asked once per walk.
@@ -971,6 +1017,10 @@
       return known;
     };
     const citations = new Map();
+    const inert = new Map();
+    // Held-back text stays in the slice list so the words on either side do
+    // not run together, and so a selection of nothing else can still read it.
+    const heldBack = (element) => skipInert && inInert(element, root, inert);
     const formulas = indexFormulas(root, cache);
     const hiddenFormula = new Set(["MATH", ...FORMULA_NOISE]);
     const mathTag = new Set(["MATH"]);
@@ -1053,7 +1103,9 @@
           // Kept as a slice so the words on either side stay apart, and so a
           // mark sitting against a comma does not grow a space of its own.
           // Nothing in it is spoken.
-          gap: skipCitations && inCitation(node.parentElement, root, citations),
+          gap:
+            (skipCitations && inCitation(node.parentElement, root, citations)) ||
+            heldBack(node.parentElement),
           // A formula whose letters are not on the page — an SVG of paths —
           // is highlighted as the drawing, which is.
           box: source?.kind === "math" ? source.box : null,
@@ -1061,11 +1113,11 @@
       }
       node = walker.nextNode();
     }
-    return mergeAltSlices(slices, altSlices(root, range, formulas, skippedAncestor));
+    return mergeAltSlices(slices, altSlices(root, range, formulas, skippedAncestor, heldBack));
   }
 
   /** Image formulas, in tree order, spoken from the alt the page gave them. */
-  function altSlices(root, range, formulas, skippedAncestor) {
+  function altSlices(root, range, formulas, skippedAncestor, heldBack) {
     const images = tagOf(root) === "IMG" ? [root] : [];
     images.push(...root.querySelectorAll("img"));
     const slices = [];
@@ -1075,7 +1127,7 @@
       const source = formulas.sourceFor(widget);
       if (source.kind !== "alt" || source.box !== img || !source.text) continue;
       if (range && !range.intersectsNode(img)) continue;
-      if (skippedAncestor(img)) continue;
+      if (skippedAncestor(img) || heldBack(img)) continue;
       slices.push({
         node: null,
         literal: source.text,
@@ -1179,22 +1231,27 @@
    * A line break is not an ancestor of either side, so the block walk never
    * sees it, and the two lines run together. One the page has hidden is not
    * a break: the words on either side are one line. One inside a ruby
-   * annotation is not a break either: it belongs to the reading, which is
-   * not spoken, and the bases on either side of it are one word.
+   * annotation or an inert subtree is not a break either: it belongs to the
+   * reading, or to the part the page is holding back, and the words on
+   * either side of it stay one sentence.
    */
   function lineBreakBetween(fromNode, toNode, cache) {
     if (!fromNode || !toNode || fromNode === toNode || fromNode.nextSibling === toNode) return false;
     let current = nodeAfter(fromNode);
     for (let guard = 0; current && guard < 200; guard += 1) {
       if (current === toNode) return false;
-      if (current.nodeType === Node.ELEMENT_NODE && current.tagName === "BR" && visible(current, cache)) {
-        return true;
-      }
-      // The annotation sits between the bases in the tree. A break inside it
-      // is part of the reading, and descending would split the word.
-      if (current.nodeType === Node.ELEMENT_NODE && RUBY_ANNOTATION.has(tagOf(current))) {
+      // A break inside a ruby annotation belongs to the reading, which is
+      // not spoken, and descending would split the word. A break inside an
+      // inert subtree belongs to the part the page is holding back.
+      if (
+        current.nodeType === Node.ELEMENT_NODE &&
+        (RUBY_ANNOTATION.has(tagOf(current)) || current.hasAttribute("inert"))
+      ) {
         current = nodeAfter(current);
         continue;
+      }
+      if (current.nodeType === Node.ELEMENT_NODE && current.tagName === "BR" && visible(current, cache)) {
+        return true;
       }
       if (
         current.nodeType === Node.ELEMENT_NODE &&
@@ -1259,9 +1316,11 @@
       const slice = slices[sliceIndex];
       const source = sliceText(slice);
       if (slice.gap) {
-        // The mark is not spoken. Between two words it still has to leave
-        // them apart — `pond[1]lasts` is "pond lasts" — and against punctuation
-        // it has to leave no space, so `water[1],` stays "water,".
+        // A citation mark, or text the page has marked inert, is not spoken.
+        // Between two words it still has to leave them apart — `pond[1]lasts`
+        // and `pond<span inert>held</span>lasts` are both "pond lasts" — and
+        // against punctuation it has to leave no space, so `water[1],` stays
+        // "water,".
         const previous = chars.length ? chars[chars.length - 1] : "";
         const next = nextSpokenChar(slices, sliceIndex);
         if (previous && next && WORD_CHAR.test(previous) && WORD_CHAR.test(next)) pendingSpace = true;
@@ -1363,10 +1422,11 @@
     if (range) {
       let root = range.commonAncestorContainer;
       if (root.nodeType !== Node.ELEMENT_NODE) root = root.parentElement;
-      // A selection of nothing but a snippet, a citation marker, or a ruby
-      // annotation is still text the user picked out and asked to hear, and
-      // silence is not an answer to that — so a selection the filters would
-      // empty is read with those set aside.
+      // A selection of nothing but a snippet, a citation marker, a ruby
+      // annotation, or text the page has marked inert is still text the user
+      // picked out and asked to hear, and silence is not an answer to that —
+      // an empty selection is read as the whole page. So a selection the
+      // filters would empty is read with those set aside.
       const built =
         root &&
         (buildFrom(root, range, null, new Map(), options) ??
@@ -1374,6 +1434,7 @@
             readCodeBlocks: true,
             skipCitations: false,
             skipRuby: false,
+            skipInert: false,
           }));
       return built ? { ...built, root, scope: "selection", mapped: true } : null;
     }

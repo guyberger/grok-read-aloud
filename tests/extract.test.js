@@ -1228,3 +1228,211 @@ test("a selection of an indented label reads nothing, and one around it drops th
   assert.ok(around.text.includes("The wheel turns for as long as the pond lasts."));
   assert.ok(!around.text.includes("Mill pond home"), "the indented label inside the selection was read");
 });
+
+test("text the page has marked inert is left unread, and the article around it is read", { skip }, async () => {
+  const { page, extract } = await read("inert.html");
+
+  const setup = await page.evaluate(`
+    (() => {
+      const decoy = document.getElementById("decoy");
+      const real = document.getElementById("real");
+      const style = getComputedStyle(decoy);
+      return {
+        id: globalThis.__readAloud.extract.findMainContent()?.id ?? "",
+        display: style.display,
+        ariaHidden: decoy.getAttribute("aria-hidden"),
+        inert: decoy.hasAttribute("inert"),
+        decoyChars: decoy.textContent.length,
+        realChars: real.textContent.length,
+      };
+    })()
+  `);
+  assert.equal(setup.display, "block", "the decoy article is no longer painted");
+  assert.equal(setup.ariaHidden, null, "the decoy is hidden by aria-hidden rather than by inert");
+  assert.equal(setup.inert, true, "the decoy article is no longer inert");
+  assert.ok(setup.decoyChars > setup.realChars, "the decoy no longer outruns the article on raw text");
+  assert.equal(setup.id, "real", "an inert article was chosen over the one on screen");
+
+  const doc = await extract();
+  assert.ok(doc, "whole-page extraction returned nothing");
+
+  const kept = [
+    "How a mill pond holds the tide",
+    "The wheel turns for as long as the pond lasts.",
+    "A pond lasts the winter.",
+    "Water, and then the wheel.",
+    "The gate holds through the night.",
+    "The wheel turns.\nThe pond refills.",
+    "Passed the sentence stays one sentence.",
+    "Kept beside the wheel.",
+    "The visible slide is the one on screen.",
+    "Before the panel.\nAfter the panel.",
+    "The relation stays a sentence.",
+    "Power is E=mc2 when the gate is open.",
+    "The drawing stays a drawing.",
+    "Fixed bar still on screen.",
+    "including the words past the second line",
+    "This paragraph sits below the fold",
+    "Millers slept in turns",
+  ];
+  for (const phrase of kept) {
+    assert.ok(doc.text.includes(phrase), `missing "${phrase}"\n---\n${doc.text}`);
+  }
+
+  const absent = [
+    "Decoy slide",
+    "held back label",
+    "pondlasts",
+    "pond held",
+    "Water ,",
+    "The gate\nholds",
+    "shut",
+    "through a held wrapper",
+    "boxless held label",
+    "The next slide is held",
+    "The third slide is held",
+    "eel traps",
+    "nested inside the held",
+    "Qx=9",
+    "QXHELD",
+    "E=mc^2",
+    "h = 3",
+    "Fixed bar inside a held panel",
+    "Padded slide",
+    "Navigation:",
+    "Footer:",
+    "turnsheld",
+    "gatestays",
+  ];
+  for (const phrase of absent) {
+    assert.ok(!doc.text.includes(phrase), `"${phrase}" was read\n---\n${doc.text}`);
+  }
+
+  assert.equal(doc.text.split("E=mc2").length - 1, 1, `the live formula was read more than once\n---\n${doc.text}`);
+
+  const mapped = await page.evaluate(`
+    (() => {
+      const { extract } = globalThis.__readAloud;
+      const built = extract.extract("page");
+      const at = built.text.indexOf("lasts the winter");
+      const range = at < 0 ? null : extract.rangeFor(built, at, at + "lasts".length);
+      const parent = range && range.startContainer.parentElement;
+      const held = document.getElementById("tight-held");
+      held.scrollIntoView({ block: "center" });
+      const rect = held.getBoundingClientRect();
+      const hit = extract.charIndexFromPoint(built, rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return { spoken: range ? range.toString() : "", id: parent ? parent.id : "", hit };
+    })()
+  `);
+  assert.equal(mapped.spoken, "lasts");
+  assert.equal(mapped.id, "tight", "the word after a held label was mapped onto the label");
+  assert.equal(mapped.hit, -1, "a click on held text landed in the read");
+});
+
+test("taking inert off reads what the page was holding, including a formula", { skip }, async () => {
+  const { page, extract } = await read("inert.html");
+
+  const hidden = await extract();
+  assert.ok(!hidden.text.includes("eel traps"));
+  assert.ok(!hidden.text.includes("Qx=9"));
+  assert.ok(!hidden.text.includes("The next slide is held"));
+
+  await page.evaluate(`
+    (() => {
+      document.getElementById("panel").removeAttribute("inert");
+      document.querySelector("#held-formula .katex").removeAttribute("inert");
+      document.querySelector(".slides p[inert]").removeAttribute("inert");
+      return true;
+    })()
+  `);
+
+  const shown = await extract();
+  assert.ok(shown.text.includes("The folded answer about eel traps stays unread until the panel is opened."));
+  assert.ok(
+    !shown.text.includes("nested inside the held"),
+    "opening the outer panel read the nested one that is still inert",
+  );
+  assert.ok(shown.text.includes("The relation Qx=9 stays a sentence."), `formula was ${shown.text}`);
+  assert.ok(!shown.text.includes("QXHELD"), "the TeX annotation of a shown formula was read");
+  assert.ok(shown.text.includes("The next slide is held until it is shown."));
+  assert.ok(!shown.text.includes("The third slide is held"), "a slide still marked inert was read");
+  assert.ok(shown.text.includes("Before the panel."));
+  assert.ok(shown.text.includes("After the panel."));
+  assert.ok(!shown.text.includes("Decoy slide"), "clearing one inert attribute read the decoy article");
+});
+
+test("the article is still read when it is itself inert, and a selection of a held part is read", { skip }, async () => {
+  const { page, extract } = await read("inert.html");
+
+  await page.evaluate(`
+    (() => {
+      document.getElementById("decoy").remove();
+      document.getElementById("real").setAttribute("inert", "");
+      return true;
+    })()
+  `);
+
+  const doc = await extract();
+  assert.ok(doc, "an inert article extracted to nothing");
+  assert.ok(doc.text.includes("How a mill pond holds the tide"), "marking the article inert dropped the page");
+  assert.ok(doc.text.includes("Millers slept in turns"));
+  assert.ok(!doc.text.includes("eel traps"), "a held panel inside an inert article was read");
+  assert.ok(!doc.text.includes("Decoy slide"));
+
+  const select = async (id) => {
+    await page.evaluate(`
+      (() => {
+        const range = document.createRange();
+        range.selectNodeContents(document.getElementById(${JSON.stringify(id)}));
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return true;
+      })()
+    `);
+    return extract("selection");
+  };
+
+  const only = await select("panel");
+  assert.ok(only, "a selection of the held panel extracted to nothing");
+  assert.equal(only.scope, "selection");
+  assert.ok(only.text.includes("eel traps"));
+  assert.ok(!only.text.includes("nested inside the held"), "the nested held panel inside the selection was read");
+  assert.ok(!only.text.includes("How a mill pond holds the tide"), "the selection spread to the whole page");
+
+  const label = await select("tight-held");
+  assert.ok(label, "a selection of the held label extracted to nothing");
+  assert.equal(label.text, "held");
+
+  const around = await select("tight");
+  assert.ok(around, "the sentence extracted to nothing");
+  assert.equal(around.scope, "selection");
+  assert.ok(around.text.includes("A pond lasts the winter."));
+  assert.ok(!around.text.includes("held"), "the held label inside the selection was read");
+});
+
+test("a box padded with inert text does not outscore the notes beside it", { skip }, async () => {
+  const { page, extract } = await read("inert.html");
+
+  const picked = await page.evaluate(`
+    (() => {
+      document.getElementById("decoy").remove();
+      document.getElementById("real").remove();
+      const pile = document.getElementById("pile");
+      const padded = document.getElementById("padded");
+      return {
+        id: globalThis.__readAloud.extract.findMainContent()?.id ?? "",
+        pileChars: pile.textContent.length,
+        paddedChars: padded.textContent.length,
+      };
+    })()
+  `);
+  assert.ok(picked.paddedChars > picked.pileChars, "the padded box no longer holds more text");
+  assert.equal(picked.id, "pile", "inert text inside a box was allowed to win the score");
+
+  const doc = await extract();
+  assert.ok(doc.text.includes("Pile one."));
+  assert.ok(doc.text.includes("Pile three."));
+  assert.ok(!doc.text.includes("Padded slide"), "the held slide was read with the notes");
+  assert.ok(!doc.text.includes("Pad one."), "the padded box was chosen as the page");
+});

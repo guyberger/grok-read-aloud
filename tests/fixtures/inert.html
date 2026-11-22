@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How a Mill Pond Holds the Tide — Held Text</title>
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.6 Georgia, "Times New Roman", serif;
+        color: #1d1d1f;
+        background: #fbfbf9;
+      }
+      nav,
+      footer {
+        background: #e8e8e4;
+        padding: 14px 20px;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+      article {
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 80px;
+      }
+      h1 {
+        font-size: 32px;
+        line-height: 1.2;
+      }
+      .contents {
+        display: contents;
+      }
+      .panel {
+        margin: 16px 0;
+        padding: 12px 14px;
+        border: 1px solid #d8d4c8;
+        background: #fff;
+      }
+      .fixed-on {
+        position: fixed;
+        bottom: 8px;
+        left: 8px;
+        margin: 0;
+        background: #fbfbf9;
+      }
+      .fixed-held {
+        position: fixed;
+        bottom: 8px;
+        right: 8px;
+        margin: 0;
+        background: #fbfbf9;
+      }
+      .clamp {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        width: 240px;
+      }
+      .spacer {
+        height: 2400px;
+      }
+      .below {
+        content-visibility: auto;
+      }
+      .katex {
+        display: inline-block;
+        position: relative;
+      }
+      .katex-mathml {
+        position: absolute;
+        clip: rect(1px, 1px, 1px, 1px);
+        height: 1px;
+        width: 1px;
+        overflow: hidden;
+        padding: 0;
+        border: 0;
+      }
+      .katex-html {
+        display: inline-block;
+      }
+      .mwe-math-mathml-a11y {
+        display: none;
+      }
+      .formula-img {
+        width: 48px;
+        height: 18px;
+        vertical-align: middle;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>Navigation: site furniture that must stay unread</nav>
+
+    <!-- Painted, in the tree, and longer than the article. Inert is the only
+         reason it loses. -->
+    <article id="decoy" inert>
+      <h1>Decoy slide the page has set aside</h1>
+      <p>
+        Decoy slide the page has set aside. The winter work of a second article stays in the tree and on
+        the screen, with the eel traps lifted, the sluice boards stacked, and the wheel chocked so it
+        cannot turn while the pond is empty. None of that is the page being read, however long it runs.
+      </p>
+      <p>
+        Decoy slide continued. The families who kept the decoy watch walked the banks at dusk and again
+        before dawn, counting boards and listening for a leak, and the count was written on a slate that
+        hung in the gear shed until the pond was filled again in the spring.
+      </p>
+      <p>
+        Decoy slide continued. A held article can outrun the one on screen by a wide margin and still be
+        the wrong one to read: every extra sentence here exists so a score of raw text would pick this
+        slide, and the read has to refuse it because the page marked the slide inert.
+      </p>
+      <p>
+        Decoy slide continued. The archive of that winter lists the nights the gate froze, the mornings
+        the rope was stiff, and the afternoons the ice on the pond was thick enough to walk, none of
+        which belongs in the reading of the article beside it.
+      </p>
+      <p>
+        Decoy slide continued. When the thaw came the boards went back in the order they had come out,
+        the chocks came off the wheel, and the first turn of the season was slow because the bearings
+        had sat dry since the last ebb of autumn.
+      </p>
+      <p>
+        Decoy slide continued. The slate in the gear shed was wiped for the new season only after the
+        pond had held a full tide, which is the last line of a slide the page is still holding back.
+      </p>
+      <p>
+        Decoy slide continued. The ledger beside the slate names every tide the wheel turned that
+        winter and every tide it did not, and the names are the reason this slide is longer than the
+        article on screen: a count of characters would stop here, and the read has to keep going to
+        the article the page actually has open.
+      </p>
+      <p>
+        Decoy slide continued. Boards, ropes, bearings, chocks, and the key to the gear shed are all
+        listed twice, once for the putting away and once for the taking out, and the second list is
+        written smaller because it was copied from the first on a cold morning.
+      </p>
+      <p>
+        Decoy slide continued. None of those lines is the mill pond the reader asked for. They stay in
+        the document, they stay painted, and they stay unread for as long as the slide carries inert.
+      </p>
+    </article>
+
+    <article id="real">
+      <h1>How a mill pond holds the tide</h1>
+
+      <p id="opening">
+        The wheel turns <span id="held" inert>held back label</span> for as long as the pond lasts.
+      </p>
+      <p id="tight">A pond<span id="tight-held" inert>held</span>lasts the winter.</p>
+      <p id="punct">Water<span inert>nope</span>, and then the wheel.</p>
+      <p id="break">The gate<span inert>stays<br />shut</span> holds through the night.</p>
+      <p>The wheel turns.<br />The pond refills.</p>
+
+      <p>Passed <span class="contents" inert>through a held wrapper</span> the sentence stays one sentence.</p>
+      <p>Kept <span class="contents"><span inert>boxless held label</span></span> beside the wheel.</p>
+
+      <div class="slides">
+        <p>The visible slide is the one on screen.</p>
+        <p inert>The next slide is held until it is shown.</p>
+        <p inert>The third slide is held with it.</p>
+      </div>
+
+      <p>Before the panel.</p>
+      <div id="panel" class="panel" inert>
+        <p>The folded answer about eel traps stays unread until the panel is opened.</p>
+        <div inert>
+          <p>A panel nested inside the held one stays unread too.</p>
+        </div>
+      </div>
+      <p>After the panel.</p>
+
+      <p id="held-formula">
+        The relation
+        <span class="katex" inert>
+          <span class="katex-mathml">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">
+              <semantics>
+                <mrow><mi>Q</mi><mi>x</mi><mo>=</mo><mn>9</mn></mrow>
+                <annotation encoding="application/x-tex">QXHELD</annotation>
+              </semantics>
+            </math>
+          </span>
+          <span class="katex-html" aria-hidden="true"><span>Q</span><span>x</span><span>=</span><span>9</span></span>
+        </span>
+        stays a sentence.
+      </p>
+
+      <p id="live-formula">
+        Power is
+        <span class="katex">
+          <span class="katex-mathml">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">
+              <semantics>
+                <mrow><mi>E</mi><mo>=</mo><mi>m</mi><mi>c</mi><mn>2</mn></mrow>
+                <annotation encoding="application/x-tex">E=mc^2</annotation>
+              </semantics>
+            </math>
+          </span>
+          <span class="katex-html" aria-hidden="true"><span>E</span><span>=</span><span>m</span><span>c</span><span>2</span></span>
+        </span>
+        when the gate is open.
+      </p>
+
+      <p id="held-drawing">
+        The drawing
+        <span class="mwe-math-element" inert>
+          <span class="mwe-math-mathml-a11y">
+            <math xmlns="http://www.w3.org/1998/Math/MathML"><mi>h</mi><mo>=</mo><mn>3</mn></math>
+          </span>
+          <img class="formula-img" alt="h = 3" aria-hidden="true" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" />
+        </span>
+        stays a drawing.
+      </p>
+
+      <div inert>
+        <p id="fixed-held" class="fixed-held">Fixed bar inside a held panel.</p>
+      </div>
+      <p id="fixed-shown" class="fixed-on">Fixed bar still on screen.</p>
+
+      <p class="clamp">
+        The overflow of this sentence is clamped and still read in full, including the words past the
+        second line.
+      </p>
+
+      <p>
+        A tide mill fills a pond on the way in and empties it through a wheel on the way out. The families
+        living nearest the water learned the sound of the gate the way other people learn a clock, and the
+        shift changed when the tide did rather than when a bell did.
+      </p>
+      <p>
+        Millers slept in turns because the tide does not keep office hours. The gate opens on the flood,
+        the pond takes what the sea will give, and the wheel is left to run until the level falls below
+        the buckets and the stone slows to a stop.
+      </p>
+      <p>
+        Nothing about the work was written down at first. The order of the gates, the depth that meant a
+        full pond, and the sound of a wheel running dry were carried by the people who slept beside it.
+      </p>
+
+      <div class="spacer"></div>
+      <p class="below">This paragraph sits below the fold and is still part of the page.</p>
+    </article>
+
+    <div id="pile">
+      <p>
+        Pile one. The working notes of the mill fill a real box on the page and are long enough to be the
+        body when no article is left to choose from, with the wheel and the pond and the gate all named
+        in the notes the keeper kept by the door.
+      </p>
+      <p>
+        Pile two. Those notes list the mornings the rope was stiff and the evenings the pond was already
+        full before the shift began, and they stay the notes even when a neighbouring box holds more
+        words that the page has marked off.
+      </p>
+      <p>
+        Pile three. A box that is mostly a held slide must not win on the strength of the slide, so the
+        notes here have to be chosen for the words that are actually in reach.
+      </p>
+    </div>
+
+    <div id="padded">
+      <p>Pad one.</p>
+      <p>Pad two.</p>
+      <p>Pad three.</p>
+      <div inert>
+        <p>
+          Padded slide one that must not decide which box is the page. The slide goes on about boards and
+          ropes and a slate in a shed, and every extra line is weight a raw count would treat as the
+          article. It is held back, and the box around it is not the page.
+        </p>
+        <p>
+          Padded slide two. More of the same held text, enough that this box outruns the notes beside it
+          if the held part is allowed to count, which is the mistake the score has to refuse.
+        </p>
+        <p>
+          Padded slide three. The last of the held weight, still longer than the notes, still not the
+          thing the page is offering to be read. The slide keeps going so the box that holds it is
+          heavier, on a raw count, than the notes beside it, which is the whole of the trap.
+        </p>
+        <p>
+          Padded slide four. Another held paragraph of ropes, boards, and a slate, added so there is
+          no tie to hide in and no way for the notes to win by being merely as long.
+        </p>
+      </div>
+    </div>
+
+    <footer>Footer: terms and credits.</footer>
+  </body>
+</html>
