@@ -206,7 +206,11 @@
         // A speed change swaps the source under a play that is still
         // starting, which aborts it; the swap starts the new source itself.
         return audio.play().catch((error) => {
-          if (error?.name === "AbortError" && audio.src !== playing) return;
+          // A pause or a new chunk aborts the play() that was still starting.
+          // That is the pause landing, or the swap starting its own source —
+          // not a failure of this one. `src` differs once the swap has
+          // replaced it; `wanted` differs once pause or stop asked first.
+          if (error?.name === "AbortError" && (audio.src !== playing || wanted !== "playing")) return;
           throw error;
         });
       },
@@ -318,6 +322,14 @@
     /** Where playback is, or starts from, in seconds of the original audio. */
     let offset = 0;
     let playing = false;
+    /**
+     * What this engine was last asked for. A start that is still resuming the
+     * audio context has not set `playing` yet, and a pause in that window has
+     * to be remembered or the resume finishes by starting the audio anyway.
+     */
+    let wanted = "paused";
+    /** Bumped by pause, stop, load and a newer start, so the one they overtook drops out. */
+    let playId = 0;
     let endedHandler = () => {};
 
     const currentTime = () =>
@@ -336,8 +348,12 @@
     }
 
     async function startPlayback() {
-      if (!buffer || playing) return;
+      const mine = ++playId;
+      if (!buffer || wanted !== "playing" || playing) return;
       if (context.state === "suspended") await context.resume();
+      // Pause, stop, a new chunk or a newer start may have landed while the
+      // context was resuming. Starting afterwards would undo that.
+      if (mine !== playId || !buffer || wanted !== "playing" || playing) return;
       source = context.createBufferSource();
       source.buffer = buffer;
       source.playbackRate.value = 1;
@@ -377,6 +393,8 @@
         return leadSeconds;
       },
       async load(nextBytes, _contentType, atRate = rate, nextLead = 0) {
+        playId += 1;
+        wanted = "paused";
         teardown(true);
         playing = false;
         offset = 0;
@@ -404,23 +422,31 @@
           if (mine === loadId) loading = false;
         }
       },
-      play: () => startPlayback(),
+      play() {
+        wanted = "playing";
+        return startPlayback();
+      },
       // A buffer source cannot move, so seeking means replacing it.
       seek(time) {
         const target = Math.max(0, Math.min(time + leadSeconds, duration));
-        const wasPlaying = playing;
+        const resume = wanted === "playing";
+        playId += 1;
         teardown(true);
         playing = false;
         offset = target;
-        if (wasPlaying) startPlayback().catch(() => {});
+        if (resume) startPlayback().catch(() => {});
       },
       pause() {
+        wanted = "paused";
+        playId += 1;
         if (!playing) return;
         offset = currentTime();
         playing = false;
         teardown(true);
       },
       stop() {
+        wanted = "paused";
+        playId += 1;
         playing = false;
         teardown(true);
         offset = leadSeconds;
@@ -436,13 +462,15 @@
         const stale = () => mine !== rateId || load !== loadId;
         const rendered = await bufferFor(next, stale).catch(() => null);
         if (!rendered || stale()) return;
-        const wasPlaying = playing;
         offset = currentTime();
+        playId += 1;
         teardown(true);
         playing = false;
         buffer = rendered.buffer;
         shownRate = rendered.rate;
-        if (wasPlaying) startPlayback().catch(() => {});
+        // A pause during the render has the say: finishing the swap must not
+        // start audio the listener has since asked to stop.
+        if (wanted === "playing") await startPlayback();
       },
       onEnded(handler) {
         endedHandler = handler;
@@ -450,6 +478,8 @@
       destroy() {
         loadId += 1;
         rateId += 1;
+        playId += 1;
+        wanted = "paused";
         teardown(true);
         buffer = null;
         bytes = null;
@@ -468,6 +498,51 @@
     let engine = null;
     let rate = 1;
     let ended = onEnded;
+    /**
+     * Which `play()` is the one still wanted. Pause, stop, a new chunk and a
+     * newer play all move it on, and a start that has fallen behind does not
+     * get to begin — including one that was waiting for a click.
+     */
+    let playGeneration = 0;
+    /** Resolves the gesture wait with "no longer wanted", if one is armed. */
+    let cancelGesture = null;
+
+    function endGestureWait() {
+      const cancel = cancelGesture;
+      cancelGesture = null;
+      cancel?.();
+    }
+
+    function invalidatePlay() {
+      playGeneration += 1;
+      endGestureWait();
+    }
+
+    /**
+     * The next click or key press on the page. The click listener is the
+     * bubble phase, registered after the one that jumps to a sentence, so
+     * that jump can retire this wait before the click starts the audio the
+     * listener is leaving.
+     */
+    function waitForGesture() {
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (allowed) => {
+          if (settled) return;
+          settled = true;
+          document.removeEventListener("click", onClick);
+          document.removeEventListener("keydown", onKeyDown, true);
+          if (cancelGesture === cancel) cancelGesture = null;
+          resolve(allowed);
+        };
+        const onClick = () => finish(true);
+        const onKeyDown = () => finish(true);
+        const cancel = () => finish(false);
+        cancelGesture = cancel;
+        document.addEventListener("click", onClick);
+        document.addEventListener("keydown", onKeyDown, true);
+      });
+    }
 
     /**
      * Loads take a moment now — the audio is decoded and stretched first — so
@@ -510,26 +585,30 @@
      * Browsers block audio that was not started by a gesture on the page
      * itself. When that happens, wait for the next click or key press and
      * resume from there instead of failing the whole session.
+     *
+     * The wait is armed only while this play is still the one wanted. Stop,
+     * pause, a jump and a newer play all retire it, so the click that arrives
+     * afterwards is just a click — it does not start a read that has since
+     * been called off. Resolves false when this play was retired, true when
+     * audio actually started.
      */
     async function playWithGestureFallback() {
+      if (!engine) return false;
+      const mine = ++playGeneration;
+      endGestureWait();
+      const stale = () => mine !== playGeneration || !engine;
+
       try {
         await engine.play();
-        return true;
       } catch (error) {
+        if (stale()) return false;
         if (error?.name !== "NotAllowedError") throw error;
         onBlocked?.();
-        await new Promise((resolve) => {
-          const retry = () => {
-            document.removeEventListener("pointerdown", retry, true);
-            document.removeEventListener("keydown", retry, true);
-            resolve();
-          };
-          document.addEventListener("pointerdown", retry, true);
-          document.addEventListener("keydown", retry, true);
-        });
+        const allowed = await waitForGesture();
+        if (!allowed || stale()) return false;
         await engine.play();
-        return true;
       }
+      return !stale();
     }
 
     return {
@@ -552,12 +631,30 @@
         };
       },
       async load(bytes, contentType, options = {}) {
+        // A chunk that is about to be replaced must not have its pending
+        // start complete against the new bytes.
+        invalidatePlay();
         const lead = Number(options?.lead) || 0;
         await engineFor(bytes, contentType, lead);
       },
       play: () => playWithGestureFallback(),
-      pause: () => engine?.pause(),
-      stop: () => engine?.stop(),
+      pause() {
+        invalidatePlay();
+        engine?.pause();
+      },
+      stop() {
+        invalidatePlay();
+        engine?.stop();
+      },
+      /**
+       * Drop a start that has not produced sound yet. Audio already playing
+       * is left to run: a jump keeps the chunk in progress until the next one
+       * is ready. A play still waiting for a click must not survive, or the
+       * click that asked for the new place would start the old one.
+       */
+      cancelStart() {
+        invalidatePlay();
+      },
       seek: (time) => engine?.seek(time),
       getTime: () => engine?.getTime() ?? 0,
       getDuration: () => engine?.getDuration() ?? 0,
@@ -566,6 +663,7 @@
         engine?.setRate(next)?.catch?.(() => {});
       },
       destroy() {
+        invalidatePlay();
         ended = null;
         engine?.destroy();
         engine = null;

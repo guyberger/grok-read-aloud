@@ -601,6 +601,8 @@ cannot sign into a Google account
 - [ ] With a deliberately wrong key, the popup shows that the key was rejected.
 - [ ] On a page you have not clicked yet, if audio is blocked, both the page and
       the popup say to click the page once — and clicking it starts playback.
+- [ ] Stop, or pause, before that click: clicking the page does not start the
+      audio. Pressing Read or Resume asks again, and that click does.
 - [ ] On `chrome://extensions` or another internal page, the popup explains that
       the page cannot be read instead of appearing to hang.
 
@@ -1941,7 +1943,11 @@ plays, so that playback is really tested — out of the speakers.
 - **Audio can need one click.** Browsers block audio that was not started by a
   gesture *on the page itself*, and clicking the toolbar popup does not count.
   When that happens the extension says so in both the page and the popup, and
-  starts as soon as you click anywhere on the page. Chrome stops blocking a site
+  starts as soon as you click anywhere on the page. Stopping or pausing before
+  that click retires the wait, and so does jumping to another sentence: a later
+  click is not a way to start a read that has since been called off. A pause
+  that lands while playback is still starting stays a pause, rather than a
+  failed request. Chrome stops blocking a site
   once you have played audio there a few times. Routing playback through a
   Chrome offscreen document would remove the click on Chrome, but Firefox has no
   equivalent, so v1 keeps one shared path.

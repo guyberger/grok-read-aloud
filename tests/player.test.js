@@ -389,3 +389,204 @@ test("a speed change while play is still starting does not fail the play", { ski
   assert.equal(result.playback.stretchedRate, 0.5);
   assert.ok(result.time > 0, "it never got going");
 });
+
+test("a pause that lands while play() is still starting is not a failed play", { skip }, async () => {
+  const page = await browser.open(fixtureUrl("article.html"), PREAMBLE);
+  pages.push(page);
+  const bytes = JSON.stringify([...toneWav()]);
+  const result = await page.evaluate(`
+    (async () => {
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      globalThis.events = [];
+      const player = globalThis.__readAloud.player.createPlayer({
+        onPausedOutside: () => globalThis.events.push("paused-outside"),
+        onResumedOutside: () => globalThis.events.push("resumed-outside"),
+      });
+      await player.load(new Uint8Array(${bytes}), "audio/wav");
+      const element = globalThis.__elements[0];
+      const realPlay = element.play.bind(element);
+      let rejectPlay = null;
+      element.play = () =>
+        new Promise((_resolve, reject) => {
+          rejectPlay = () =>
+            reject(new DOMException("The play() request was interrupted by a call to pause().", "AbortError"));
+        });
+      const pending = player.play().then(
+        (value) => ({ value }),
+        (error) => ({ error: error.name }),
+      );
+      for (let i = 0; i < 50 && !rejectPlay; i += 1) await sleep(10);
+      player.pause();
+      rejectPlay();
+      const outcome = await pending;
+      element.play = realPlay;
+      const again = await player.play().then(
+        (value) => value,
+        (error) => error.name,
+      );
+      await sleep(150);
+      return {
+        outcome,
+        again,
+        time: player.getTime(),
+        paused: element.paused,
+        events: globalThis.events,
+      };
+    })()
+  `);
+
+  assert.deepEqual(result.outcome, { value: false });
+  assert.deepEqual(result.events, [], `the pause was reported as ${result.events.join(", ")}`);
+  assert.equal(result.again, true, "the player would not start again after the interrupted play");
+  assert.equal(result.paused, false);
+  assert.ok(result.time > 0, "the later play never started");
+});
+
+test("a play the page has not allowed yet stays retired after stop, and starts on a later click", { skip }, async () => {
+  const page = await browser.open(fixtureUrl("article.html"), PREAMBLE);
+  pages.push(page);
+  const bytes = JSON.stringify([...toneWav({ seconds: 2 })]);
+  const result = await page.evaluate(`
+    (async () => {
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const player = globalThis.__readAloud.player.createPlayer({
+        onBlocked: () => {
+          globalThis.blocked = (globalThis.blocked || 0) + 1;
+        },
+      });
+      await player.load(new Uint8Array(${bytes}), "audio/wav");
+      const element = globalThis.__elements[0];
+      const realPlay = element.play.bind(element);
+      let plays = 0;
+      let allow = false;
+      element.play = () => {
+        plays += 1;
+        if (!allow) return Promise.reject(new DOMException("not allowed", "NotAllowedError"));
+        return realPlay();
+      };
+      const untilBlocked = async (n) => {
+        for (let i = 0; i < 50 && (globalThis.blocked || 0) < n; i += 1) await sleep(10);
+        if ((globalThis.blocked || 0) < n) throw new Error("play was never blocked");
+      };
+
+      const retired = player.play().then(
+        (value) => value,
+        (error) => error.name,
+      );
+      await untilBlocked(1);
+      const playsAtBlock = plays;
+      player.cancelStart();
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      document.body.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "a" }));
+      const afterCancel = await retired;
+
+      const stopped = player.play().then(
+        (value) => value,
+        (error) => error.name,
+      );
+      await untilBlocked(2);
+      player.stop();
+      document.body.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "a" }));
+      await sleep(30);
+      const afterStop = await stopped;
+
+      const started = player.play().then(
+        (value) => value,
+        (error) => error.name,
+      );
+      await untilBlocked(3);
+      const playsBeforeGesture = plays;
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      await sleep(30);
+      const playsAfterPointerDown = plays;
+      allow = true;
+      document.body.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      const afterClick = await started;
+      await sleep(150);
+      return {
+        afterCancel,
+        afterStop,
+        afterClick,
+        playsAtBlock,
+        playsBeforeGesture,
+        playsAfterPointerDown,
+        plays,
+        time: player.getTime(),
+        paused: element.paused,
+      };
+    })()
+  `);
+
+  assert.equal(result.afterCancel, false, "cancelStart left the blocked play armed");
+  assert.equal(result.afterStop, false, "stop left the blocked play armed");
+  assert.equal(result.playsAtBlock, 1, "the refused play was retried before any gesture");
+  assert.equal(
+    result.playsAfterPointerDown,
+    result.playsBeforeGesture,
+    "a pointer press started playback before the click",
+  );
+  assert.equal(result.afterClick, true);
+  assert.equal(result.paused, false);
+  assert.ok(result.time > 0, "the click never started playback");
+  assert.equal(result.plays, result.playsBeforeGesture + 1, "the click did not retry the refused play");
+});
+
+test("pausing while the audio context is resuming does not start playback", { skip }, async () => {
+  const page = await browser.open(fixtureUrl("csp-strict.html"), PREAMBLE);
+  pages.push(page);
+  const bytes = JSON.stringify([...toneWav({ seconds: 2, hz: 330 })]);
+  const result = await page.evaluate(`
+    (async () => {
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const Real = window.AudioContext;
+      window.AudioContext = function Gate(options) {
+        const context = new Real(options);
+        const resume = context.resume.bind(context);
+        let opened = false;
+        context.resume = () => {
+          if (opened) return resume();
+          return new Promise((resolve, reject) => {
+            window.__releaseResume = () => {
+              opened = true;
+              window.__releaseResume = null;
+              resume().then(resolve, reject);
+            };
+          });
+        };
+        window.__audioContext = context;
+        return context;
+      };
+      const player = globalThis.__readAloud.player.createPlayer({});
+      await player.load(new Uint8Array(${bytes}), "audio/wav");
+      if (window.__audioContext?.state === "running") await window.__audioContext.suspend();
+      const pending = player.play().then(
+        (value) => value,
+        (error) => error.name,
+      );
+      for (let i = 0; i < 50 && !window.__releaseResume; i += 1) await sleep(10);
+      if (!window.__releaseResume) throw new Error("playback never tried to resume the audio context");
+      player.pause();
+      window.__releaseResume();
+      const outcome = await pending;
+      await sleep(200);
+      const held = player.getTime();
+      await player.play();
+      await sleep(200);
+      return {
+        outcome,
+        held,
+        time: player.getTime(),
+        playback: player.playback,
+      };
+    })()
+  `);
+
+  assert.equal(result.outcome, false, "the pause lost to the resume that was already in flight");
+  assert.ok(result.held < 0.05, `playback advanced ${result.held}s after the pause`);
+  assert.equal(result.playback.engine, "webaudio");
+  assert.equal(result.playback.pitchPreserving, true);
+  assert.equal(result.playback.rate, 1);
+  assert.ok(result.time > 0.05, "a later play never started");
+});

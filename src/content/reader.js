@@ -409,13 +409,18 @@
     // that never gets as far as audio — no credential, a request that failed
     // — never silences a tab that is working.
     handoff.take();
+    let started = false;
     try {
-      await audio.play();
+      started = await audio.play();
     } catch (error) {
       if (session !== sessionId) return;
       throw error;
     }
-    if (session !== sessionId) return;
+    // Stop, pause or a newer read may have landed while this was waiting to
+    // start — either on the element, or for a click the page still owes us.
+    // That wait is over: it must not start the loop, or clear the notice, for
+    // a read that is no longer the one playing.
+    if (session !== sessionId || state.status !== "playing" || started === false) return;
     if (state.notice === BLOCKED_NOTICE) {
       state.notice = "";
       emit();
@@ -627,6 +632,9 @@
     player?.pause();
     stopLoop();
     rememberPosition({ force: true });
+    // The invitation to click the page belongs to a start that is still
+    // waiting. A pause is the listener answering it themselves.
+    if (state.notice === BLOCKED_NOTICE) state.notice = "";
     state.status = "paused";
     emit();
     return snapshot();
@@ -642,7 +650,10 @@
     state.status = "playing";
     emit();
     handoff.take();
-    await player?.play();
+    const started = await player?.play();
+    // A pause or a stop during the wait to start has already said so. The
+    // loop belongs to a read that is actually going.
+    if (state.status !== "playing" || started === false) return snapshot();
     startLoop();
     return snapshot();
   }
@@ -784,8 +795,13 @@
 
     // Whatever the old position was loading or prefetching is no longer what
     // comes next, so retire that generation before starting the new one.
+    // And retire a start that was still waiting for a click: this click is
+    // the jump, and it must not also be the click that starts the audio
+    // being left behind. Audio already playing is left playing until the
+    // next chunk takes over.
     sessionId += 1;
     stopLoop();
+    player?.cancelStart();
 
     let target = align.chunkIndexFor(chunks, wordStart);
     let startTime = 0;
