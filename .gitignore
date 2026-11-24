@@ -1,4 +1,5 @@
 dist/
+fuzz-out/
 node_modules/
 *.zip
 .env

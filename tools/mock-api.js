@@ -59,6 +59,17 @@ const LATENCY = {
   perChar: Number(args.get("latency-per-char") ?? 0),
   timestamps: Number(args.get("latency-timestamps") ?? 0),
 };
+const INITIAL_LATENCY = { ...LATENCY };
+
+/**
+ * Optional fault injection for the fuzz harness. Empty unless a test posts to
+ * `/debug/fault` or `/debug/timing`. A normal run, including the end-to-end
+ * check, never sets these, so the responses below are unchanged.
+ */
+const faults = {
+  mode: "",
+  remaining: 0,
+};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -627,8 +638,36 @@ async function handle(request, response) {
   }
 
   const url = new URL(request.url, "https://api.x.ai");
-  if (url.pathname === "/debug/requests") {
-    send(response, 200, { requests: served });
+  if (url.pathname === "/debug/requests" && request.method === "GET") {
+    send(response, 200, { requests: served, fault: { ...faults }, latency: { ...LATENCY } });
+    return;
+  }
+
+  // The fuzz harness steers latency and faults between scenarios. Nothing
+  // else posts here, and the bearer token is never read or written back.
+  if (url.pathname === "/debug/reset" && request.method === "POST") {
+    served.length = 0;
+    faults.mode = "";
+    faults.remaining = 0;
+    LATENCY.base = INITIAL_LATENCY.base;
+    LATENCY.perChar = INITIAL_LATENCY.perChar;
+    LATENCY.timestamps = INITIAL_LATENCY.timestamps;
+    send(response, 200, { ok: true, latency: { ...LATENCY } });
+    return;
+  }
+  if (url.pathname === "/debug/timing" && request.method === "POST") {
+    const body = JSON.parse((await readBody(request)).toString("utf8") || "{}");
+    if (body.base != null) LATENCY.base = Number(body.base);
+    if (body.perChar != null) LATENCY.perChar = Number(body.perChar);
+    if (body.timestamps != null) LATENCY.timestamps = Number(body.timestamps);
+    send(response, 200, { ...LATENCY });
+    return;
+  }
+  if (url.pathname === "/debug/fault" && request.method === "POST") {
+    const body = JSON.parse((await readBody(request)).toString("utf8") || "{}");
+    faults.mode = String(body.mode ?? "");
+    faults.remaining = Number(body.remaining ?? 0);
+    send(response, 200, { mode: faults.mode, remaining: faults.remaining });
     return;
   }
 
@@ -670,16 +709,53 @@ async function handle(request, response) {
   }
 
   if (url.pathname === "/v1/tts" && request.method === "POST") {
-    const chunks = [];
-    for await (const chunk of request) chunks.push(chunk);
+    const raw = await readBody(request);
     let body;
     try {
-      body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      body = JSON.parse(raw.toString("utf8"));
     } catch {
       send(response, 400, { error: "Malformed JSON body." });
       return;
     }
     const text = String(body.text ?? "");
+
+    if (faults.mode && faults.remaining > 0) {
+      const mode = faults.mode;
+      faults.remaining -= 1;
+      if (faults.remaining <= 0) faults.mode = "";
+      if (mode === "http-500") {
+        console.log("tts: injected HTTP 500");
+        send(response, 500, { error: "The synthesis backend failed." });
+        return;
+      }
+      if (mode === "unauthorized") {
+        console.log("tts: injected HTTP 401");
+        send(response, 401, { error: "Incorrect API key provided." });
+        return;
+      }
+      if (mode === "missing-audio") {
+        console.log("tts: injected a response with no audio");
+        send(response, 200, { duration: 1, content_type: "audio/wav" });
+        return;
+      }
+      if (mode === "not-json") {
+        console.log("tts: injected a non-JSON body");
+        response.writeHead(200, { ...corsHeaders(), "content-type": "application/json" });
+        response.end("not-json");
+        return;
+      }
+      if (mode === "empty-timestamps") {
+        console.log("tts: injected empty timestamps");
+        const duration = Number((text.length * SECONDS_PER_CHAR).toFixed(3));
+        send(response, 200, {
+          audio: renderWav(text, duration).toString("base64"),
+          content_type: "audio/wav",
+          duration,
+          audio_timestamps: { graph_chars: [], graph_times: [] },
+        });
+        return;
+      }
+    }
     const duration = Number((text.length * SECONDS_PER_CHAR).toFixed(3));
     const format = body.output_format ?? {};
     const entry = {
