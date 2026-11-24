@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { graphCharsFor } from "../tools/graph-chars.js";
 import { fakeTimestamps, loadContentNamespace } from "./load-content.js";
 
 const ns = loadContentNamespace();
@@ -194,6 +195,195 @@ test("characterTimes interpolates characters the API never reported", () => {
 
 test("characterTimes returns null without timestamps", () => {
   assert.equal(characterTimes("abc", null, null), null);
+});
+
+test("timestamps follow the API: one graph char per Unicode code point", () => {
+  const text = "Hi 😂";
+  assert.deepEqual(graphCharsFor(text), ["H", "i", " ", "😂"]);
+  assert.deepEqual(fakeTimestamps(text).graphChars, graphCharsFor(text));
+  assert.equal(text.length, 5, "the emoji is two UTF-16 units");
+});
+
+function wordTexts(text, timeline) {
+  return own(timeline.words.map((word) => text.slice(word.start, word.end)));
+}
+
+test("a run of emoji keeps a start time on every word after it", () => {
+  const emoji = "😂".repeat(8);
+  const text = `Wow ${emoji} and then the sentence continues with more words here.`;
+  const { graphChars, graphTimes, duration } = fakeTimestamps(text, 0.05);
+  const timeline = buildChunkTimeline({ text, graphChars, graphTimes, duration });
+  const starts = timeline.words.map((word) => word.t0);
+
+  assert.deepEqual(wordTexts(text, timeline).slice(0, 4), ["Wow", emoji, "and", "then"]);
+  assert.equal(new Set(starts.map((start) => start.toFixed(4))).size, timeline.words.length);
+  assert.ok(timeline.words[2].t0 > timeline.words[0].t0);
+  // "here." is the last word. Its start is the code-point index of "h", not
+  // the UTF-16 index, because each emoji is one code point of speech.
+  const here = [...text.slice(0, text.indexOf("here"))].length;
+  assert.ok(Math.abs(timeline.words.at(-1).t0 - here * 0.05) < 1e-9, String(timeline.words.at(-1).t0));
+});
+
+test("an inserted run longer than eight characters does not drop the rest of the line", () => {
+  const text = "Alpha omega";
+  const heard = `Alpha ${"*".repeat(9)}omega`;
+  const { graphChars, graphTimes } = fakeTimestamps(heard, 0.1);
+  const times = characterTimes(text, graphChars, graphTimes);
+  const omega = text.indexOf("omega");
+  // "Alpha " is six code points, then nine stars, so "omega" starts at 15.
+  assert.ok(Math.abs(times.starts[omega] - 1.5) < 1e-9, String(times.starts[omega]));
+  assert.ok(times.starts.every((value) => !Number.isNaN(value)));
+});
+
+test("a long run the reply never timed does not pull the following word back", () => {
+  const text = `Before ${"*".repeat(30)} after.`;
+  const { graphChars, graphTimes } = fakeTimestamps("Before  after.", 0.1);
+  const times = characterTimes(text, graphChars, graphTimes);
+  const after = text.indexOf("after");
+  assert.ok(Math.abs(times.starts[after] - 0.8) < 1e-9, String(times.starts[after]));
+});
+
+test("scattered insertions stay local instead of sliding the line", () => {
+  const text = "abcdef";
+  const { graphChars, graphTimes } = fakeTimestamps("aXbXcXdef", 0.1);
+  const times = characterTimes(text, graphChars, graphTimes);
+  // "d" is the fourth page character and the seventh heard character.
+  assert.ok(Math.abs(times.starts[3] - 0.6) < 1e-9, String(times.starts[3]));
+});
+
+test("a ZWJ emoji is timed as its code points and the next word follows the cluster", () => {
+  const family = "👨‍👩‍👧";
+  const text = `See ${family} now.`;
+  const { graphChars, graphTimes, duration } = fakeTimestamps(text, 0.05);
+  assert.ok(graphChars.includes("\u200D"), "the joiner is its own code point in the reply");
+  assert.ok([...family].length > 1);
+
+  const timeline = buildChunkTimeline({ text, graphChars, graphTimes, duration });
+  const words = wordTexts(text, timeline);
+  assert.equal(words[0], "See");
+  assert.equal(words[1], family);
+  assert.equal(words[2], "now.");
+  const familyPoints = [...`See ${family} `].length;
+  assert.ok(Math.abs(timeline.words[2].t0 - familyPoints * 0.05) < 1e-9, String(timeline.words[2].t0));
+  assert.ok(timeline.words[1].t1 > timeline.words[1].t0);
+  assert.ok(timeline.words[2].t0 >= timeline.words[1].t1 - 1e-9);
+});
+
+test("a family emoji packed into one graph char still lines up with the page", () => {
+  const family = "👨‍👩‍👧";
+  const text = `See ${family} now.`;
+  const graphChars = [..."See ", family, ..." now."];
+  const graphTimes = graphChars.map((_, index) => [index * 0.1, (index + 1) * 0.1]);
+  const timeline = buildChunkTimeline({
+    text,
+    graphChars,
+    graphTimes,
+    duration: graphChars.length * 0.1,
+  });
+  assert.equal(text.slice(timeline.words[1].start, timeline.words[1].end), family);
+  assert.equal(text.slice(timeline.words[2].start, timeline.words[2].end), "now.");
+  // "See " is four entries and the cluster is the fifth, so the cluster
+  // starts at 0.4s and "now." — after the space that follows it — at 0.6s.
+  assert.ok(Math.abs(timeline.words[1].t0 - 0.4) < 1e-9, String(timeline.words[1].t0));
+  assert.ok(Math.abs(timeline.words[2].t0 - 0.6) < 1e-9, String(timeline.words[2].t0));
+});
+
+test("a flag and a skin-tone emoji keep the words around them in order", () => {
+  const flag = "🇺🇸";
+  const tone = "👍🏽";
+  const text = `Fly ${flag} then ${tone} home.`;
+  const { graphChars, graphTimes, duration } = fakeTimestamps(text, 0.05);
+  assert.equal(graphChars.filter((char) => char === flag).length, 0, "a flag is two code points, not one string");
+  assert.equal([...flag].length, 2);
+  assert.equal([...tone].length, 2);
+
+  const timeline = buildChunkTimeline({ text, graphChars, graphTimes, duration });
+  const words = wordTexts(text, timeline);
+  assert.deepEqual(words, ["Fly", flag, "then", tone, "home."]);
+  for (let i = 1; i < timeline.words.length; i += 1) {
+    assert.ok(timeline.words[i].t0 > timeline.words[i - 1].t0, words[i]);
+  }
+  const home = [...text.slice(0, text.indexOf("home"))].length;
+  assert.ok(Math.abs(timeline.words.at(-1).t0 - home * 0.05) < 1e-9);
+});
+
+test("surrogate halves in graph chars reassemble into the emoji they are", () => {
+  const emoji = "😂";
+  const text = `Go ${emoji} now`;
+  const graphChars = ["G", "o", " ", emoji[0], emoji[1], " ", "n", "o", "w"];
+  const graphTimes = graphChars.map((_, index) => [index * 0.1, (index + 1) * 0.1]);
+  const times = characterTimes(text, graphChars, graphTimes);
+  const now = text.indexOf("now");
+  // The two halves are one code point timed from 0.3 to 0.5, then a space,
+  // so "now" starts at 0.6 — and both of the emoji's units carry that span.
+  assert.ok(Math.abs(times.starts[now] - 0.6) < 1e-9, String(times.starts[now]));
+  const emojiAt = text.indexOf(emoji);
+  assert.equal(times.starts[emojiAt], times.starts[emojiAt + 1]);
+  assert.ok(Math.abs(times.starts[emojiAt] - 0.3) < 1e-9);
+  assert.ok(Math.abs(times.ends[emojiAt + 1] - 0.5) < 1e-9);
+});
+
+test("CJK characters keep their own times beside an emoji run", () => {
+  const text = `東京${"😂".repeat(8)}の夜`;
+  const { graphChars, graphTimes } = fakeTimestamps(text, 0.05);
+  const times = characterTimes(text, graphChars, graphTimes);
+  assert.equal(graphChars.length, [...text].length);
+  const night = text.indexOf("の");
+  const before = [...text.slice(0, night)].length;
+  assert.ok(Math.abs(times.starts[night] - before * 0.05) < 1e-9, String(times.starts[night]));
+  assert.ok(times.starts[text.indexOf("夜")] > times.starts[night]);
+  assert.ok(times.starts[0] === 0);
+});
+
+test("a combining accent stays on its letter and the next word follows both", () => {
+  const text = "The cafe\u0301 opens.";
+  const { graphChars, graphTimes, duration } = fakeTimestamps(text, 0.05);
+  assert.ok(graphChars.includes("\u0301"));
+  const times = characterTimes(text, graphChars, graphTimes);
+  const letter = text.indexOf("e\u0301");
+  const opens = text.indexOf("opens");
+  assert.ok(times.starts[letter] < times.starts[letter + 1], "the accent is spoken after the letter");
+  assert.ok(Math.abs(times.ends[letter + 1] - (letter + 2) * 0.05) < 1e-9);
+  const before = [...text.slice(0, opens)].length;
+  assert.ok(Math.abs(times.starts[opens] - before * 0.05) < 1e-9, String(times.starts[opens]));
+
+  const timeline = buildChunkTimeline({ text, graphChars, graphTimes, duration });
+  assert.deepEqual(wordTexts(text, timeline), ["The", "cafe\u0301", "opens."]);
+  assert.ok(timeline.words[2].t0 > timeline.words[1].t0);
+});
+
+test("the lead-in of a chunk whose context holds an emoji run starts after that run", () => {
+  const emoji = "😂".repeat(8);
+  const text =
+    "The opening sentence is perfectly ordinary and long enough to be its own chunk of speech. " +
+    `Then a reaction ${emoji} lands in the middle of the paragraph and the words after it ` +
+    "should still be highlighted in order as they are spoken, one after another, until the paragraph ends.";
+  const ranges = own(chunkRanges(text, 500, { firstChars: 240 }));
+  assert.ok(ranges.length > 1);
+  const context = leadingContext(text, ranges[1].start);
+  const submission = context + text.slice(ranges[1].start, ranges[1].end);
+  const fake = fakeTimestamps(submission, 0.05);
+  const spoken = withoutContext({
+    submission,
+    contextChars: context.length,
+    graphChars: fake.graphChars,
+    graphTimes: fake.graphTimes,
+    duration: fake.duration,
+  });
+
+  const expected = [...context].length * 0.05;
+  assert.ok(Math.abs(expected - 7.1) < 1e-9, `fixture lead changed to ${expected}`);
+  assert.ok(Math.abs(spoken.lead - expected) < 1e-9, `lead is ${spoken.lead}`);
+  const chunk = text.slice(ranges[1].start, ranges[1].end);
+  const timeline = buildChunkTimeline({
+    text: chunk,
+    graphChars: spoken.graphChars,
+    graphTimes: spoken.graphTimes,
+    duration: spoken.duration,
+  });
+  assert.equal(chunk.slice(timeline.words[0].start, timeline.words[0].end), "one");
+  assert.ok(Math.abs(timeline.words[0].t0) < 1e-9, String(timeline.words[0].t0));
+  assert.equal(new Set(timeline.words.map((word) => word.t0.toFixed(4))).size, timeline.words.length);
 });
 
 test("words and sentences tokenise punctuation with the word it belongs to", () => {

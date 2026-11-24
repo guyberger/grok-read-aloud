@@ -115,6 +115,7 @@ const HARNESS = `
   }
 
   function timestampsFor(text) {
+    // One entry per Unicode code point, as audio_timestamps.graph_chars is.
     const chars = [...text];
     const seconds = 0.02;
     return {
@@ -301,7 +302,7 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
     assert.ok(timing.count > 4, JSON.stringify(timing));
   });
 
-  test(EMOJI_BUG, { todo: EMOJI_BUG }, () => {
+  test(EMOJI_BUG, () => {
     const emoji = "😂".repeat(8);
     const sentence = `Wow ${emoji} and then the sentence continues with more words here.`;
     const problems = [];

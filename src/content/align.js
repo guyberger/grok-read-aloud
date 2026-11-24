@@ -232,20 +232,25 @@
       const lead = duration > 0 ? (duration * contextChars) / submission.length : 0;
       return { graphChars: null, graphTimes: null, duration: Math.max(0, duration - lead), lead };
     }
-    const rawLead = times.starts[contextChars];
+    const rawLead =
+      contextChars >= submission.length ? times.ends[submission.length - 1] : times.starts[contextChars];
     const lead = Number.isNaN(rawLead) || rawLead == null ? 0 : Math.max(0, rawLead);
     const spoken = submission.slice(contextChars);
     const chars = [];
     const pairs = [];
-    for (let i = 0; i < spoken.length; i += 1) {
+    // One entry per code point, the same shape the API uses, so the chunk
+    // timeline is not handed a surrogate half as if it were a character.
+    for (let i = 0; i < spoken.length; ) {
+      const width = spoken.codePointAt(i) > 0xffff ? 2 : 1;
       const at = contextChars + i;
       const start = times.starts[at];
-      const end = times.ends[at];
-      chars.push(spoken[i]);
+      const end = times.ends[at + width - 1];
+      chars.push(spoken.slice(i, i + width));
       pairs.push([
         Math.max(0, (Number.isNaN(start) ? lead : start) - lead),
         Math.max(0, (Number.isNaN(end) ? lead : end) - lead),
       ]);
+      i += width;
     }
     const full = duration || times.ends[submission.length - 1] || lead;
     return { graphChars: chars, graphTimes: pairs, duration: Math.max(0, full - lead), lead };
@@ -358,40 +363,236 @@
   }
 
   /**
-   * Map each character of the submitted text to its spoken time span.
+   * Map each UTF-16 unit of the submitted text to its spoken time span.
    *
-   * `graph_chars` mirrors the submitted text one-for-one when no pronunciation
-   * replacements or normalisation are in play, so this is normally an exact
-   * index walk. The small lookahead window keeps it from derailing if the API
-   * ever inserts or drops a character.
+   * The API's `graph_chars` is one string per Unicode code point: an emoji is
+   * one entry there and two units in a JavaScript string. A cluster — a
+   * skin-tone emoji, a ZWJ sequence, a flag, a letter plus a combining mark —
+   * is several of those code points, and a caller may also have packed the
+   * whole cluster into one entry or split it into surrogate halves. All three
+   * shapes are read back into code points before anything is compared, and
+   * the page text is walked the same way, so the two sides agree on what a
+   * character is.
+   *
+   * The match itself is a diff, not a fixed look-ahead. A window of eight
+   * loses the rest of the line once eight unmatched entries sit in front of
+   * it, which is exactly what a row of emoji did, and what any longer run of
+   * symbols would do even after the units agree.
    */
   function characterTimes(text, graphChars, graphTimes) {
+    if (!Array.isArray(graphChars) || !Array.isArray(graphTimes)) return null;
     const length = text.length;
     const starts = new Float64Array(length).fill(NaN);
     const ends = new Float64Array(length).fill(NaN);
-    if (!Array.isArray(graphChars) || !Array.isArray(graphTimes)) return null;
-
-    let cursor = 0;
-    for (let i = 0; i < length; i += 1) {
-      const limit = Math.min(graphChars.length, cursor + 8);
-      let match = -1;
-      for (let p = cursor; p < limit; p += 1) {
-        if (graphChars[p] === text[i]) {
-          match = p;
-          break;
+    if (length && graphChars.length) {
+      const page = codePointsOf(text);
+      const heard = codePointsFromGraph(graphChars, graphTimes);
+      const matched = alignUnits(
+        page.map((point) => point.text),
+        heard.map((point) => point.text),
+      );
+      for (let i = 0; i < page.length; i += 1) {
+        const at = matched[i];
+        if (at < 0) continue;
+        const timing = heard[at];
+        if (!Number.isFinite(timing.t0) || !Number.isFinite(timing.t1)) continue;
+        const point = page[i];
+        for (let unit = point.start; unit < point.end; unit += 1) {
+          starts[unit] = timing.t0;
+          ends[unit] = timing.t1;
         }
       }
-      if (match === -1) continue;
-      const pair = graphTimes[match];
-      if (Array.isArray(pair) && pair.length >= 2) {
-        starts[i] = pair[0];
-        ends[i] = pair[1];
-      }
-      cursor = match + 1;
     }
-
     interpolateGaps(starts, ends);
     return { starts, ends };
+  }
+
+  /** Code points of `text`, each with the UTF-16 span it occupies. */
+  function codePointsOf(text) {
+    const points = [];
+    for (let i = 0; i < text.length; ) {
+      const width = text.codePointAt(i) > 0xffff ? 2 : 1;
+      points.push({ text: text.slice(i, i + width), start: i, end: i + width });
+      i += width;
+    }
+    return points;
+  }
+
+  function isHighSurrogate(char) {
+    if (char.length !== 1) return false;
+    const code = char.charCodeAt(0);
+    return code >= 0xd800 && code <= 0xdbff;
+  }
+
+  function isLowSurrogate(char) {
+    if (char.length !== 1) return false;
+    const code = char.charCodeAt(0);
+    return code >= 0xdc00 && code <= 0xdfff;
+  }
+
+  /** `[start, end]` in seconds, or null when the entry is not a usable pair. */
+  function timePair(pair) {
+    if (!Array.isArray(pair) || pair.length < 2) return null;
+    const start = Number(pair[0]);
+    const end = Number(pair[1]);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    return [start, end];
+  }
+
+  /**
+   * Code points of `graphChars`, in order, each carrying the time span of the
+   * entry it came from.
+   *
+   * An entry that already holds several code points — a family emoji, a flag,
+   * a skin tone — shares that one span across them. Two entries that are the
+   * halves of one surrogate pair are one code point again, timed from the
+   * first half's start to the second half's end.
+   */
+  function codePointsFromGraph(graphChars, graphTimes) {
+    const points = [];
+    for (let index = 0; index < graphChars.length; index += 1) {
+      const piece = graphChars[index] == null ? "" : String(graphChars[index]);
+      if (!piece) continue;
+      const next = index + 1 < graphChars.length ? String(graphChars[index + 1] ?? "") : "";
+      if (isHighSurrogate(piece) && isLowSurrogate(next)) {
+        const span = spanAcross(timePair(graphTimes[index]), timePair(graphTimes[index + 1]));
+        points.push({ text: piece + next, t0: span[0], t1: span[1] });
+        index += 1;
+        continue;
+      }
+      const span = timePair(graphTimes[index]) ?? [NaN, NaN];
+      for (const point of codePointsOf(piece)) {
+        points.push({ text: point.text, t0: span[0], t1: span[1] });
+      }
+    }
+    return points;
+  }
+
+  /** The earliest start and the latest end of the pairs that were present. */
+  function spanAcross(first, second) {
+    const pairs = [first, second].filter(Boolean);
+    if (!pairs.length) return [NaN, NaN];
+    return [
+      Math.min(...pairs.map((pair) => pair[0])),
+      Math.max(...pairs.map((pair) => pair[1])),
+    ];
+  }
+
+  /**
+   * For each unit of `page`, the index of the same unit in `heard`, or -1
+   * when the reply never reported it. Inserted reply units are skipped.
+   * Identical sequences take the direct path; anything else is a diff of the
+   * region the shared prefix and suffix do not already explain.
+   */
+  function alignUnits(page, heard) {
+    const n = page.length;
+    const m = heard.length;
+    const map = new Array(n).fill(-1);
+    if (!n || !m) return map;
+
+    let prefix = 0;
+    while (prefix < n && prefix < m && page[prefix] === heard[prefix]) {
+      map[prefix] = prefix;
+      prefix += 1;
+    }
+    if (prefix === n && prefix === m) return map;
+
+    let suffix = 0;
+    while (
+      suffix < n - prefix &&
+      suffix < m - prefix &&
+      page[n - 1 - suffix] === heard[m - 1 - suffix]
+    ) {
+      suffix += 1;
+    }
+    for (let k = 0; k < suffix; k += 1) map[n - 1 - k] = m - 1 - k;
+
+    const nMid = n - prefix - suffix;
+    const mMid = m - prefix - suffix;
+    if (!nMid || !mMid) return map;
+
+    const mid = diffUnits(page.slice(prefix, prefix + nMid), heard.slice(prefix, prefix + mMid));
+    for (let i = 0; i < nMid; i += 1) {
+      if (mid[i] >= 0) map[prefix + i] = prefix + mid[i];
+    }
+    return map;
+  }
+
+  /**
+   * Longest common subsequence, so an insertion or a deletion of any length
+   * stays local. Past a couple of million cells the middle is no longer a
+   * small edit and a forward scan is used instead — still with no cap on how
+   * far the next real character may be.
+   */
+  function diffUnits(page, heard) {
+    const n = page.length;
+    const m = heard.length;
+    if (n * m > 2_000_000) return greedyUnits(page, heard);
+
+    const choice = new Uint8Array(n * m);
+    let prev = new Int32Array(m + 1);
+    let curr = new Int32Array(m + 1);
+    for (let i = 1; i <= n; i += 1) {
+      for (let j = 1; j <= m; j += 1) {
+        const cell = (i - 1) * m + (j - 1);
+        if (page[i - 1] === heard[j - 1]) {
+          curr[j] = prev[j - 1] + 1;
+          choice[cell] = 0;
+        } else if (prev[j] >= curr[j - 1]) {
+          curr[j] = prev[j];
+          choice[cell] = 1;
+        } else {
+          curr[j] = curr[j - 1];
+          choice[cell] = 2;
+        }
+      }
+      const swap = prev;
+      prev = curr;
+      curr = swap;
+      curr.fill(0);
+    }
+
+    const map = new Array(n).fill(-1);
+    let i = n;
+    let j = m;
+    while (i > 0 && j > 0) {
+      const taken = choice[(i - 1) * m + (j - 1)];
+      if (taken === 0 && page[i - 1] === heard[j - 1]) {
+        map[i - 1] = j - 1;
+        i -= 1;
+        j -= 1;
+      } else if (taken === 1) {
+        i -= 1;
+      } else {
+        j -= 1;
+      }
+    }
+    return map;
+  }
+
+  /** Nearest later equal unit, with no limit on the gap in front of it. */
+  function greedyUnits(page, heard) {
+    const lists = new Map();
+    for (let j = 0; j < heard.length; j += 1) {
+      const list = lists.get(heard[j]);
+      if (list) list.push(j);
+      else lists.set(heard[j], [j]);
+    }
+    const cursor = new Map();
+    const map = new Array(page.length).fill(-1);
+    let from = 0;
+    for (let i = 0; i < page.length; i += 1) {
+      const list = lists.get(page[i]);
+      if (!list) continue;
+      let at = cursor.get(page[i]) ?? 0;
+      while (at < list.length && list[at] < from) at += 1;
+      cursor.set(page[i], at);
+      if (at >= list.length) continue;
+      map[i] = list[at];
+      from = list[at] + 1;
+      cursor.set(page[i], at + 1);
+    }
+    return map;
   }
 
   function interpolateGaps(starts, ends) {
