@@ -2441,7 +2441,68 @@ async function main() {
 
   await control("stop");
 
-  // 22. A page whose policy refuses blob media, which sends playback down the
+  // 22. A run of emoji. The reply times one entry per Unicode code point, and
+  // a look-ahead of eight used to spend itself on the emoji, so by the first
+  // second the highlight sat on the last word and the next chunk replayed the
+  // sentence it was meant to skip.
+  await ui.evaluate(`chrome.storage.local.set({ chunkChars: 500 }).then(() => true)`);
+  await page.send("Page.navigate", { url: `${origin}/emoji.html` });
+  await sleep(1500);
+  await tabState();
+  world = await page.isolatedContextId();
+  await control("start", { scope: "page", from: "start" });
+  const emojiStarted = await awaitStatus("playing", { timeoutMs: 20000 });
+  check("a page with a run of emoji starts reading", emojiStarted.status === "playing", emojiStarted.error || emojiStarted.status);
+
+  const emojiEarly = [];
+  for (let i = 0; i < 8; i += 1) {
+    await sleep(200);
+    emojiEarly.push(await page.evaluate(probe, world));
+  }
+  const emojiWords = [...new Set(emojiEarly.map((sample) => sample.word).filter(Boolean))];
+  check(
+    "the highlight walks the words after the emoji instead of jumping to the last one",
+    emojiWords.length >= 2 && !emojiEarly.some((sample) => /saltbox/i.test(sample.word || "")),
+    emojiWords.join(" | ") || "no highlight",
+  );
+
+  let emojiLead = null;
+  for (let i = 0; i < 90 && !emojiLead; i += 1) {
+    const sample = await page.evaluate(`
+      (() => {
+        const doc = globalThis.__readAloud.extract.extract("page");
+        const ranges = globalThis.__readAloud.align.chunkRanges(doc.text, 500, { firstChars: 240 });
+        const context = ranges.length > 1 ? globalThis.__readAloud.align.leadingContext(doc.text, ranges[1].start) : "";
+        const points = [...context].length;
+        const snap = globalThis.__readAloud.reader.snapshot();
+        return {
+          status: snap.status,
+          chunkIndex: snap.chunkIndex,
+          error: snap.error,
+          lead: globalThis.__readAloud.reader.playback()?.lead ?? null,
+          chunks: ranges.length,
+          contextPoints: points,
+          expectedLead: Number((points * 0.055).toFixed(4)),
+        };
+      })()
+    `, world);
+    if (sample.chunkIndex >= 1 && sample.status === "playing" && sample.lead > 0) emojiLead = sample;
+    else await sleep(200);
+  }
+  check(
+    "the next chunk skips its unspoken lead-in",
+    Boolean(emojiLead) &&
+      emojiLead.chunks > 1 &&
+      emojiLead.contextPoints >= 8 &&
+      Math.abs(emojiLead.lead - emojiLead.expectedLead) < 0.02,
+    emojiLead
+      ? `lead ${emojiLead.lead}s, expected ${emojiLead.expectedLead}s over ${emojiLead.contextPoints} code points`
+      : "the second chunk never started",
+  );
+  await control("stop");
+  await ui.evaluate(`chrome.storage.local.set({ chunkChars: 400 }).then(() => true)`);
+
+  // 23. A page whose policy refuses blob media, which sends playback down the
   // Web Audio path. Speed there used to be samples played faster — a higher
   // voice — and has to be the same pitch-keeping stretch as everywhere else.
   await page.send("Page.navigate", { url: `${origin}/csp-strict.html` });

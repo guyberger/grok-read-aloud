@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+import { graphCharsFor } from "../tools/graph-chars.js";
 
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "../src/content");
 
@@ -24,10 +25,11 @@ export function loadContentNamespace(files = ["util.js", "align.js"], globals = 
 
 /**
  * Builds the `graph_chars` / `graph_times` pair the API returns, pretending
- * every character takes the same amount of time.
+ * every code point takes the same amount of time. One entry per Unicode code
+ * point, which is what `audio_timestamps.graph_chars` is.
  */
 export function fakeTimestamps(text, secondsPerChar = 0.05) {
-  const graphChars = [...text];
+  const graphChars = graphCharsFor(text);
   const graphTimes = graphChars.map((_, index) => [
     Number((index * secondsPerChar).toFixed(6)),
     Number(((index + 1) * secondsPerChar).toFixed(6)),

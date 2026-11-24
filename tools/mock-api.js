@@ -35,6 +35,7 @@
 import { createServer } from "node:https";
 import { createServer as createHttpServer } from "node:http";
 import { readFileSync } from "node:fs";
+import { graphCharsFor } from "./graph-chars.js";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) {
@@ -134,7 +135,7 @@ function renderWav(text, durationSeconds) {
 }
 
 function timestampsFor(text) {
-  const graphChars = [...text];
+  const graphChars = graphCharsFor(text);
   const graphTimes = graphChars.map((_, index) => [
     Number((index * SECONDS_PER_CHAR).toFixed(4)),
     Number(((index + 1) * SECONDS_PER_CHAR).toFixed(4)),

@@ -104,12 +104,16 @@ response from raw audio bytes to a JSON envelope:
 }
 ```
 
-`graph_chars` mirrors the submitted text one character at a time and
-`graph_times` is the parallel array of `[start, end]` spans in seconds. The
-extension sends `text_normalization: false` so that mirroring stays exact, walks
-the two arrays to get a time span per character, groups characters into words,
-and maps each word back to a DOM range. That is what makes the highlight land on
-the right word rather than drifting.
+`graph_chars` mirrors the submitted text one Unicode code point at a time —
+an emoji is one entry, and two units of a JavaScript string — and
+`graph_times` is the parallel array of `[start, end]` spans in seconds. A
+cluster is several of those code points: an emoji with a skin tone, a family
+emoji joined by ZWJ, a flag, a letter with a combining accent. The extension
+sends `text_normalization: false` so that mirroring stays exact. Alignment
+walks code points, not UTF-16 indices, and diffs the two sequences, so a long
+run of symbols cannot knock the highlight off the words that follow. It groups
+the resulting spans into words and maps each word back to a DOM range. That is
+what makes the highlight land on the right word rather than drifting.
 
 Audio is requested as MP3 at 24 kHz / 64 kbps — the bitrate the API documents as
 good for speech — which keeps each chunk small enough to pass cheaply between

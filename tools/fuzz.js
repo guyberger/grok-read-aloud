@@ -15,7 +15,7 @@
  * as expected failures, so `npm test` stays green.
  */
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import https from "node:https";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -64,18 +64,9 @@ function pageShell(title, body) {
     </body></html>`;
 }
 
-const EMOJI = "😂".repeat(8);
 const pages = new Map();
 
-pages.set(
-  "emoji.html",
-  pageShell(
-    "Emoji mill",
-    `<article><h1>Reaction</h1><p>Wow ${EMOJI} and then the sentence continues with more ordinary words until the paragraph ends saltbox.</p>
-     <p>The keeper still has to grease the bearings after the celebration, clear the sluice, and watch the pegs before the next tide.</p>
-     <p>A wheel left dry for a whole season opens at its joints, and the ledger says the same thing in every hand.</p></article>`,
-  ),
-);
+pages.set("emoji.html", readFileSync(resolve(ROOT, "tests/fixtures/emoji.html"), "utf8"));
 pages.set(
   "few-emoji.html",
   pageShell(
@@ -625,30 +616,55 @@ async function main() {
   const scenarios = [
     {
       name: "emoji-highlight",
-      bug: "A run of eight emoji collapses highlighting onto the last word and replays the lead-in",
       async run() {
         await applySettings({ chunkChars: 500 });
         await navigate("emoji.html");
         const started = await control("start", { scope: "page", from: "start" });
         if (!started?.state) return { ok: false, detail: `start failed ${JSON.stringify(started)}` };
         const samples = [];
-        for (let i = 0; i < 12; i += 1) {
+        for (let i = 0; i < 8; i += 1) {
           await sleep(200);
           samples.push(await probe());
         }
-        const playing = samples.filter((sample) => sample.status === "playing" && sample.time > 0.15);
-        const early = playing.filter((sample) => sample.time < 1.2);
+        const early = samples.filter((sample) => sample.status === "playing" && sample.time > 0.1 && sample.time < 1.2);
+        const words = [];
+        for (const sample of early) {
+          if (sample.word && words.at(-1) !== sample.word) words.push(sample.word);
+        }
         const stuck = early.some((sample) => /saltbox/i.test(sample.word || ""));
-        const shot = stuck ? await screenshot("bug-emoji-highlight.png") : "";
-        const path = save("bug-emoji-highlight.json", { samples, stuck });
-        // Correct behaviour walks the sentence. The bug highlights "saltbox"
-        // while the audio is still in the first second.
+        let lead = null;
+        for (let i = 0; i < 90 && !lead; i += 1) {
+          const sample = await probe();
+          if (sample.chunkIndex >= 1 && sample.status === "playing" && sample.playback?.lead > 0) lead = sample;
+          else await sleep(200);
+        }
+        const expected = await article.evaluate(`
+          (() => {
+            const doc = globalThis.__readAloud.extract.extract("page");
+            const ranges = globalThis.__readAloud.align.chunkRanges(doc.text, 500, { firstChars: 240 });
+            const context = ranges.length > 1 ? globalThis.__readAloud.align.leadingContext(doc.text, ranges[1].start) : "";
+            const points = [...context].length;
+            return { chunks: ranges.length, contextPoints: points, expectedLead: Number((points * 0.055).toFixed(4)) };
+          })()
+        `, world);
+        const leadOk =
+          Boolean(lead) &&
+          expected.chunks > 1 &&
+          expected.contextPoints >= 8 &&
+          Math.abs(lead.playback.lead - expected.expectedLead) < 0.02;
+        const ok = words.length >= 2 && !stuck && leadOk;
+        const path = save("emoji-highlight.json", {
+          words,
+          stuck,
+          lead: lead?.playback?.lead ?? null,
+          expected,
+        });
         return {
-          ok: stuck,
-          detail: stuck
-            ? `highlight reached "${early.find((sample) => /saltbox/i.test(sample.word || ""))?.word}" at ${early.find((sample) => /saltbox/i.test(sample.word || ""))?.time.toFixed(2)}s`
-            : `highlight walked ${[...new Set(early.map((sample) => sample.word))].join(" | ") || "nothing"}`,
-          evidence: path || shot,
+          ok,
+          detail: ok
+            ? `walked ${words.join(" | ")}; next chunk lead ${lead.playback.lead.toFixed(3)}s`
+            : `words ${words.join(" | ") || "none"}; saltbox early ${stuck}; lead ${lead?.playback?.lead ?? "none"} expected ${expected.expectedLead}`,
+          evidence: path,
         };
       },
     },
