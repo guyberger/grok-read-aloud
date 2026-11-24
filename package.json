@@ -10,6 +10,7 @@
     "icons": "node tools/make-icons.js",
     "check": "node --experimental-vm-modules --no-warnings tools/check.js",
     "test": "node --test \"tests/*.test.js\"",
+    "fuzz": "node tools/fuzz.js",
     "verify": "npm run check && npm test && npm run build"
   },
   "license": "MIT"
