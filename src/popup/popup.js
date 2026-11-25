@@ -163,7 +163,9 @@ function render(state) {
   el.toggle.disabled = current.status === "loading";
   el.previous.disabled = !active;
   el.next.disabled = !active;
-  el.stop.disabled = !active;
+  // A failed jump used to leave the previous audio playing with Stop disabled,
+  // because error is not a read to step through. Stop still ends it.
+  el.stop.disabled = !active && current.status !== "error";
   el.pageTitle.textContent = current.title ?? "";
   el.progressBar.style.width = `${Math.round((current.progress ?? 0) * 100)}%`;
 

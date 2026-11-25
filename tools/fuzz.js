@@ -6,14 +6,14 @@
  *   node tools/fuzz.js --seed 20261125 --scenario a,b
  *
  * Builds the chrome-test extension, starts the mock API and a page server,
- * and drives headless Chrome. Scenarios tagged with a bug title are expected
- * to reproduce that bug on every repeat. Every other scenario checks the
- * invariants in the bug-hunt brief. The process exits 0 when those expected
- * bugs still reproduce and nothing else breaks, 2 when an expected bug does
- * not reproduce, and 1 when a new invariant fails.
+ * and drives headless Chrome. Scenarios tagged with a bug title are open bugs,
+ * expected to reproduce on every repeat. Every other scenario checks an
+ * invariant, including bugs that have since been fixed. The process exits 0
+ * when those open bugs still reproduce and nothing else breaks, 2 when an
+ * open bug does not reproduce, and 1 when an invariant fails.
  *
- * Product code is not modified. Reproductions also live in tests/bugs.test.js
- * as expected failures, so `npm test` stays green.
+ * Reproductions of open bugs also live in tests/bugs.test.js as expected
+ * failures, so `npm test` stays green while they are open.
  */
 import { spawn, execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -680,7 +680,6 @@ async function main() {
     },
     {
       name: "voice-during-load",
-      bug: "Changing voice while a chunk is loading leaves playback stuck on Loading",
       async run() {
         await setTiming({ base: 1600, perChar: 0, timestamps: 0 });
         await applySettings({ voiceId: "eve", chunkChars: 2000 });
@@ -691,23 +690,21 @@ async function main() {
         }
         await ui.evaluate(`chrome.storage.local.set({ voiceId: "ara" })`);
         await control("settingsChanged");
-        await sleep(2200);
-        const seen = await probe();
+        const seen = await until((sample) => sample.status === "playing" && sample.time > 0, 8000);
         const asked = await requests();
         const path = save("bug-voice-stuck-loading.json", { seen, voices: asked.map((entry) => entry.voiceId) });
-        const stuck = seen.status === "loading" && !seen.error && seen.time === 0;
+        const played = seen.status === "playing" && seen.time > 0 && asked[0]?.voiceId === "eve";
         return {
-          ok: stuck,
-          detail: stuck
-            ? `still loading after the voice changed to ${seen.voiceId}, no audio`
-            : `status ${seen.status} time ${seen.time} error ${seen.error}`,
+          ok: played,
+          detail: played
+            ? `played the in-flight ${asked[0].voiceId} chunk after the voice became ${seen.voiceId}`
+            : `status ${seen.status} time ${seen.time} error ${seen.error} voices ${asked.map((entry) => entry.voiceId).join(",") || "none"}`,
           evidence: path,
         };
       },
     },
     {
       name: "pause-during-load",
-      bug: "Pause during loading is ignored and the audio starts anyway",
       async run() {
         await setTiming({ base: 1600, perChar: 0, timestamps: 0 });
         await applySettings({ chunkChars: 2000 });
@@ -720,11 +717,11 @@ async function main() {
         await sleep(2200);
         const seen = await probe();
         const path = save("bug-pause-during-load.json", { pauseReply: paused?.state?.status, seen });
-        const ignored = seen.status === "playing" && seen.time > 0.05 && seen.paused === false;
+        const held = seen.status === "paused" && seen.paused !== false && seen.time < 0.3;
         return {
-          ok: ignored,
-          detail: ignored
-            ? `pause during load was a no-op; playing at ${seen.time.toFixed(2)}s`
+          ok: held,
+          detail: held
+            ? `stayed paused at ${seen.time.toFixed(2)}s after the chunk arrived`
             : `status ${seen.status} time ${seen.time} paused ${seen.paused}`,
           evidence: path,
         };
