@@ -100,11 +100,11 @@ const HARNESS = `
         voiceId: globalThis.__voice,
         language: "en",
         rate: 1,
-        chunkChars: 4000,
+        chunkChars: globalThis.__chunkChars || 4000,
         autoScroll: false,
         highlightColor: "#ffd34d",
         sentenceTint: true,
-        clickToJump: false,
+        clickToJump: globalThis.__clickToJump === true,
         readCodeBlocks: false,
         hasApiKey: true,
         signedIn: false,
@@ -154,7 +154,7 @@ const HARNESS = `
     const timing = timestampsFor(text);
     return {
       ok: true,
-      audio: wavBase64(Math.min(1.2, Math.max(0.4, timing.duration))),
+      audio: wavBase64(globalThis.__audioSeconds || Math.min(1.2, Math.max(0.4, timing.duration))),
       contentType: "audio/wav",
       duration: timing.duration,
       graphChars: timing.graphChars,
@@ -176,6 +176,10 @@ const HARNESS = `
           return Promise.resolve({ ok: true });
         }
         if (message?.type === "synthesize") {
+          globalThis.__synthCount = (globalThis.__synthCount || 0) + 1;
+          if (globalThis.__failAfter != null && globalThis.__synthCount > globalThis.__failAfter) {
+            return Promise.resolve({ ok: false, error: "The synthesis backend failed." });
+          }
           const answer = () => Promise.resolve(audioFor(message.text || ""));
           if (globalThis.__mode === "voice") {
             globalThis.__mode = "normal";
@@ -280,6 +284,10 @@ async function snapshot(page) {
 }
 
 const EMOJI_BUG = "A run of eight emoji collapses highlighting onto the last word and replays the lead-in";
+const EMPTY_TIMESTAMPS_BUG = "Empty timestamp arrays stick the highlight on the last word of the chunk";
+const JUMP_ERROR_BUG = "A failed jump leaves the old audio playing and disables Stop";
+const CJK_BUG = "A space-free Chinese paragraph is highlighted as one block";
+const EDITABLE_BUG = "Editable text shows the jump cursor but a click does not move the read";
 const SPA_BUG = "Replacing the article mid-read keeps speaking the text that was removed";
 const VOICE_BUG = "Changing voice while a chunk is loading leaves playback stuck on Loading";
 const SHADOW_BUG = "Article text inside an open shadow root is never read";
@@ -514,6 +522,168 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
     }
     for (const result of results) {
       assert.equal(result.markerFound, true, JSON.stringify(results));
+    }
+  });
+
+  test("missing timestamps still spread words across the clip", () => {
+    const text = "One two three four five";
+    const timeline = buildChunkTimeline({ text, graphChars: null, graphTimes: null, duration: 5 });
+    assert.equal(timeline.words.length, 5);
+    assert.ok(timeline.words[4].t0 > timeline.words[0].t0);
+  });
+
+  test(EMPTY_TIMESTAMPS_BUG, { todo: EMPTY_TIMESTAMPS_BUG }, () => {
+    const text = "One two three four five";
+    const runs = [0, 1].map(() => buildChunkTimeline({ text, graphChars: [], graphTimes: [], duration: 5 }));
+    for (const timeline of runs) {
+      assert.equal(timeline.words.length, 5);
+      assert.ok(
+        timeline.words[4].t0 > timeline.words[0].t0 + 0.5,
+        timeline.words.map((word) => word.t0).join(","),
+      );
+    }
+  });
+
+  test("a failed first request ends before any audio plays", { skip }, async () => {
+    const page = await openReader();
+    await page.evaluate(`globalThis.__failAfter = -1; globalThis.__synthCount = 0;`);
+    await page.evaluate(`globalThis.__send({ type: "start", scope: "page", from: "start" })`);
+    let seen = null;
+    for (let i = 0; i < 20; i += 1) {
+      seen = await snapshot(page);
+      if (seen.status === "error" || seen.status === "playing") break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.equal(seen.errors.length, 0, seen.errors.join(" | "));
+    assert.equal(seen.status, "error", JSON.stringify(seen));
+    assert.ok(seen.time === 0 || seen.paused !== false, JSON.stringify(seen));
+  });
+
+  test(JUMP_ERROR_BUG, { skip, todo: JUMP_ERROR_BUG }, async () => {
+    const paragraph = Array.from(
+      { length: 24 },
+      (_, index) =>
+        `Sentence ${index} talks about the sluice gate and the wooden wheel that empties the pond.`,
+    ).join(" ");
+    const results = [];
+    for (let run = 0; run < 2; run += 1) {
+      const page = await openReader();
+      await page.evaluate(`
+        document.querySelector("#story").textContent = ${JSON.stringify(paragraph)};
+        globalThis.__chunkChars = 220;
+        globalThis.__audioSeconds = 8;
+        globalThis.__failAfter = 1;
+        globalThis.__synthCount = 0;
+      `);
+      await page.evaluate(`globalThis.__send({ type: "start", scope: "page", from: "start" })`);
+      let seen = null;
+      for (let i = 0; i < 30; i += 1) {
+        seen = await snapshot(page);
+        if (seen.status === "playing" && seen.time > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 80));
+      }
+      for (let i = 0; i < 8 && seen?.status !== "error"; i += 1) {
+        await page.evaluate(`globalThis.__send({ type: "skipSentence", delta: 1 })`);
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        seen = await snapshot(page);
+      }
+      const atError = seen;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const later = await snapshot(page);
+      results.push({ atError, later });
+    }
+    for (const result of results) {
+      assert.equal(result.later.errors.length, 0, result.later.errors.join(" | "));
+      assert.equal(result.later.status, "error", JSON.stringify(results));
+      assert.equal(result.later.paused, true, JSON.stringify(results));
+      assert.ok(result.later.time <= result.atError.time + 0.05, JSON.stringify(results));
+    }
+  });
+
+  test("an English sentence still splits into words", () => {
+    const text = "The mill at Blackwater has run on the tide.";
+    const timing = fakeTimestamps(text, 0.05);
+    const timeline = buildChunkTimeline({
+      text,
+      graphChars: timing.graphChars,
+      graphTimes: timing.graphTimes,
+      duration: timing.duration,
+    });
+    assert.ok(timeline.words.length > 3, String(timeline.words.length));
+  });
+
+  test(CJK_BUG, { todo: CJK_BUG }, () => {
+    const text = "这座潮汐磨坊已经依靠潮水运转了四百年，所有仍在转动的部件都是木头做的，每天两次池塘通过水闸灌满再通过水轮排空。";
+    const runs = [0, 1].map(() => {
+      const timing = fakeTimestamps(text, 0.05);
+      return buildChunkTimeline({
+        text,
+        graphChars: timing.graphChars,
+        graphTimes: timing.graphTimes,
+        duration: timing.duration,
+      });
+    });
+    for (const timeline of runs) {
+      assert.ok(timeline.words.length > 1, String(timeline.words.length));
+      assert.ok(timeline.words[1].t0 > timeline.words[0].t0);
+    }
+  });
+
+  test("a read with click-to-jump enabled still starts", { skip }, async () => {
+    const page = await openReader();
+    await page.evaluate(`globalThis.__clickToJump = true;`);
+    await page.evaluate(`globalThis.__send({ type: "start", scope: "page", from: "start" })`);
+    let seen = null;
+    for (let i = 0; i < 30; i += 1) {
+      seen = await snapshot(page);
+      if (seen.status === "playing" && seen.time > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    assert.equal(seen.status, "playing", JSON.stringify(seen));
+    assert.equal(seen.errors.length, 0, seen.errors.join(" | "));
+  });
+
+  test(EDITABLE_BUG, { skip, todo: EDITABLE_BUG }, async () => {
+    const results = [];
+    for (let run = 0; run < 2; run += 1) {
+      const page = await openReader();
+      const landed = await page.evaluate(`
+        (async () => {
+          globalThis.__clickToJump = true;
+          const story = document.querySelector("#story");
+          story.setAttribute("contenteditable", "true");
+          story.innerHTML = "<p id='dawn'>The dawn peg was loose before the pond filled today.</p><p id='spring'>The spring tide paragraph is the one a click should reach from here.</p>";
+          await globalThis.__send({ type: "start", scope: "page", from: "start" });
+          const deadline = Date.now() + 4000;
+          let status = "";
+          while (Date.now() < deadline) {
+            status = globalThis.__readAloud.reader.snapshot().status;
+            if (status === "playing") break;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          const paragraph = document.querySelector("#spring");
+          const rect = paragraph.getClientRects()[0];
+          const point = { clientX: rect.left + 16, clientY: rect.top + 8, bubbles: true, cancelable: true, view: window };
+          document.dispatchEvent(new PointerEvent("pointermove", { ...point, pointerType: "mouse" }));
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const cursor = getComputedStyle(paragraph).cursor;
+          const marked = document.querySelectorAll("[data-read-aloud-jump]").length;
+          paragraph.dispatchEvent(new MouseEvent("click", { ...point, button: 0, detail: 1 }));
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          const highlight = CSS.highlights?.get?.("read-aloud-word");
+          let word = "";
+          if (highlight) for (const range of highlight) word = range.toString();
+          return { status, cursor, marked, word, errors: globalThis.__errors.slice() };
+        })()
+      `);
+      results.push(landed);
+    }
+    for (const result of results) {
+      assert.equal(result.errors.length, 0, result.errors.join(" | "));
+      // The attribute is the cue. The packaged extension turns it into a
+      // pointer; this harness does not inject that stylesheet.
+      assert.ok(result.marked > 0, JSON.stringify(results));
+      assert.match(result.word, /spring|tide/, JSON.stringify(results));
     }
   });
 });
