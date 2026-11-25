@@ -2,7 +2,8 @@
  * Seeded adversarial driver for the packaged extension.
  *
  *   npm run fuzz
- *   node tools/fuzz.js --seed 7 --scenario emoji-highlight
+ *   node tools/fuzz.js --seed 20261125 --scenario emoji-highlight
+ *   node tools/fuzz.js --seed 20261125 --scenario a,b
  *
  * Builds the chrome-test extension, starts the mock API and a page server,
  * and drives headless Chrome. Scenarios tagged with a bug title are expected
@@ -21,6 +22,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { huntPages, huntScenarios } from "./fuzz-hunt.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = new Map();
@@ -29,7 +31,12 @@ for (let i = 2; i < process.argv.length; i += 2) {
 }
 
 const SEED = Number(args.get("seed") ?? 20261124);
-const ONLY = args.get("scenario") ?? "";
+const ONLY = new Set(
+  (args.get("scenario") ?? "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean),
+);
 const REPEATS = Number(args.get("repeats") ?? 2);
 const ARTIFACTS = resolve(args.get("artifacts") ?? "/opt/cursor/artifacts");
 const MOCK_PORT = Number(args.get("mock-port") ?? 18443);
@@ -156,6 +163,7 @@ pages.set(
 );
 const huge = Array.from({ length: 40 }, (_, index) => `<p>Paragraph ${index + 1}. The wheel turns, the pond empties, and the keeper writes one more line in the ledger about grease, pegs, and the state of the brake.</p>`).join("");
 pages.set("huge.html", pageShell("Long mill", `<article><h1>A long ledger</h1>${huge}</article>`));
+for (const [name, body] of huntPages) pages.set(name, body);
 
 function mockRequest(path, { method = "GET", body } = {}) {
   return new Promise((resolve_, reject) => {
@@ -282,7 +290,7 @@ function cert() {
   execFileSync("openssl", [
     "req", "-x509", "-newkey", "rsa:2048", "-keyout", key, "-out", crt,
     "-days", "2", "-nodes", "-subj", "/CN=api.x.ai",
-    "-addext", "subjectAltName=DNS:api.x.ai,DNS:auth.x.ai,DNS:accounts.x.ai",
+    "-addext", "subjectAltName=DNS:api.x.ai,DNS:auth.x.ai,DNS:accounts.x.ai,DNS:docs.google.com",
   ]);
   const spki = execFileSync("bash", ["-lc", `openssl x509 -in "${crt}" -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | openssl enc -base64`], { encoding: "utf8" }).trim();
   return { key, crt, spki };
@@ -377,7 +385,8 @@ async function main() {
       res.end("missing");
       return;
     }
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    const type = name.endsWith(".pdf") ? "application/pdf" : "text/html; charset=utf-8";
+    res.writeHead(200, { "content-type": type, "cache-control": "no-store" });
     res.end(body);
   });
   await new Promise((resolve_) => pageServer.listen(PAGE_PORT, "127.0.0.1", resolve_));
@@ -401,7 +410,7 @@ async function main() {
     "--window-size=1100,800",
     "--enable-unsafe-extension-debugging",
     "--autoplay-policy=no-user-gesture-required",
-    `--host-resolver-rules=MAP api.x.ai 127.0.0.1:${MOCK_PORT},MAP auth.x.ai 127.0.0.1:${MOCK_PORT},MAP accounts.x.ai 127.0.0.1:${MOCK_PORT}`,
+    `--host-resolver-rules=MAP api.x.ai 127.0.0.1:${MOCK_PORT},MAP auth.x.ai 127.0.0.1:${MOCK_PORT},MAP accounts.x.ai 127.0.0.1:${MOCK_PORT},MAP docs.google.com 127.0.0.1:${MOCK_PORT}`,
     `--ignore-certificate-errors-spki-list=${spki}`,
     `--remote-debugging-port=${CDP_PORT}`,
     `--user-data-dir=${profile}`,
@@ -503,7 +512,8 @@ async function main() {
 
   async function navigate(name) {
     article.contexts.length = 0;
-    await article.send("Page.navigate", { url: `http://127.0.0.1:${PAGE_PORT}/${name}` });
+    const url = String(name).startsWith("http") ? String(name) : `http://127.0.0.1:${PAGE_PORT}/${name}`;
+    await article.send("Page.navigate", { url });
     await waitFor(name, () => article.evaluate(`document.readyState === "complete"`));
     await activate();
     await command({ type: "getTabState" });
@@ -1037,11 +1047,53 @@ async function main() {
         };
       },
     },
+    ...huntScenarios({
+      SEED,
+      KEY,
+      PAGE_PORT,
+      applySettings,
+      navigate,
+      control,
+      command,
+      probe,
+      until,
+      sleep,
+      setTiming,
+      setFault,
+      resetMock,
+      requests,
+      article,
+      save,
+      screenshot,
+      ui,
+      activate,
+      browser,
+      findTarget,
+      Session,
+      attachConsole,
+      extensionId: () => extensionId,
+      mulberry32,
+      evaluate: (expression) => article.evaluate(expression, world),
+      recentLogs: () => logs.slice(),
+      refreshWorld: async () => {
+        await waitFor("reload", () => article.evaluate(`document.readyState === "complete"`));
+        await activate();
+        const state = await command({ type: "getTabState" });
+        if (!state?.ok) throw new Error(`reload did not reinject: ${JSON.stringify(state)}`);
+        // A navigation can deliver the new isolated world before this session
+        // is listening for it again. Asking twice makes Chrome replay it.
+        article.contexts.length = 0;
+        await article.send("Runtime.disable").catch(() => {});
+        await article.send("Runtime.enable");
+        world = await isolatedWorld();
+        await article.evaluate(AUDIO_PATCH, world);
+      },
+    }),
   ];
 
   try {
     for (const scenario of scenarios) {
-      if (ONLY && scenario.name !== ONLY) continue;
+      if (ONLY.size && !ONLY.has(scenario.name)) continue;
       const repeats = scenario.bug ? REPEATS : 1;
       for (let repeat = 1; repeat <= repeats; repeat += 1) await runScenario(scenario, repeat);
     }
