@@ -263,7 +263,6 @@ export function huntScenarios(ctx) {
     },
     {
       name: "jump-error-keeps-audio",
-      bug: "A failed jump leaves the old audio playing and disables Stop",
       async run(repeat) {
         await applySettings({ chunkChars: 320, clickToJump: true, autoScroll: false, rate: 1 });
         await navigate("huge.html");
@@ -299,10 +298,11 @@ export function huntScenarios(ctx) {
           await popupHandle?.close();
         }
         const media = await evaluate(`navigator.mediaSession?.playbackState ?? null`);
-        const advanced = later.time > atError.time + 0.25 && later.paused === false;
-        const pauseIgnored = afterPause.paused === false && afterPause.status === "error";
-        const stopDisabled = popupState?.state === "error" && popupState.stopDisabled === true;
-        const reproduced = failed.status === "error" && advanced && pauseIgnored && stopDisabled;
+        const quiet = later.paused === true && later.time <= atError.time + 0.05;
+        const pauseHeld = afterPause.paused !== false && afterPause.status === "error";
+        const stopAvailable = popupState?.state === "error" && popupState.stopDisabled === false;
+        const highlightHeld = !later.word || later.word === atError.word;
+        const ok = failed.status === "error" && quiet && pauseHeld && stopAvailable && highlightHeld;
         const path = save(`bug-jump-error-audio-${repeat}.json`, {
           before: { status: before.status, time: before.time, word: before.word },
           atError: { status: atError.status, time: atError.time, word: atError.word, error: atError.error, paused: atError.paused },
@@ -311,14 +311,15 @@ export function huntScenarios(ctx) {
           afterPause: { status: afterPause.status, time: afterPause.time, paused: afterPause.paused },
           popupState,
           media,
-          advanced,
+          quiet,
+          stopAvailable,
         });
-        if (reproduced) await screenshot(`bug-jump-error-audio-${repeat}.png`);
+        if (ok) await screenshot(`jump-error-stopped.png`);
         return {
-          ok: reproduced,
-          detail: reproduced
-            ? `error "${atError.error}" while audio ran ${atError.time.toFixed(2)}s → ${later.time.toFixed(2)}s; pause ignored; popup Stop disabled; media ${media}`
-            : `status ${failed.status}/${later.status} paused ${later.paused} ${atError.time}→${later.time} pauseIgnored ${pauseIgnored} popup ${JSON.stringify(popupState)} media ${media}`,
+          ok,
+          detail: ok
+            ? `failed jump paused at ${later.time.toFixed(2)}s on "${later.word || ""}"; Stop available; media ${media}`
+            : `status ${failed.status}/${later.status} paused ${later.paused} ${atError.time}→${later.time} pauseHeld ${pauseHeld} highlight ${atError.word}→${later.word} popup ${JSON.stringify(popupState)} media ${media}`,
           evidence: path,
         };
       },

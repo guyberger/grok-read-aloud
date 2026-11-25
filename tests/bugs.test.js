@@ -1,7 +1,8 @@
 /**
- * Reproductions of bugs found by driving the extension. Each bug is asserted
- * as the behaviour a reader can rely on, and marked todo with the bug's title
- * so `npm test` stays green while the product still does the wrong thing.
+ * Reproductions of bugs found by driving the extension. Each open bug is
+ * asserted as the behaviour a reader can rely on, and marked todo with the
+ * bug's title so `npm test` stays green while the product still does the
+ * wrong thing. A bug that has been fixed keeps the assertion and loses the todo.
  *
  * A passing neighbour sits beside every todo. That neighbour only checks that
  * the harness itself ran, so a broken reproduction fails the suite outright
@@ -34,6 +35,7 @@ const READER_FILES = [
   "controls.js",
   "stretch.js",
   "player.js",
+  "transport.js",
   "reader.js",
 ];
 
@@ -389,7 +391,7 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
     assert.ok(["loading", "playing", "paused", "error"].includes(seen.status), JSON.stringify(seen));
   });
 
-  test(VOICE_BUG, { skip, todo: VOICE_BUG }, async () => {
+  test(VOICE_BUG, { skip }, async () => {
     const results = [];
     for (let run = 0; run < 2; run += 1) {
       const page = await openReader();
@@ -418,7 +420,7 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
     assert.ok(["loading", "playing", "paused", "error"].includes(seen.status), JSON.stringify(seen));
   });
 
-  test(PAUSE_BUG, { skip, todo: PAUSE_BUG }, async () => {
+  test(PAUSE_BUG, { skip }, async () => {
     const results = [];
     for (let run = 0; run < 2; run += 1) {
       const page = await openReader();
@@ -559,7 +561,7 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
     assert.ok(seen.time === 0 || seen.paused !== false, JSON.stringify(seen));
   });
 
-  test(JUMP_ERROR_BUG, { skip, todo: JUMP_ERROR_BUG }, async () => {
+  test(JUMP_ERROR_BUG, { skip }, async () => {
     const paragraph = Array.from(
       { length: 24 },
       (_, index) =>

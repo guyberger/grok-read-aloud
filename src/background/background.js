@@ -20,6 +20,7 @@ const CONTENT_FILES = [
   "content/controls.js",
   "content/stretch.js",
   "content/player.js",
+  "content/transport.js",
   "content/reader.js",
 ];
 

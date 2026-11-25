@@ -113,10 +113,26 @@
   let nextRequestId = 1;
   let player = null;
   let frame = 0;
-  let sessionId = 0;
   let lastWord = -1;
   let lastSentence = -1;
   let lastPaintKey = "";
+
+  /**
+   * Status changes only through the transport. `apply` copies the result back
+   * onto `state`, which is what a snapshot and the popup read.
+   */
+  const transport = ns.transport.createTransport();
+
+  function apply(command) {
+    const outcome = transport.dispatch(command);
+    state.status = outcome.status;
+    return outcome;
+  }
+
+  /** Whether work started for `session` is still the read the listener wants. */
+  function live(session) {
+    return session === transport.generation;
+  }
 
   function emit() {
     const state = snapshot();
@@ -186,6 +202,10 @@
       // Keep the previous snapshot.
     }
     highlight.configure(settings);
+    // A settings change, including the voice, does not retarget a request
+    // already in flight. The transport records that; the request object the
+    // chunk was asked with is what the lookup uses.
+    apply({ type: "voice" });
     player?.setRate(settings.rate);
     // Turning the setting off mid-read takes the reader out of the page's
     // click path, and the cursor back to what the page asked for.
@@ -231,7 +251,10 @@
    * What a chunk's audio is asked for and remembered under: the range, the
    * text in it, and the voice and language it is to be spoken in. The settings
    * are read once here rather than when the response arrives, so a voice
-   * changed mid-read cannot file audio under the new voice's name.
+   * changed mid-read cannot file audio under the new voice's name. The caller
+   * keeps this object and looks the audio up with it. Reading the settings
+   * again after the response would look under the new voice, miss, and leave
+   * the read sitting on Loading.
    */
   function audioRequest(index) {
     const chunk = chunks[index];
@@ -245,8 +268,7 @@
     };
   }
 
-  function requestChunk(index) {
-    const request = audioRequest(index);
+  function requestChunk(index, request = audioRequest(index)) {
     if (!request) return Promise.resolve();
     if (cache.get(request)) return Promise.resolve();
 
@@ -254,7 +276,7 @@
     const pending = inflight.get(key);
     if (pending) return pending.promise;
 
-    const requestId = `${sessionId}-${nextRequestId++}`;
+    const requestId = `${transport.generation}-${nextRequestId++}`;
     const text = request.text;
     // The sentence this chunk follows, submitted with it and not played. A
     // request that holds only the chunk is a new utterance: the model starts
@@ -345,122 +367,171 @@
     }
   }
 
-  async function playChunk(index, startTime = 0) {
-    const session = sessionId;
-    state.status = "loading";
+  /**
+   * Fetch chunk `index` and play it from `startTime`, unless the listener has
+   * since asked for something else.
+   *
+   * `rollback`, when the fetch fails before this chunk's audio is in the
+   * engine, puts the chunk list back to the one the audio still in the engine
+   * was cut from. A jump re-cuts that list before it knows the request will
+   * succeed.
+   *
+   * @returns {Promise<boolean>} whether this chunk is the one now loaded
+   */
+  async function playChunk(index, startTime = 0, rollback = null) {
+    const session = transport.generation;
+    const previousIndex = state.chunkIndex;
+    // A pause that landed before this chunk was asked for stays a pause.
+    // Load refuses to flip that back to loading.
+    apply({ type: "load" });
     state.chunkIndex = index;
     emit();
 
+    // The voice and the language are fixed here, with the request. A change
+    // that arrives while the response is outstanding belongs to the next
+    // chunk, not to this lookup — looking it up again would use the new voice,
+    // miss the audio just stored under the old one, and return with the
+    // status still loading.
+    const request = audioRequest(index);
     // Both requests go out before either answer is waited on. The one after
     // this chunk is wanted either way, and issuing it now rather than once
     // this chunk is playing gives it the whole of this chunk's synthesis time
     // to arrive in — which is what keeps a small opening chunk from simply
     // moving the wait to the first join.
-    const wanted = requestChunk(index);
+    const wanted = requestChunk(index, request);
     prefetch(index);
 
-    // A jump made while this was loading cancels the request it was waiting
-    // on, and the request fails as cancelled requests do. That failure is the
-    // superseded read's, not the one now running: reporting it would put the
-    // new read into an error it never had, and take the clicks off with it.
+    let installed = false;
     try {
+      // A jump made while this was loading cancels the request it was waiting
+      // on, and the request fails as cancelled requests do. That failure is the
+      // superseded read's, not the one now running: reporting it would put the
+      // new read into an error it never had, and take the clicks off with it.
       await wanted;
-    } catch (error) {
-      if (session !== sessionId) return;
-      throw error;
-    }
-    if (session !== sessionId) return;
+      if (!live(session)) return false;
 
-    const request = audioRequest(index);
-    const entry = request && cache.get(request);
-    if (!entry) return;
+      const entry = request && cache.get(request);
+      if (!entry) throw new Error("The audio for this part did not arrive.");
 
-    // The frame loop is still following the previous chunk. Its clock sits at
-    // the end of that audio, and loading the next source resets the clock to
-    // 0 — while this chunk's words are timed from 0 as well. Painting in the
-    // gap, with one of those swapped and the other not yet, highlights a word
-    // seconds into the new chunk and then jumps back to its start. Stop
-    // painting, load, and only then point the highlight at this chunk.
-    stopLoop();
+      // The frame loop is still following the previous chunk. Its clock sits at
+      // the end of that audio, and loading the next source resets the clock to
+      // 0 — while this chunk's words are timed from 0 as well. Painting in the
+      // gap, with one of those swapped and the other not yet, highlights a word
+      // seconds into the new chunk and then jumps back to its start. Stop
+      // painting, load, and only then point the highlight at this chunk.
+      stopLoop();
 
-    const audio = ensurePlayer();
-    try {
+      const audio = ensurePlayer();
       await audio.load(entry.bytes, entry.contentType, { lead: entry.lead || 0 });
+      if (!live(session)) return false;
+
+      timeline = entry.timeline;
+      installed = true;
+      state.aligned = entry.timeline.aligned;
+      lastWord = -1;
+      lastSentence = -1;
+
+      audio.setRate(settings.rate);
+      if (startTime > 0) audio.seek(startTime);
+      state.engine = audio.engineName;
+
+      const outcome = apply({ type: "chunkReady", generation: session });
+      if (!outcome.accepted) {
+        // Still loading with nobody willing to play this arrival. That is the
+        // stuck read: say so, rather than returning and leaving it there.
+        if (transport.status === "loading") {
+          if (!installed) giveBack(previousIndex, rollback);
+          reportError(new Error("The audio for this part did not arrive."), session);
+        }
+        return false;
+      }
+
+      emit();
+      update();
+      if (outcome.engine !== "play") return true;
+
+      // Taking the read silences whichever other tab had it. It happens as this
+      // tab starts speaking rather than when the read was asked for, so a read
+      // that never gets as far as audio — no credential, a request that failed,
+      // a pause during the load — never silences a tab that is working.
+      if (transport.status !== "playing") return true;
+      handoff.take();
+      const started = await audio.play();
+      // Stop, pause or a newer read may have landed while this was waiting to
+      // start — either on the element, or for a click the page still owes us.
+      // That wait is over: it must not start the loop, or clear the notice, for
+      // a read that is no longer the one playing.
+      if (!live(session) || transport.status !== "playing" || started === false) return false;
+      markHeard();
+      return true;
     } catch (error) {
-      if (session !== sessionId) return;
-      throw error;
+      if (!live(session)) return false;
+      if (!installed) giveBack(previousIndex, rollback);
+      reportError(error, session);
+      return false;
     }
-    if (session !== sessionId) return;
+  }
 
-    timeline = entry.timeline;
-    state.aligned = entry.timeline.aligned;
-    lastWord = -1;
-    lastSentence = -1;
+  /** Put the chunk list back when a fetch failed before its audio was installed. */
+  function giveBack(previousIndex, rollback) {
+    if (rollback) rollback();
+    else state.chunkIndex = previousIndex;
+  }
 
-    audio.setRate(settings.rate);
-    if (startTime > 0) audio.seek(startTime);
-    state.status = "playing";
-    state.engine = audio.engineName;
-    emit();
-
-    update();
-    // Taking the read silences whichever other tab had it. It happens as this
-    // tab starts speaking rather than when the read was asked for, so a read
-    // that never gets as far as audio — no credential, a request that failed
-    // — never silences a tab that is working.
-    handoff.take();
-    let started = false;
-    try {
-      started = await audio.play();
-    } catch (error) {
-      if (session !== sessionId) return;
-      throw error;
-    }
-    // Stop, pause or a newer read may have landed while this was waiting to
-    // start — either on the element, or for a click the page still owes us.
-    // That wait is over: it must not start the loop, or clear the notice, for
-    // a read that is no longer the one playing.
-    if (session !== sessionId || state.status !== "playing" || started === false) return;
+  /**
+   * The chunk is actually speaking. The position is worth keeping even in a
+   * tab that is not on screen, where the frame loop — and with it the periodic
+   * write — stops but the audio carries on.
+   */
+  function markHeard() {
     if (state.notice === BLOCKED_NOTICE) {
       state.notice = "";
       emit();
     }
     everPlayed = true;
-    // A chunk boundary is a position worth keeping even in a tab that is not
-    // on screen, where the frame loop — and with it the periodic write —
-    // stops but the audio carries on.
     rememberPosition({ force: true });
     startLoop();
   }
 
   function advance() {
-    if (state.status !== "playing") return;
+    if (transport.status !== "playing") return;
     const next = state.chunkIndex + 1;
     if (next >= chunks.length) {
       finish();
       return;
     }
-    playChunk(next).catch(reportError);
+    playChunk(next);
   }
 
   function finish() {
+    const outcome = apply({ type: "finish" });
+    if (!outcome.accepted) return;
     stopLoop();
     // The page was heard to the end, so there is nothing left to continue.
     forgetPosition();
     highlight.setWord(null);
     highlight.setSentence(null);
-    state.status = "idle";
     state.chunkIndex = chunks.length ? chunks.length - 1 : 0;
     emit();
   }
 
-  function reportError(error) {
+  /**
+   * A request failed for `generation`. A failure from a read that has since
+   * been replaced is not this read's, and a failure while audio is still
+   * going silences it and paints the word it stopped on — otherwise the
+   * highlight freezes at the jump and the old audio keeps running under an
+   * error the panel will not stop.
+   */
+  function reportError(error, generation = transport.generation) {
+    const outcome = apply({ type: "fail", generation });
+    if (!outcome.accepted) return;
+    if (outcome.engine === "pause") player?.pause();
+    if (outcome.syncHighlight) paintPlayhead();
     stopLoop();
     // A read that broke part-way through is the clearest case for remembering
     // a position: trying again then carries on from the chunk that failed
     // rather than paying to synthesise the page from the top again.
     rememberPosition({ force: true });
-    state.status = "error";
     state.error = error?.message || String(error);
     highlight.notify(state.error);
     emit();
@@ -485,6 +556,17 @@
     // are installed together, and a frame in between would walk the word
     // backwards — see playChunk.
     if ((state.status !== "playing" && state.status !== "paused") || !timeline || !player) return;
+    paintPlayhead();
+  }
+
+  /**
+   * Paint the word the engine is actually on. Used by the frame loop and by
+   * a pause or a failure, which both stop the clock and then need the
+   * highlight to agree with where it stopped — including while the status is
+   * already `error`, which the frame loop does not paint.
+   */
+  function paintPlayhead() {
+    if (!timeline || !player) return;
     const time = player.getTime();
     const wordIndex = util.lastAtOrBefore(timeline.words, time);
     const sentenceIndex = util.lastAtOrBefore(timeline.sentences, time);
@@ -528,7 +610,7 @@
     reset();
     // `reset` retires the read before this one, so a start that waits on the
     // network can tell a second start from its own.
-    const session = sessionId;
+    const session = transport.generation;
 
     // Reading the settings is a round trip to the worker and extraction is a
     // walk of the document; neither needs the other, so they overlap.
@@ -548,12 +630,14 @@
     sentences = null;
 
     await settingsReady;
+    if (!live(session)) return snapshot();
     if (settings.readCodeBlocks !== readCodeBlocks) doc = walk({ readCodeBlocks: settings.readCodeBlocks });
     if (!settings.hasCredential) {
       reportError(
         settings.tierDenied
           ? "xAI will not let the signed-in account through to the API. Add an API key in the extension options."
           : "No xAI credentials. Sign in with xAI or add an API key in the extension options.",
+        session,
       );
       return snapshot();
     }
@@ -563,23 +647,27 @@
     // trip — the transport says Loading while that happens, and nothing about
     // opening the popup waited for any of it.
     if (docs.isDocument() && doc?.scope !== "selection") {
-      state.status = "loading";
+      // A pause during this fetch is held by the transport, so load does not
+      // flip a paused read back to loading.
+      apply({ type: "load" });
       emit();
       const body = await docs.read({ readCodeBlocks: settings.readCodeBlocks });
-      if (session !== sessionId) return snapshot();
+      if (!live(session)) return snapshot();
       // Everything the walk found is the menu bar, the sharing row and the
       // comment sidebar. Reading that aloud would be worse than saying so.
       if (!body) {
         reportError(
           "Could not read this Google Doc. Its text comes from Google, which needs you online and signed in to an account that can open the document.",
+          session,
         );
         return snapshot();
       }
       doc = body;
     }
 
+    if (!live(session)) return snapshot();
     if (!doc) {
-      reportError("Could not find readable text on this page.");
+      reportError("Could not find readable text on this page.", session);
       return snapshot();
     }
 
@@ -590,7 +678,7 @@
 
     chunks = align.chunkRanges(doc.text, settings.chunkChars, { firstChars: FIRST_CHUNK_CHARS });
     if (!chunks.length) {
-      reportError("Could not find readable text on this page.");
+      reportError("Could not find readable text on this page.", session);
       return snapshot();
     }
 
@@ -600,6 +688,7 @@
     // first request comes back starting on the word about to be spoken rather
     // than opening with the part of the page that was already heard.
     const stored = doc.scope === "page" ? await storedReady : null;
+    if (!live(session)) return snapshot();
     const at = stored && positions.offered(stored) ? positions.locate(doc.text, stored) : -1;
     let first = 0;
     if (at >= 0) {
@@ -612,7 +701,9 @@
       resumePoint = stored;
     }
 
-    sessionId += 1;
+    // Commit after the preparation awaits, keeping a pause that landed during
+    // them. The chunk about to be fetched belongs to this generation.
+    apply({ type: "commit" });
     abortRequests();
     // The cache survives: a page read again, or started over, is mostly audio
     // this tab has already been billed for, and serving it from memory is both
@@ -623,38 +714,47 @@
     // Text fetched from outside the page says so — on Google Docs, that the
     // words being spoken are nowhere in the page to be highlighted.
     state.notice = doc.notice ?? "";
-    playChunk(first).catch(reportError);
+    playChunk(first);
     return snapshot();
   }
 
   function pause() {
-    if (state.status !== "playing") return snapshot();
-    player?.pause();
-    stopLoop();
-    rememberPosition({ force: true });
-    // The invitation to click the page belongs to a start that is still
-    // waiting. A pause is the listener answering it themselves.
-    if (state.notice === BLOCKED_NOTICE) state.notice = "";
-    state.status = "paused";
-    emit();
+    const was = state.status;
+    const outcome = apply({ type: "pause" });
+    if (!outcome.accepted) return snapshot();
+    if (outcome.engine === "pause") {
+      player?.pause();
+      stopLoop();
+    }
+    if (outcome.syncHighlight) paintPlayhead();
+    if (was === "playing" || was === "loading") {
+      rememberPosition({ force: true });
+      // The invitation to click the page belongs to a start that is still
+      // waiting. A pause is the listener answering it themselves.
+      if (state.notice === BLOCKED_NOTICE) state.notice = "";
+    }
+    if (outcome.status !== was) emit();
     return snapshot();
   }
 
   async function resume() {
-    if (state.status !== "paused") return snapshot();
+    const outcome = apply({ type: "resume" });
+    if (!outcome.accepted) return snapshot();
     // Resuming is this tab asking for the read back, so the explanation for
     // why it stopped is no longer true — and so is a view left somewhere else
     // while it was quiet.
     if (state.notice === HANDOFF_NOTICE) state.notice = "";
     view.claim();
-    state.status = "playing";
     emit();
+    // Not audible yet: the chunk still in flight starts itself when it arrives.
+    if (outcome.engine !== "play") return snapshot();
+    if (transport.status !== "playing") return snapshot();
     handoff.take();
     const started = await player?.play();
     // A pause or a stop during the wait to start has already said so. The
     // loop belongs to a read that is actually going.
-    if (state.status !== "playing" || started === false) return snapshot();
-    startLoop();
+    if (transport.status !== "playing" || started === false) return snapshot();
+    markHeard();
     return snapshot();
   }
 
@@ -680,8 +780,9 @@
    * Starting a read resets the one before it, and the position it left behind
    * is the thing the new read is about to continue from.
    */
-  function reset() {
-    sessionId += 1;
+  function halt(command) {
+    const was = state.status;
+    apply({ type: command });
     stopLoop();
     player?.stop();
     // A read that is starting, or one that is over, both leave the next one
@@ -698,12 +799,16 @@
     lastSentence = -1;
     everPlayed = false;
     state.notice = "";
-    if (state.status !== "idle") {
-      state.status = "idle";
+    state.error = "";
+    if (was !== "idle") {
       state.chunkIndex = 0;
       emit();
     }
     return snapshot();
+  }
+
+  function reset() {
+    return halt("reset");
   }
 
   /**
@@ -714,7 +819,7 @@
    */
   function stop() {
     forgetPosition();
-    return reset();
+    return halt("stop");
   }
 
   /**
@@ -798,10 +903,17 @@
     // And retire a start that was still waiting for a click: this click is
     // the jump, and it must not also be the click that starts the audio
     // being left behind. Audio already playing is left playing until the
-    // next chunk takes over.
-    sessionId += 1;
+    // next chunk takes over. A failure of that request pauses it instead,
+    // and the chunk list below is what gets restored so the highlight still
+    // names the audio that is actually loaded.
+    const superseded = apply({ type: "jump" });
+    if (!superseded.accepted) return snapshot();
     stopLoop();
     player?.cancelStart();
+
+    const previousChunks = chunks;
+    const previousIndex = state.chunkIndex;
+    const previousCount = state.chunkCount;
 
     let target = align.chunkIndexFor(chunks, wordStart);
     let startTime = 0;
@@ -819,7 +931,11 @@
 
     abortRequests(neighbourKeys(target));
     state.error = "";
-    await playChunk(target, startTime).catch(reportError);
+    await playChunk(target, startTime, () => {
+      chunks = previousChunks;
+      state.chunkIndex = previousIndex;
+      state.chunkCount = previousCount;
+    });
     return snapshot();
   }
 
@@ -986,6 +1102,7 @@
 
   async function setRate(rate) {
     settings.rate = util.clamp(Number(rate) || 1, 0.5, 3);
+    apply({ type: "rate" });
     player?.setRate(settings.rate);
     emit();
     return snapshot();
