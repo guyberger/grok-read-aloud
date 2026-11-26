@@ -90,6 +90,97 @@ trailer<</Root 1 0 R>>
 %%EOF`,
 );
 
+const TEASER_CARD =
+  "TEASERTOKEN This recommended card describes a different creek and a newsletter the keeper never asked to hear. ";
+const STORY_OPENING =
+  "STORYTOKEN The mill at Blackwater has run on the tide for four hundred years, and every part of it that still moves is made of wood.";
+const DUPLICATE_PHRASE =
+  "The sluice gate was drawn and set true before the spring tide reached the wheel and the brake.";
+
+huntPages.set(
+  "teaser.html",
+  shell(
+    "Tide mill",
+    `<div id="story" class="story-body">
+      <h1>How the tide mill keeps its wheel</h1>
+      <p>${STORY_OPENING} Twice a day the pond fills through the sluice.</p>
+      <p>The story keeps going with the brake, the pegs, and the elm buckets that have lain under water since the spring so they will not shrink.</p>
+      <p>A third paragraph of the story mentions the gudgeon and the patience of driving every peg out with a mallet before the pond fills.</p>
+      <p>The fourth paragraph of the story walks the length of the dam, names every peg the wheelwright drove home last spring, and records that the pond still empties through the same wooden wheel.</p>
+    </div>
+    <aside>
+      <article id="teaser"><h1>Recommended mill</h1><p>${TEASER_CARD.repeat(5)}</p></article>
+    </aside>`,
+  ),
+);
+
+huntPages.set(
+  "dupes.html",
+  shell(
+    "Two sluices",
+    `<article id="story">
+      <p id="intro">${"The mill pond fills on the tide and the keeper notes the hour. ".repeat(8)}</p>
+      <p id="first">${DUPLICATE_PHRASE}</p>
+      <p id="middle">${"Between the marks the brake stays quiet and the ledger stays open. ".repeat(3)}</p>
+      <p id="second">${DUPLICATE_PHRASE}</p>
+      <p id="tail">${"After both marks the wheel keeps turning until the pond is empty. ".repeat(10)}</p>
+    </article>`,
+  ),
+);
+
+huntPages.set(
+  "details.html",
+  shell(
+    "Ledger",
+    `<article>
+      <p>The keeper opens the ledger before anything else on the page and writes the hour the wheel began to turn.</p>
+      <details>
+        <summary>Folded question about the sluice gate</summary>
+        <p>FOLDEDANSWERTOKEN the answer must stay silent while the disclosure is shut tight.</p>
+      </details>
+      <p>After the disclosure the brake is mentioned once and the pond is left to empty.</p>
+    </article>`,
+  ),
+);
+
+huntPages.set(
+  "below.html",
+  shell(
+    "Below",
+    `<article>
+      <p>Visible opening about the tide mill wheel and the pond that feeds it every single day the keeper is on watch.</p>
+      <div style="height:180vh"></div>
+      <div style="content-visibility:auto; contain-intrinsic-size:auto 400px">
+        <p>CVTOKEN the offscreen note is still part of the page and must be spoken with the rest of the article.</p>
+      </div>
+    </article>`,
+    "article p { max-width: 640px; }",
+  ),
+);
+
+huntPages.set(
+  "tall.html",
+  shell(
+    "Tall mill",
+    `<article>
+      ${Array.from({ length: 8 }, (_, index) => `<p id="p${index}">Paragraph ${index + 1}. The wheel turns, the pond empties, and the keeper writes one more line about grease, pegs, and the brake before walking the length of the dam.</p>`).join("")}
+    </article>`,
+    "article p { font-size: 28px; line-height: 1.7; margin: 0 0 42vh; }",
+  ),
+);
+
+huntPages.set(
+  "formatted.html",
+  shell(
+    "Formatted",
+    `<article>
+      <p>The <em>keeper</em> wrote <strong>sluice</strong> in the ledger<br>and then walked back to the wheel.</p>
+      <ul><li>First the gudgeon is drawn and set true.</li><li>Second the brake is checked before the pond fills.</li></ul>
+      <p>After the list the elm bucket is cut from timber that has lain under water since the spring.</p>
+    </article>`,
+  ),
+);
+
 const DOC_URL = "https://docs.google.com/document/d/1mockTideMillDocumentForEndToEndChecks/edit";
 
 export function huntScenarios(ctx) {
@@ -110,6 +201,7 @@ export function huntScenarios(ctx) {
     article,
     save,
     screenshot,
+    capture,
     ui,
     activate,
     browser,
@@ -197,6 +289,23 @@ export function huntScenarios(ctx) {
 
   async function spoken() {
     return (await requests()).map((entry) => entry.text).join("\n");
+  }
+
+  async function highlightedParagraph() {
+    return evaluate(`
+      (() => {
+        const highlight = CSS.highlights?.get?.("read-aloud-word");
+        let id = "";
+        if (highlight) {
+          for (const range of highlight) {
+            const node = range.startContainer;
+            const el = node && node.nodeType === 1 ? node : node?.parentElement;
+            id = el?.closest?.("p")?.id || "";
+          }
+        }
+        return id;
+      })()
+    `);
   }
 
   async function openPopup() {
@@ -849,6 +958,289 @@ export function huntScenarios(ctx) {
           notes.push(`${seed}@${rate}×`);
         }
         return { ok: true, detail: `seeds ${notes.join(", ")}` };
+      },
+    },
+    {
+      name: "teaser-article-read",
+      bug: "A sidebar teaser article is read instead of the story",
+      async run(repeat) {
+        await applySettings({ chunkChars: 2000 });
+        await navigate("teaser.html");
+        const chosen = await evaluate(`globalThis.__readAloud.extract.findMainContent()?.id || ""`);
+        await control("start", { scope: "page", from: "start" });
+        const playing = await until((sample) => sample.status === "playing" || sample.status === "error", 12000);
+        const text = await spoken();
+        const story = text.includes("STORYTOKEN");
+        const teaser = text.includes("TEASERTOKEN");
+        const missedStory = chosen === "teaser" && teaser && !story && playing.status === "playing";
+        const path = save(`bug-teaser-article-${repeat}.json`, {
+          seed: SEED,
+          chosen,
+          story,
+          teaser,
+          status: playing.status,
+          error: playing.error,
+          text: text.slice(0, 400),
+        });
+        save("bug-teaser-article.json", {
+          seed: SEED,
+          chosen,
+          story,
+          teaser,
+          status: playing.status,
+          text: text.slice(0, 400),
+        });
+        if (missedStory) await screenshot(`bug-teaser-article-${repeat}.png`);
+        if (missedStory) await screenshot("bug-teaser-article.png");
+        return {
+          ok: missedStory,
+          detail: missedStory
+            ? `root #${chosen} was spoken and STORYTOKEN never was`
+            : `root #${chosen || "none"} story ${story} teaser ${teaser} status ${playing.status} ${playing.error || ""}`,
+          evidence: path,
+        };
+      },
+    },
+    {
+      name: "popup-resume-restarts-load",
+      bug: "Opening the popup while a chunk is loading offers Resume and restarts the read",
+      async run(repeat) {
+        await setTiming({ base: 6000, perChar: 0, timestamps: 0 });
+        await applySettings({ chunkChars: 2000 });
+        await navigate("article.html?case=popup-load");
+        const started = await control("start", { scope: "page", from: "start" });
+        if (started?.state?.status !== "loading") {
+          return { ok: false, detail: `wanted loading, got ${started?.state?.status}` };
+        }
+        await sleep(200);
+        const before = await requests();
+        await article.evaluate(
+          `setTimeout(() => { const end = performance.now() + 2600; while (performance.now() < end) {} }, 20)`,
+        );
+        await sleep(60);
+        await activate();
+        const handle = await openPopup();
+        let shown = { state: "", label: "", disabled: null };
+        try {
+          await handle.popup.send("Page.enable").catch(() => {});
+          const deadline = Date.now() + 600;
+          while (Date.now() < deadline) {
+            shown = await handle.popup.evaluate(`({
+              state: document.getElementById("status")?.dataset.state || "",
+              label: document.getElementById("toggle-label")?.textContent || "",
+              disabled: document.getElementById("toggle")?.disabled ?? null,
+              text: document.getElementById("status")?.textContent || ""
+            })`);
+            if (shown.state && shown.state !== "pending") break;
+            await sleep(40);
+          }
+          if (shown.disabled !== true) {
+            await handle.popup.evaluate(`document.getElementById("toggle").click()`);
+          }
+          await capture(handle.popup, `bug-false-resume-${repeat}.png`);
+          await capture(handle.popup, "bug-false-resume.png");
+        } finally {
+          await handle.close();
+        }
+        await sleep(3200);
+        const after = await requests();
+        const later = await probe();
+        const grew = after.length > before.length;
+        const replayed = after.slice(before.length).some((entry) => (entry.text || "").includes((before[0]?.text || "").slice(0, 40)));
+        const lied = shown.state !== "loading" && shown.disabled !== true;
+        const restarted = lied && grew && (replayed || later.status === "loading" || later.status === "playing");
+        const path = save(`bug-false-resume-${repeat}.json`, {
+          seed: SEED,
+          shown,
+          before: before.length,
+          after: after.length,
+          replayed,
+          later: { status: later.status, error: later.error, time: later.time },
+          heads: after.map((entry) => entry.head),
+        });
+        save("bug-false-resume.json", {
+          seed: SEED,
+          shown,
+          before: before.length,
+          after: after.length,
+          replayed,
+          later: { status: later.status, time: later.time },
+        });
+        return {
+          ok: restarted,
+          detail: restarted
+            ? `popup showed ${shown.state || "pending"} "${shown.label}" (enabled) and the click issued ${after.length - before.length} more requests`
+            : `popup ${JSON.stringify(shown)} requests ${before.length}→${after.length} replayed ${replayed} later ${later.status}`,
+          evidence: path,
+        };
+      },
+    },
+    {
+      name: "duplicate-resume",
+      bug: "Continuing after new text is inserted above resumes at an earlier duplicate",
+      async run(repeat) {
+        await applySettings({ chunkChars: 2000, clickToJump: true, autoScroll: false });
+        await navigate(`dupes.html?case=resume-${repeat}`);
+        await control("start", { scope: "page", from: "start" });
+        const playing = await until((sample) => sample.status === "playing" && sample.word, 12000);
+        if (playing.status !== "playing") return { ok: false, detail: `did not start ${playing.status} ${playing.error}` };
+        const point = await pointOf("#second", 0);
+        if (!point) return { ok: false, detail: "second copy was not on the page" };
+        await click(point);
+        let atSecond = "";
+        let jumpStatus = "";
+        const jumpDeadline = Date.now() + 8000;
+        while (Date.now() < jumpDeadline) {
+          const sample = await probe();
+          jumpStatus = sample.status;
+          if (sample.status === "error") return { ok: false, detail: `jump errored ${sample.error}` };
+          atSecond = await highlightedParagraph();
+          if (sample.status === "playing" && atSecond === "second") break;
+          await sleep(200);
+        }
+        if (atSecond !== "second") {
+          return { ok: false, detail: `click did not land on the second copy (${atSecond || "none"}, status ${jumpStatus})` };
+        }
+        await control("pause");
+        await sleep(250);
+        const marked = await evaluate(`globalThis.__readAloud.reader.snapshot().resume`);
+        if (!marked) return { ok: false, detail: "pause did not offer a resume point" };
+        await article.evaluate(`
+          (() => {
+            const banner = document.createElement("p");
+            banner.id = "banner";
+            banner.textContent = ${JSON.stringify("A new notice arrived above the story and pushed every paragraph down. ".repeat(4))};
+            document.querySelector("#story").prepend(banner);
+          })()
+        `);
+        await control("start", { scope: "page", from: "resume" });
+        const again = await until((sample) => sample.status === "playing" && sample.word, 12000);
+        await sleep(250);
+        const landed = await highlightedParagraph();
+        const early = landed === "first" && again.status === "playing";
+        const path = save(`bug-duplicate-resume-${repeat}.json`, {
+          seed: SEED,
+          marked,
+          atSecond,
+          landed,
+          status: again.status,
+          word: again.word,
+        });
+        save("bug-duplicate-resume.json", { seed: SEED, marked, landed, status: again.status, word: again.word });
+        if (early) await screenshot(`bug-duplicate-resume-${repeat}.png`);
+        if (early) await screenshot("bug-duplicate-resume.png");
+        return {
+          ok: early,
+          detail: early
+            ? `resume highlighted #${landed} ("${again.word}") after the notice was inserted above #second`
+            : `landed #${landed || "none"} status ${again.status} word ${again.word} resume ${JSON.stringify(marked)}`,
+          evidence: path,
+        };
+      },
+    },
+    {
+      name: "fresh-territory",
+      async run() {
+        const notes = [];
+        await applySettings({ chunkChars: 2000, rate: 1, autoScroll: false, clickToJump: true });
+
+        await navigate("details.html");
+        await control("start", { scope: "page", from: "start" });
+        const details = await until((sample) => sample.status === "playing" || sample.status === "error", 10000);
+        const detailsText = await spoken();
+        if (details.status === "error") return { ok: false, detail: `details errored ${details.error}` };
+        if (!detailsText.includes("ledger") || !detailsText.includes("Folded question")) {
+          return { ok: false, detail: `details dropped the summary ${detailsText.slice(0, 140)}` };
+        }
+        if (detailsText.includes("FOLDEDANSWERTOKEN")) return { ok: false, detail: "closed disclosure was read" };
+        notes.push("closed details");
+
+        await resetMock();
+        await navigate("below.html");
+        await control("start", { scope: "page", from: "start" });
+        const below = await until((sample) => sample.status === "playing" || sample.status === "error", 10000);
+        const belowText = await spoken();
+        if (below.status === "error") return { ok: false, detail: `content-visibility errored ${below.error}` };
+        if (!belowText.includes("CVTOKEN")) return { ok: false, detail: `offscreen content-visibility text was skipped (${belowText.slice(0, 160)})` };
+        notes.push("content-visibility");
+
+        await resetMock();
+        await applySettings({ chunkChars: 500, rate: 2, autoScroll: false });
+        await navigate("formatted.html");
+        await control("start", { scope: "page", from: "start" });
+        const formatted = await until((sample) => sample.status === "playing" && sample.word, 10000);
+        if (formatted.status !== "playing") return { ok: false, detail: `formatted did not play ${formatted.status} ${formatted.error}` };
+        const pageText = await evaluate(`globalThis.__readAloud.extract.extract("page").text`);
+        let cursor = 0;
+        let backward = "";
+        const seen = [];
+        for (let i = 0; i < 12; i += 1) {
+          const sample = await probe();
+          if (sample.status === "error") return { ok: false, detail: `formatted errored ${sample.error}` };
+          if (sample.word && seen.at(-1) !== sample.word) {
+            const at = pageText.indexOf(sample.word, Math.max(0, cursor - sample.word.length));
+            if (sample.word.length > 4 && at < 0) {
+              const earlier = pageText.indexOf(sample.word);
+              if (earlier >= 0 && earlier + sample.word.length < cursor - 1) backward = `${seen.at(-1)} → ${sample.word}`;
+            } else if (at >= 0) cursor = Math.max(cursor, at + sample.word.length);
+            seen.push(sample.word);
+          }
+          await sleep(160);
+        }
+        if (backward) return { ok: false, detail: `formatted highlight jumped backward ${backward}` };
+        const asked = await spoken();
+        if (!asked.includes("sluice") || !asked.includes("gudgeon") || !asked.includes("elm")) {
+          return { ok: false, detail: `formatted skipped prose ${asked.slice(0, 160)}` };
+        }
+        notes.push(`formatted ${seen.length} words`);
+
+        await resetMock();
+        await setTiming({ base: 0, perChar: 0, timestamps: 0 });
+        await applySettings({ rate: 3, autoScroll: true, chunkChars: 240 });
+        await navigate("tall.html");
+        await control("start", { scope: "page", from: "start" });
+        const tall = await until((sample) => sample.status === "playing" && sample.word, 12000);
+        if (tall.status !== "playing") return { ok: false, detail: `tall page did not play ${tall.status} ${tall.error}` };
+        let offscreen = "";
+        let maxScroll = 0;
+        for (let i = 0; i < 10; i += 1) {
+          const place = await evaluate(`
+            (() => {
+              const highlight = CSS.highlights?.get?.("read-aloud-word");
+              let rect = null;
+              if (highlight) for (const range of highlight) {
+                const box = range.getBoundingClientRect();
+                if (box && (box.width || box.height)) rect = { top: box.top, bottom: box.bottom, height: box.height };
+              }
+              const snap = globalThis.__readAloud.reader.snapshot();
+              return { status: snap.status, following: snap.following, scrollY: window.scrollY, inner: window.innerHeight, rect, word: (() => {
+                let word = "";
+                if (highlight) for (const range of highlight) word = range.toString();
+                return word;
+              })() };
+            })()
+          `);
+          maxScroll = Math.max(maxScroll, place.scrollY || 0);
+          if (place.following && place.rect && place.status === "playing") {
+            if (place.rect.top < -80 || place.rect.bottom > place.inner + 80) {
+              offscreen = `"${place.word}" at top ${Math.round(place.rect.top)} scroll ${Math.round(place.scrollY)}`;
+              break;
+            }
+          }
+          await sleep(400);
+        }
+        if (offscreen) return { ok: false, detail: `auto-scroll left the word offscreen ${offscreen}` };
+        const height = await evaluate(`document.documentElement.scrollHeight`);
+        if (maxScroll > height) return { ok: false, detail: `auto-scroll ran past the page (${Math.round(maxScroll)} > ${height})` };
+        notes.push(`auto-scroll ${Math.round(maxScroll)}px`);
+
+        await control("stop");
+        await sleep(200);
+        const stopped = await probe();
+        if (stopped.status !== "idle") return { ok: false, detail: `stop during auto-scroll left ${stopped.status}` };
+        notes.push("stop");
+
+        return { ok: true, detail: notes.join("; ") };
       },
     },
   ];

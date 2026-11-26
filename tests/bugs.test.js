@@ -13,6 +13,7 @@
  */
 import assert from "node:assert/strict";
 import test, { before, after, describe } from "node:test";
+import { panelState } from "../src/common/panel-cache.js";
 import { Browser, contentBundle, findChrome, fixtureUrl } from "./headless.js";
 import { fakeTimestamps, loadContentNamespace } from "./load-content.js";
 
@@ -192,6 +193,11 @@ const HARNESS = `
             globalThis.__mode = "normal";
             return globalThis.__send({ type: "pause" }).then(answer);
           }
+          if (globalThis.__mode === "delay") {
+            return new Promise((resolve) => {
+              setTimeout(() => resolve(audioFor(message.text || "")), 800);
+            });
+          }
           return answer();
         }
         return Promise.resolve({ ok: false, error: "unhandled " + (message && message.type) });
@@ -294,6 +300,29 @@ const SPA_BUG = "Replacing the article mid-read keeps speaking the text that was
 const VOICE_BUG = "Changing voice while a chunk is loading leaves playback stuck on Loading";
 const SHADOW_BUG = "Article text inside an open shadow root is never read";
 const PAUSE_BUG = "Pause during loading is ignored and the audio starts anyway";
+const TEASER_BUG = "A sidebar teaser article is read instead of the story";
+const POPUP_LOAD_BUG = "Opening the popup while a chunk is loading offers Resume and restarts the read";
+const DUPLICATE_RESUME_BUG = "Continuing after new text is inserted above resumes at an earlier duplicate";
+
+const TEASER_CARD = "TEASERTOKEN This recommended card describes a different creek and a newsletter the keeper never asked to hear. ";
+const STORY_OPENING = "STORYTOKEN The mill at Blackwater has run on the tide for four hundred years, and every part of it that still moves is made of wood.";
+
+function teaserPage() {
+  const teaser = TEASER_CARD.repeat(5);
+  return `<nav>Navigation: Home · Notes · Index</nav>
+    <div id="story" class="story-body">
+      <h1>How the tide mill keeps its wheel</h1>
+      <p>${STORY_OPENING} Twice a day the pond fills through the sluice.</p>
+      <p>The story keeps going with the brake, the pegs, and the elm buckets that have lain under water since the spring so they will not shrink.</p>
+      <p>A third paragraph of the story mentions the gudgeon and the patience of driving every peg out with a mallet before the pond fills.</p>
+      <p>The fourth paragraph of the story walks the length of the dam, names every peg the wheelwright drove home last spring, and records that the pond still empties through the same wooden wheel.</p>
+    </div>
+    <aside>
+      <article id="teaser"><h1>Recommended mill</h1><p>${teaser}</p></article>
+    </aside>`;
+}
+
+const DUPLICATE_PHRASE = "The sluice gate was drawn and set true before the spring tide reached the wheel and the brake.";
 
 function emojiTiming(text) {
   const { graphChars, graphTimes, duration } = fakeTimestamps(text, 0.05);
@@ -687,5 +716,122 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
       assert.ok(result.marked > 0, JSON.stringify(results));
       assert.match(result.word, /spring|tide/, JSON.stringify(results));
     }
+  });
+
+  test("a story div is read when it is the only candidate", { skip }, async () => {
+    const page = await browser.open(fixtureUrl("article.html"), contentBundle(["util.js", "extract.js"]));
+    pages.push(page);
+    const text = await page.evaluate(`
+      (() => {
+        document.body.innerHTML = ${JSON.stringify(`<div id="story" class="story-body"><h1>How the tide mill keeps its wheel</h1><p>${STORY_OPENING}</p><p>The brake and the pegs stay in the second paragraph of the story.</p><p>The gudgeon is mentioned in the third paragraph before the pond fills.</p></div>`)};
+        return globalThis.__readAloud.extract.extract("page")?.text ?? "";
+      })()
+    `);
+    assert.ok(text.includes("STORYTOKEN"), text.slice(0, 160));
+  });
+
+  test(TEASER_BUG, { skip, todo: TEASER_BUG }, async () => {
+    const results = [];
+    for (let run = 0; run < 2; run += 1) {
+      const page = await browser.open(fixtureUrl("article.html"), contentBundle(["util.js", "extract.js"]));
+      pages.push(page);
+      results.push(
+        await page.evaluate(`
+          (() => {
+            document.body.innerHTML = ${JSON.stringify(teaserPage())};
+            const root = globalThis.__readAloud.extract.findMainContent();
+            const doc = globalThis.__readAloud.extract.extract("page");
+            return { root: root?.id ?? "", text: doc?.text ?? "" };
+          })()
+        `),
+      );
+    }
+    for (const result of results) {
+      assert.ok(result.text.includes("STORYTOKEN"), JSON.stringify({ root: result.root, text: result.text.slice(0, 180) }));
+    }
+  });
+
+  test("a playing snapshot stays marked playing in the panel cache", () => {
+    const shown = panelState({ status: "playing", chunkIndex: 1, chunkCount: 3, progress: 0.4 });
+    assert.equal(shown.status, "playing");
+  });
+
+  test(POPUP_LOAD_BUG, { todo: POPUP_LOAD_BUG }, async () => {
+    const problems = [];
+    const shown = panelState({ status: "loading", chunkIndex: 0, chunkCount: 2, progress: 0 });
+    if (shown?.status !== "loading") problems.push(`cache shows ${shown?.status} for an in-flight load`);
+    if (!skip) {
+      for (let run = 0; run < 2; run += 1) {
+        const page = await openReader();
+        await page.evaluate(`globalThis.__mode = "delay"; globalThis.__synthCount = 0;`);
+        await page.evaluate(`globalThis.__send({ type: "start", scope: "page", from: "start" })`);
+        const mid = await page.evaluate(`({
+          status: globalThis.__readAloud.reader.snapshot().status,
+          synth: globalThis.__synthCount || 0
+        })`);
+        if (mid.status !== "loading") {
+          problems.push(`run ${run} left loading before the popup could open (${mid.status})`);
+          continue;
+        }
+        const synth = await page.evaluate(
+          `globalThis.__send({ type: "toggle", scope: "page" }).then(() => globalThis.__synthCount || 0)`,
+        );
+        // The mislabeled Resume button sends toggle. An in-flight load already
+        // asked for its chunks; toggle must not start the read over.
+        if (synth > mid.synth) problems.push(`run ${run} toggle during load grew requests ${mid.synth} → ${synth}`);
+      }
+    }
+    assert.equal(problems.length, 0, problems.join("\n"));
+  });
+
+  test("a unique passage is found again after text is inserted above it", () => {
+    const { positions } = loadContentNamespace(["util.js", "positions.js"]);
+    const oldText = `${"The mill pond fills on the tide and the keeper notes the hour. ".repeat(8)}${DUPLICATE_PHRASE} The tail stays put.`;
+    const at = oldText.indexOf(DUPLICATE_PHRASE);
+    const entry = positions.entryFor({ text: oldText, charIndex: at });
+    const next = `${"A notice was posted above the story. ".repeat(8)}\n${oldText}`;
+    assert.equal(positions.locate(next, entry), next.indexOf(DUPLICATE_PHRASE));
+  });
+
+  test(DUPLICATE_RESUME_BUG, { todo: DUPLICATE_RESUME_BUG }, () => {
+    const { positions } = loadContentNamespace(["util.js", "positions.js"]);
+    const intro = "The mill pond fills on the tide and the keeper notes the hour. ".repeat(8);
+    const middle = "Between the marks the brake stays quiet and the ledger stays open. ".repeat(3);
+    const tail = "After both marks the wheel keeps turning until the pond is empty. ".repeat(10);
+    const oldText = [intro.trim(), DUPLICATE_PHRASE, middle.trim(), DUPLICATE_PHRASE, tail.trim()].join("\n");
+    const first = oldText.indexOf(DUPLICATE_PHRASE);
+    const second = oldText.indexOf(DUPLICATE_PHRASE, first + DUPLICATE_PHRASE.length);
+    const entry = positions.entryFor({ text: oldText, charIndex: second });
+    assert.ok(positions.offered(entry), JSON.stringify(entry));
+    const runs = [220, 360].map((size) => {
+      const banner = "A new notice arrived above the story and pushed every paragraph down. ".repeat(8).slice(0, size);
+      const next = `${banner}\n${oldText}`;
+      const firstNext = next.indexOf(DUPLICATE_PHRASE);
+      const secondNext = next.indexOf(DUPLICATE_PHRASE, firstNext + DUPLICATE_PHRASE.length);
+      return { found: positions.locate(next, entry), secondNext };
+    });
+    for (const run of runs) {
+      assert.equal(run.found, run.secondNext, JSON.stringify(runs));
+    }
+  });
+
+  test("an unedited word highlight is a word from the article", { skip }, async () => {
+    const page = await openReader();
+    await page.evaluate(`globalThis.__send({ type: "start", scope: "page", from: "start" })`);
+    let word = "";
+    for (let i = 0; i < 30 && word.length < 2; i += 1) {
+      word = await page.evaluate(`
+        (() => {
+          const highlight = CSS.highlights?.get?.("read-aloud-word");
+          let text = "";
+          if (highlight) for (const range of highlight) text = range.toString();
+          return text;
+        })()
+      `);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    const article = await page.evaluate(`document.querySelector("#story").innerText`);
+    assert.ok(word.length > 1, "no highlight");
+    assert.ok(article.includes(word), `${word} is not in the article`);
   });
 });

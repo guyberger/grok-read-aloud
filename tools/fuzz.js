@@ -558,7 +558,12 @@ async function main() {
   }
 
   async function screenshot(name) {
-    const shot = await article.send("Page.captureScreenshot", { format: "png" });
+    return capture(article, name);
+  }
+
+  async function capture(session, name) {
+    await session.send("Page.enable").catch(() => {});
+    const shot = await session.send("Page.captureScreenshot", { format: "png" });
     const path = resolve(ARTIFACTS, name);
     writeFileSync(path, Buffer.from(shot.data, "base64"));
     return path;
@@ -1062,6 +1067,7 @@ async function main() {
       article,
       save,
       screenshot,
+      capture,
       ui,
       activate,
       browser,
