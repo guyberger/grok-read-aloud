@@ -796,6 +796,16 @@ hidden, and an index of every post holds more text than the one post on screen,
 so an unfiltered score picks the stale copy and then finds nothing in it but
 hidden nodes.
 
+The walk is the rendered tree. An open shadow root is entered, and a slot
+contributes the nodes it shows — assigned ones, or its fallback when nothing
+is assigned — so an article drawn inside a component is read, highlighted and
+clickable in the same places a light-DOM article is. Text the shadow does not
+show is left out. A closed shadow root cannot be seen.
+
+An `<article>` does not win just for being an article. One that sits in an
+aside, a complementary landmark, or a recommendation card loses to a story
+with more text. It is still read when it is the only thing on the page.
+
 "Rendered" is decided by walking the ancestors and reading computed styles
 rather than by `Element.checkVisibility`, which reports anything without a
 layout box as invisible — including `display: contents` wrappers, whose
@@ -1998,7 +2008,9 @@ plays, so that playback is really tested — out of the speakers.
   `[role=main]` and `<main>` first, then falls back to scoring text density,
   and if the winner yields almost nothing it reads the visible body instead,
   minus navigation, headers, sidebars and footers, including when those are
-  landmark roles on a div. On an unusual layout it may
+  landmark roles on a div. An article inside a sidebar or a recommendation
+  does not outrank the story. Open shadow roots are part of the rendered
+  tree; a closed one cannot be read. On an unusual layout it may
   read too much or too little; selecting the text you want and reading the
   selection always works.
 - **A superscript number with no link and no citation class is read.** It is

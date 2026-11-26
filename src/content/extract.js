@@ -83,6 +83,101 @@
     return true;
   }
 
+  function isElementNode(node) {
+    return node?.nodeType === Node.ELEMENT_NODE;
+  }
+
+  /**
+   * Parent in the flat tree.
+   *
+   * A node assigned to a slot is rendered there. A node whose parent is a
+   * shadow root is rendered inside the host. Otherwise the parent is the
+   * element parent, which is all a light-DOM page has ever had.
+   */
+  function flatParent(node) {
+    if (!node) return null;
+    if (node.assignedSlot) return node.assignedSlot;
+    const parent = node.parentNode;
+    if (!parent) return null;
+    if (parent.nodeType === Node.DOCUMENT_FRAGMENT_NODE && parent.host) return parent.host;
+    return isElementNode(parent) ? parent : null;
+  }
+
+  /** Whether `node` sits inside `ancestor` once slots and shadow roots are flattened. */
+  function flatContains(ancestor, node) {
+    if (!ancestor || !node) return false;
+    for (let current = node; current; current = flatParent(current)) {
+      if (current === ancestor) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Rendered children, in order.
+   *
+   * An open shadow root replaces the host's light children. A slot contributes
+   * the nodes it shows — its assigned nodes, or its fallback when nothing is
+   * assigned. Light children of a shadow host are reached only through a
+   * slot, so a node the shadow does not show is not visited. A closed shadow
+   * root cannot be seen (`shadowRoot` is null); its light children are walked
+   * as they always were.
+   */
+  function composedKids(node) {
+    if (!node) return [];
+    if (isElementNode(node) && node.tagName === "SLOT") {
+      const assigned = node.assignedNodes({ flatten: true });
+      if (assigned.length) return [...assigned];
+      return expandSlots(node);
+    }
+    if (isElementNode(node) && node.shadowRoot) return composedKids(node.shadowRoot);
+    return expandSlots(node);
+  }
+
+  function expandSlots(node) {
+    const kids = [];
+    const list = node.childNodes;
+    if (!list) return kids;
+    for (let i = 0; i < list.length; i += 1) {
+      const child = list[i];
+      if (isElementNode(child) && child.tagName === "SLOT") kids.push(...composedKids(child));
+      else kids.push(child);
+    }
+    return kids;
+  }
+
+  /**
+   * Visit `root`'s rendered descendants, parents before children.
+   * Returning false from `visit` skips that node's subtree.
+   */
+  function walkComposed(root, visit) {
+    const stack = [];
+    const push = (kids) => {
+      for (let i = kids.length - 1; i >= 0; i -= 1) stack.push(kids[i]);
+    };
+    push(composedKids(root));
+    while (stack.length) {
+      const node = stack.pop();
+      if (visit(node) === false) continue;
+      if (node.nodeType === Node.TEXT_NODE) continue;
+      push(composedKids(node));
+    }
+  }
+
+  function composedFirst(node) {
+    const kids = composedKids(node);
+    return kids.length ? kids[0] : null;
+  }
+
+  /** Whether `element` or a descendant hosts an open shadow root. */
+  function hasOpenShadow(element) {
+    if (!isElementNode(element)) return false;
+    if (element.shadowRoot) return true;
+    for (const host of element.querySelectorAll("*")) {
+      if (host.shadowRoot) return true;
+    }
+    return false;
+  }
+
   // A box this small, on an axis it clips, shows nothing. The same threshold
   // as a screen-reader-only box: a hairline can be a rule, and a line clamp
   // is many times this.
@@ -190,16 +285,18 @@
    * one that is still closed is folded with it, summary included.
    */
   function disclosureHides(node) {
-    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    const element = isElementNode(node) ? node : flatParent(node);
     if (!element) return false;
     for (
-      let details = element.tagName === "DETAILS" ? element : element.parentElement;
+      let details = element.tagName === "DETAILS" ? element : flatParent(element);
       details;
-      details = details.parentElement
+      details = flatParent(details)
     ) {
-      if (details.tagName !== "DETAILS" || details.open) continue;
+      if (!isElementNode(details) || details.tagName !== "DETAILS" || details.open) continue;
       const summary = disclosureSummary(details);
-      if (summary?.contains(node)) continue;
+      // `contains` stops at a shadow boundary, so a summary drawn in a shadow
+      // root is asked in the flat tree instead.
+      if (summary && flatContains(summary, node)) continue;
       // The disclosure element itself stays. Hiding it would hide its summary,
       // which is the one line actually on the page.
       if (node !== details) return true;
@@ -207,10 +304,10 @@
     return false;
   }
 
-  /** The summary the browser shows: the first `<summary>` child, or none. */
+  /** The summary the browser shows: the first rendered `<summary>` child, or none. */
   function disclosureSummary(details) {
-    for (const child of details.children) {
-      if (child.tagName === "SUMMARY") return child;
+    for (const child of composedKids(details)) {
+      if (isElementNode(child) && child.tagName === "SUMMARY") return child;
     }
     return null;
   }
@@ -336,7 +433,7 @@
     const known = blockOf.get(element);
     if (known !== undefined) return known;
     let block = null;
-    for (let current = element; current && block === null; current = current.parentElement) {
+    for (let current = element; current && block === null; current = flatParent(current)) {
       const cached = blockOf.get(current);
       if (cached !== undefined) {
         block = cached;
@@ -380,7 +477,7 @@
    * reason to drop the text.
    */
   function inlineClip(block) {
-    for (let current = block; current; current = current.parentElement) {
+    for (let current = block; current; current = flatParent(current)) {
       const overflow = getComputedStyle(current).overflowX;
       if (overflow === "hidden" || overflow === "clip") return current;
       if (overflow === "auto" || overflow === "scroll") return null;
@@ -481,13 +578,13 @@
    * in full. `display: contents` has no box at all.
    */
   function collapsedHides(node) {
-    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    const element = isElementNode(node) ? node : node.parentElement;
     if (!element) return false;
     // A text node is in the flow of its parent, so the parent is the first
     // box that might clip it. An element is clipped only by an ancestor:
     // calling the collapsed box itself hidden would hide the fixed bar too.
-    const start = node.nodeType === Node.ELEMENT_NODE ? element.parentElement : element;
-    for (let clip = start; clip; clip = clip.parentElement) {
+    const start = isElementNode(node) ? flatParent(element) : element;
+    for (let clip = start; clip; clip = flatParent(clip)) {
       if (!boxCollapsed(clip)) continue;
       if (escapesClip(element, clip)) continue;
       return true;
@@ -526,13 +623,13 @@
   function escapesClip(element, clip) {
     if (element === clip) return false;
     let mode = null;
-    for (let current = element; current && current !== clip; current = current.parentElement) {
+    for (let current = element; current && current !== clip; current = flatParent(current)) {
       const position = getComputedStyle(current).position;
       if (position === "fixed") mode = "fixed";
       else if (position === "absolute" && mode !== "fixed") mode = "absolute";
     }
     if (mode !== "fixed" && mode !== "absolute") return false;
-    for (let current = element.parentElement; current; current = current.parentElement) {
+    for (let current = flatParent(element); current; current = flatParent(current)) {
       if (capturesPositioned(getComputedStyle(current), mode)) return false;
       if (current === clip) break;
     }
@@ -659,7 +756,8 @@
 
   /** Whether a text node's element sits inside a citation marker. Memoised. */
   function inCitation(element, root, cache) {
-    for (let current = element; current && current !== root.parentElement; current = current.parentElement) {
+    const stop = flatParent(root);
+    for (let current = element; current && current !== stop; current = flatParent(current)) {
       let known = cache.get(current);
       if (known === undefined) cache.set(current, (known = marksCitation(current)));
       if (known) return true;
@@ -692,7 +790,7 @@
         result = false;
         break;
       }
-      current = current.parentElement;
+      current = flatParent(current);
     }
     for (const node of pending) cache.set(node, result);
     return result;
@@ -725,8 +823,8 @@
 
   /** Whether `tags` contains the tag of `element` or of an ancestor below `stop`. */
   function tagWithin(element, stop, tags) {
-    for (let current = element; current && current !== stop; current = current.parentElement) {
-      if (tags.has(tagOf(current))) return true;
+    for (let current = element; current && current !== stop; current = flatParent(current)) {
+      if (isElementNode(current) && tags.has(tagOf(current))) return true;
     }
     return false;
   }
@@ -766,14 +864,16 @@
         info.paintedPresentation = true;
       }
 
+      const kids = composedKids(element);
       let prose = false;
       if (!SKIP_TAGS.has(tag)) {
-        for (const node of element.childNodes) {
+        for (const node of kids) {
           if (node.nodeType === Node.TEXT_NODE && node.data.trim()) prose = true;
         }
       }
       let childWidget = false;
-      for (const child of element.children) {
+      for (const child of kids) {
+        if (!isElementNode(child)) continue;
         const childInfo = describe(child);
         const childTag = tagOf(child);
         if (childInfo.widget) childWidget = true;
@@ -806,7 +906,7 @@
     else describe(root);
 
     const owningWidget = (element) => {
-      for (let current = element; current; current = current.parentElement) {
+      for (let current = element; current; current = flatParent(current)) {
         if (infoOf.get(current)?.widget) return current;
       }
       return null;
@@ -815,34 +915,38 @@
     const hasGlyphs = (widget) => {
       // A face that is only a mark — a decorative asterisk beside a clipped
       // formula — is not the formula. Letters or digits are.
-      const walker = document.createTreeWalker(widget, NodeFilter.SHOW_TEXT);
       let text = "";
-      let node = walker.nextNode();
-      while (node) {
+      walkComposed(widget, (node) => {
+        if (node.nodeType !== Node.TEXT_NODE) return;
         const parent = node.parentElement;
         if (parent && painted(parent, paintCache) && !tagWithin(parent, widget, glyphBlocked)) text += node.data;
-        node = walker.nextNode();
-      }
+      });
       return /[\p{L}\p{N}]/u.test(text);
     };
 
+    const inMath = (element, widget) => tagWithin(element, widget, new Set(["MATH"]));
+
     const altImage = (widget) => {
-      for (const img of widget.querySelectorAll("img")) {
-        if (img.closest("math")) continue;
-        if (!img.alt.trim() || !painted(img, paintCache)) continue;
-        return img;
-      }
-      return null;
+      let found = null;
+      walkComposed(widget, (node) => {
+        if (found || !isElementNode(node) || tagOf(node) !== "IMG") return;
+        if (inMath(node, widget)) return;
+        if (!node.alt.trim() || !painted(node, paintCache)) return;
+        found = node;
+      });
+      return found;
     };
 
     const faceBox = (widget) => {
-      for (const svg of widget.querySelectorAll("svg")) {
-        if (!svg.closest("math") && painted(svg, paintCache)) return svg;
-      }
-      for (const img of widget.querySelectorAll("img")) {
-        if (!img.closest("math") && painted(img, paintCache)) return img;
-      }
-      return widget;
+      let svg = null;
+      let img = null;
+      walkComposed(widget, (node) => {
+        if (!isElementNode(node) || inMath(node, widget) || !painted(node, paintCache)) return;
+        const tag = tagOf(node);
+        if (!svg && tag === "SVG") svg = node;
+        if (!img && tag === "IMG") img = node;
+      });
+      return svg || img || widget;
     };
 
     const choose = (widget) => {
@@ -882,7 +986,7 @@
         result = false;
         break;
       }
-      current = current.parentElement;
+      current = flatParent(current);
     }
     for (const node of pending) cache.set(node, result);
     return result;
@@ -901,10 +1005,47 @@
    * are asked on the way up, so one cache is right for every root.
    */
   function inInert(element, root, cache) {
-    for (let current = element; current && current !== root; current = current.parentElement) {
+    for (let current = element; current && current !== root; current = flatParent(current)) {
       let known = cache.get(current);
       if (known === undefined) cache.set(current, (known = current.hasAttribute("inert")));
       if (known) return true;
+    }
+    return false;
+  }
+
+  const WEIGHT_TAGS = new Set(["P", "LI", "H1", "H2", "H3", "H4", "BLOCKQUOTE"]);
+
+  /**
+   * A recommendation, a sidebar, or anything sitting in one.
+   *
+   * The class and id tokens are the ones a card of related reading wears
+   * when it is not marked with the element. A story whose class merely
+   * contains the letters is not one of them.
+   */
+  function recommendationName(element) {
+    const id = (element.id || "").toLowerCase();
+    const classes = String(element.className || "")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+    const tokens = id ? [id, ...classes] : classes;
+    for (const token of tokens) {
+      if (token === "teaser" || token === "recommend" || token === "recommended" || token === "recommendation") {
+        return true;
+      }
+      if (token.includes("teaser") || token.includes("recommend")) return true;
+      if (token === "sidebar" || token.startsWith("sidebar-") || token.startsWith("sidebar_")) return true;
+      if (token.startsWith("related-") || token.startsWith("related_")) return true;
+    }
+    return false;
+  }
+
+  function inMarginal(element) {
+    for (let current = element; current && current !== document.body; current = flatParent(current)) {
+      if (!isElementNode(current)) continue;
+      if (current.tagName === "ASIDE") return true;
+      if (landmarkRole(current) === "complementary") return true;
+      if (recommendationName(current)) return true;
     }
     return false;
   }
@@ -913,13 +1054,45 @@
     let total = 0;
     let linked = 0;
     const counts = (node) => visible(node, cache) && !inInert(node, element, inert);
-    for (const node of element.querySelectorAll("p, li, h1, h2, h3, h4, blockquote")) {
-      if (counts(node)) total += node.textContent.length;
-    }
-    for (const node of element.querySelectorAll("a")) {
-      if (counts(node)) linked += node.textContent.length;
+    const add = (node) => {
+      if (!isElementNode(node) || !counts(node)) return;
+      const tag = tagOf(node);
+      if (WEIGHT_TAGS.has(tag)) total += node.textContent.length;
+      if (tag === "A") linked += node.textContent.length;
+    };
+    // The light-DOM path is the one every existing page is scored by.
+    // Open shadow roots are outside querySelectorAll, so a host whose
+    // article is drawn in one is scored from the rendered tree instead.
+    if (!hasOpenShadow(element)) {
+      for (const node of element.querySelectorAll("p, li, h1, h2, h3, h4, blockquote")) add(node);
+      for (const node of element.querySelectorAll("a")) add(node);
+    } else {
+      walkComposed(element, add);
     }
     return total - linked * 1.5;
+  }
+
+  /** `selector` matches in the document and in every open shadow root. */
+  function queryAllDeep(selector) {
+    const found = [];
+    const visit = (root) => {
+      if (!root.querySelectorAll) return;
+      found.push(...root.querySelectorAll(selector));
+      for (const host of root.querySelectorAll("*")) {
+        if (host.shadowRoot) visit(host.shadowRoot);
+      }
+    };
+    visit(document);
+    return found;
+  }
+
+  function paragraphCount(element) {
+    if (!hasOpenShadow(element)) return element.querySelectorAll("p").length;
+    let count = 0;
+    walkComposed(element, (node) => {
+      if (isElementNode(node) && node.tagName === "P") count += 1;
+    });
+    return count;
   }
 
   /**
@@ -937,6 +1110,13 @@
    * article on screen; scoring it would read the slide. Held-back text
    * inside a candidate does not count toward it either. When the only
    * candidate above the threshold is itself inert, it is still the page.
+   *
+   * An article inside a sidebar, a complementary landmark, or a
+   * recommendation card does not win on the strength of its tag. It is
+   * scored with the other marginal containers and loses to any rendered
+   * story that clears the threshold. It is still the page when nothing
+   * else does — a document that is only that card should be read, not
+   * skipped.
    */
   function findMainContent(cache = new Map()) {
     clipCache = new WeakMap();
@@ -945,6 +1125,8 @@
     let bestScore = 0;
     let inertBest = null;
     let inertScore = 0;
+    let marginalBest = null;
+    let marginalScore = 0;
 
     const rank = (element) => {
       if (!visible(element, cache)) return;
@@ -956,44 +1138,63 @@
         }
         return;
       }
+      if (inMarginal(element)) {
+        if (score > marginalScore) {
+          marginalBest = element;
+          marginalScore = score;
+        }
+        return;
+      }
       if (score > bestScore) {
         best = element;
         bestScore = score;
       }
     };
 
-    // A rendered article wins outright. An inert one is the page only when
-    // nothing rendered cleared the threshold, and a sidebar div does not get
-    // to outscore that article by being considered in the same pass.
+    // Selector matches are considered before plain containers, and the
+    // first of two equal scores wins, so an article inside <main> stays
+    // the article. A marginal article does not take that shortcut.
     for (const selector of MAIN_SELECTORS) {
-      for (const element of document.querySelectorAll(selector)) rank(element);
+      for (const element of queryAllDeep(selector)) rank(element);
     }
     if (best && bestScore > 400) return best;
+    // An inert article is the page when nothing rendered cleared the bar.
+    // A plain div does not get to outscore it by being considered afterwards.
     if (inertBest && inertScore > 400) return inertBest;
 
     best = null;
     bestScore = 0;
-    inertBest = null;
-    inertScore = 0;
-    for (const element of document.body?.querySelectorAll("div, section, td") ?? []) {
-      if (element.querySelectorAll("p").length < 3) continue;
+    for (const element of queryAllDeep("div, section, td")) {
+      if (paragraphCount(element) < 3) continue;
       rank(element);
     }
     if (best && bestScore > 400) return best;
+    if (marginalBest && marginalScore > 400) return marginalBest;
     if (inertBest && inertScore > 400) return inertBest;
     return document.body;
   }
 
   function blockAncestor(node) {
-    let current = node.parentElement;
-    while (current && !BLOCK_TAGS.has(current.tagName)) current = current.parentElement;
+    let current = flatParent(node);
+    while (current && !BLOCK_TAGS.has(current.tagName)) current = flatParent(current);
     return current || document.body;
+  }
+
+  function rangeIntersects(range, node) {
+    if (!range) return true;
+    try {
+      return range.intersectsNode(node);
+    } catch {
+      // A range and a node in different trees — a selection in the document
+      // and a text node in a shadow root — throw instead of returning false.
+      return false;
+    }
   }
 
   function clipToSelection(node, range) {
     const length = node.data.length;
     if (!range) return [0, length];
-    if (!range.intersectsNode(node)) return null;
+    if (!rangeIntersects(range, node)) return null;
     let start = 0;
     let end = length;
     if (node === range.startContainer) start = Math.min(range.startOffset, length);
@@ -1025,8 +1226,10 @@
     const hiddenFormula = new Set(["MATH", ...FORMULA_NOISE]);
     const mathTag = new Set(["MATH"]);
 
+    const boundary = flatParent(root);
     const skippedAncestor = (element) => {
-      for (let el = element; el && el !== root.parentElement; el = el.parentElement) {
+      for (let el = element; el && el !== boundary; el = flatParent(el)) {
+        if (!isElementNode(el)) continue;
         const tag = tagOf(el);
         if (FORMULA_NOISE.has(tag)) return true;
         if (SKIP_TAGS.has(tag)) return true;
@@ -1037,131 +1240,114 @@
       return false;
     };
 
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        // A text node of nothing but a space is still a space. The one between
-        // `<em>only</em> <em>while</em>` is its own node, and dropping it
-        // speaks "onlywhile". A newline in the source is that same space.
-        if (!node.data) return NodeFilter.FILTER_REJECT;
-        const parent = node.parentElement;
-        if (!parent) return NodeFilter.FILTER_REJECT;
-        // Before the formula branch, so a folded equation is not rescued by
-        // being the copy that would have been spoken.
-        if (disclosureHides(node)) return NodeFilter.FILTER_REJECT;
-
-        const widget = formulas.owningWidget(parent);
-        if (widget) {
-          const source = formulas.sourceFor(widget);
-          // The copy that is not on screen, and a formula that is itself
-          // hidden, contribute nothing. An image formula is spoken from its
-          // alt, spliced in below, rather than from a text node.
-          if (source.kind === "visual") {
-            if (tagWithin(parent, widget, hiddenFormula)) return NodeFilter.FILTER_REJECT;
-            if (!formulasPainted(parent)) return NodeFilter.FILTER_REJECT;
-          } else if (source.kind === "math") {
-            if (!tagWithin(parent, widget, mathTag)) return NodeFilter.FILTER_REJECT;
-            if (tagWithin(parent, widget, FORMULA_NOISE)) return NodeFilter.FILTER_REJECT;
-          } else {
-            return NodeFilter.FILTER_REJECT;
-          }
-          if (skippedAncestor(parent)) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
-        }
-
-        // `visible` walks past the root as well, so a root that sits inside a
-        // hidden container yields nothing rather than hidden text. A collapsed
-        // box stays rendered — a fixed bar inside it may still be on the page
-        // — so its own text has to be asked separately. This stays after the
-        // formula branch: the accessible copy of an equation is a one-pixel
-        // box on purpose, and that copy is the one a path drawing is read from.
-        if (collapsedHides(node) || !visible(parent, cache)) return NodeFilter.FILTER_REJECT;
-        // After visibility, so a hidden subtree is not measured. A line the
-        // indent pushed out has a normal box and would otherwise be read.
-        if (indentHides(node)) return NodeFilter.FILTER_REJECT;
-        if (skippedAncestor(parent)) return NodeFilter.FILTER_REJECT;
-        return NodeFilter.FILTER_ACCEPT;
-      },
-    });
-
     // `painted` closes over the cache `indexFormulas` built. A glyph inside
     // an `aria-hidden` face is still on screen; `visible` would drop it.
     function formulasPainted(element) {
       return painted(element, formulas.paintCache);
     }
 
-    const slices = [];
-    let node = walker.nextNode();
-    while (node) {
-      const clipped = clipToSelection(node, range);
-      if (clipped) {
-        const widget = formulas.owningWidget(node.parentElement);
-        const source = widget ? formulas.sourceFor(widget) : null;
-        slices.push({
-          node,
-          start: clipped[0],
-          end: clipped[1],
-          // Kept as a slice so the words on either side stay apart, and so a
-          // mark sitting against a comma does not grow a space of its own.
-          // Nothing in it is spoken.
-          gap:
-            (skipCitations && inCitation(node.parentElement, root, citations)) ||
-            heldBack(node.parentElement),
-          // A formula whose letters are not on the page — an SVG of paths —
-          // is highlighted as the drawing, which is.
-          box: source?.kind === "math" ? source.box : null,
-        });
-      }
-      node = walker.nextNode();
-    }
-    return mergeAltSlices(slices, altSlices(root, range, formulas, skippedAncestor, heldBack));
-  }
+    const acceptText = (node) => {
+      // A text node of nothing but a space is still a space. The one between
+      // `<em>only</em> <em>while</em>` is its own node, and dropping it
+      // speaks "onlywhile". A newline in the source is that same space.
+      if (!node.data) return false;
+      // A text node parented by the shadow root has no element parent.
+      // The host is the element that renders it.
+      const parent = node.parentElement ?? flatParent(node);
+      if (!parent) return false;
+      // Before the formula branch, so a folded equation is not rescued by
+      // being the copy that would have been spoken.
+      if (disclosureHides(node)) return false;
 
-  /** Image formulas, in tree order, spoken from the alt the page gave them. */
-  function altSlices(root, range, formulas, skippedAncestor, heldBack) {
-    const images = tagOf(root) === "IMG" ? [root] : [];
-    images.push(...root.querySelectorAll("img"));
-    const slices = [];
-    for (const img of images) {
+      const widget = formulas.owningWidget(parent);
+      if (widget) {
+        const source = formulas.sourceFor(widget);
+        // The copy that is not on screen, and a formula that is itself
+        // hidden, contribute nothing. An image formula is spoken from its
+        // alt, spliced in below, rather than from a text node.
+        if (source.kind === "visual") {
+          if (tagWithin(parent, widget, hiddenFormula)) return false;
+          if (!formulasPainted(parent)) return false;
+        } else if (source.kind === "math") {
+          if (!tagWithin(parent, widget, mathTag)) return false;
+          if (tagWithin(parent, widget, FORMULA_NOISE)) return false;
+        } else {
+          return false;
+        }
+        if (skippedAncestor(parent)) return false;
+        return true;
+      }
+
+      // `visible` walks past the root as well, so a root that sits inside a
+      // hidden container yields nothing rather than hidden text. A collapsed
+      // box stays rendered — a fixed bar inside it may still be on the page
+      // — so its own text has to be asked separately. This stays after the
+      // formula branch: the accessible copy of an equation is a one-pixel
+      // box on purpose, and that copy is the one a path drawing is read from.
+      if (collapsedHides(node) || !visible(parent, cache)) return false;
+      // After visibility, so a hidden subtree is not measured. A line the
+      // indent pushed out has a normal box and would otherwise be read.
+      if (indentHides(node)) return false;
+      if (skippedAncestor(parent)) return false;
+      return true;
+    };
+
+    const altSliceFor = (img) => {
       const widget = formulas.owningWidget(img);
-      if (!widget) continue;
+      if (!widget) return null;
       const source = formulas.sourceFor(widget);
-      if (source.kind !== "alt" || source.box !== img || !source.text) continue;
-      if (range && !range.intersectsNode(img)) continue;
-      if (skippedAncestor(img) || heldBack(img)) continue;
-      slices.push({
+      if (source.kind !== "alt" || source.box !== img || !source.text) return null;
+      if (!rangeIntersects(range, img)) return null;
+      if (skippedAncestor(img) || heldBack(img)) return null;
+      return {
         node: null,
         literal: source.text,
         box: img,
         start: 0,
         end: source.text.length,
         gap: false,
+      };
+    };
+
+    const slices = [];
+    const pushText = (node) => {
+      const clipped = clipToSelection(node, range);
+      if (!clipped) return;
+      const parent = node.parentElement ?? flatParent(node);
+      const widget = formulas.owningWidget(parent);
+      const source = widget ? formulas.sourceFor(widget) : null;
+      slices.push({
+        node,
+        start: clipped[0],
+        end: clipped[1],
+        // Kept as a slice so the words on either side stay apart, and so a
+        // mark sitting against a comma does not grow a space of its own.
+        // Nothing in it is spoken.
+        gap: (skipCitations && inCitation(parent, root, citations)) || heldBack(parent),
+        // A formula whose letters are not on the page — an SVG of paths —
+        // is highlighted as the drawing, which is.
+        box: source?.kind === "math" ? source.box : null,
       });
-    }
-    return slices;
-  }
+    };
 
-  /** Interleave alt slices with text slices. Both lists are in tree order. */
-  function mergeAltSlices(slices, alts) {
-    if (!alts.length) return slices;
-    const merged = [];
-    let index = 0;
-    for (const alt of alts) {
-      while (index < slices.length && !nodeFollows(alt.box, slices[index].node)) {
-        merged.push(slices[index]);
-        index += 1;
+    // The root itself is not a descendant. An image asked for by name — a
+    // selection of just the equation — is still the formula.
+    if (isElementNode(root) && tagOf(root) === "IMG") {
+      const alt = altSliceFor(root);
+      if (alt) slices.push(alt);
+    }
+
+    walkComposed(root, (node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (acceptText(node)) pushText(node);
+        return;
       }
-      merged.push(alt);
-    }
-    while (index < slices.length) {
-      merged.push(slices[index]);
-      index += 1;
-    }
-    return merged;
-  }
-
-  function nodeFollows(element, node) {
-    if (!node) return false;
-    return Boolean(element.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
+      if (isElementNode(node) && tagOf(node) === "IMG") {
+        const alt = altSliceFor(node);
+        if (alt) slices.push(alt);
+      }
+    });
+    return slices;
   }
 
   /**
@@ -1214,13 +1400,20 @@
     return "empty";
   }
 
-  /** The next node in tree order, not descending into `node` itself. */
+  /**
+   * The next rendered node, not descending into `node` itself.
+   * Slots and open shadow roots are flattened, so a `<br>` drawn in a
+   * shadow root still sits between the text nodes on either side of it.
+   */
   function nodeAfter(node) {
-    if (node.nextSibling) return node.nextSibling;
-    let parent = node.parentNode;
-    while (parent) {
-      if (parent.nextSibling) return parent.nextSibling;
-      parent = parent.parentNode;
+    let current = node;
+    while (current) {
+      const parent = flatParent(current);
+      if (!parent) return null;
+      const kids = composedKids(parent);
+      const index = kids.indexOf(current);
+      if (index >= 0 && index + 1 < kids.length) return kids[index + 1];
+      current = parent;
     }
     return null;
   }
@@ -1253,13 +1446,9 @@
       if (current.nodeType === Node.ELEMENT_NODE && current.tagName === "BR" && visible(current, cache)) {
         return true;
       }
-      if (
-        current.nodeType === Node.ELEMENT_NODE &&
-        current.firstChild &&
-        !SKIP_TAGS.has(current.tagName) &&
-        visible(current, cache)
-      ) {
-        current = current.firstChild;
+      const first = isElementNode(current) ? composedFirst(current) : null;
+      if (first && !SKIP_TAGS.has(current.tagName) && visible(current, cache)) {
+        current = first;
         continue;
       }
       current = nodeAfter(current);
@@ -1612,11 +1801,57 @@
     const element = document.elementFromPoint(x, y);
     if (!element || !doc?.slices?.length) return -1;
     const { byBox } = reverseIndex(doc);
-    for (let current = element; current; current = current.parentElement) {
+    for (let current = element; current; current = flatParent(current)) {
       const index = byBox.get(current);
       if (index !== undefined) return index;
     }
+    // The caret APIs sometimes stop at a shadow host. The element under the
+    // point is already inside the open shadow, so the character is found by
+    // the boxes of the text rendered there.
+    let hit = -1;
+    walkComposed(element, (node) => {
+      if (hit >= 0 || node.nodeType !== Node.TEXT_NODE) return;
+      const at = offsetAtPoint(node, x, y);
+      if (at < 0) return;
+      const index = charIndexAt(doc, node, at);
+      if (index >= 0) hit = index;
+    });
+    return hit;
+  }
+
+  /** The offset of the character of `node` whose glyph contains (x, y), or -1. */
+  function offsetAtPoint(node, x, y) {
+    const length = node.data?.length ?? 0;
+    if (!length) return -1;
+    const range = node.ownerDocument.createRange();
+    const lineHeight = parseFloat(getComputedStyle(node.parentElement ?? document.body).lineHeight);
+    const leadingFor = (rect) => (Number.isFinite(lineHeight) ? Math.max(0, (lineHeight - rect.height) / 2) : 0);
+    range.selectNodeContents(node);
+    let covers = false;
+    for (const rect of range.getClientRects()) {
+      if (pointInGlyph(rect, x, y, leadingFor(rect))) {
+        covers = true;
+        break;
+      }
+    }
+    if (!covers) return -1;
+    for (let start = 0; start < length; start += 1) {
+      range.setStart(node, start);
+      range.setEnd(node, start + 1);
+      for (const rect of range.getClientRects()) {
+        if (pointInGlyph(rect, x, y, leadingFor(rect))) return start;
+      }
+    }
     return -1;
+  }
+
+  function pointInGlyph(rect, x, y, leading) {
+    return (
+      x >= rect.left - HIT_SLOP_PX &&
+      x <= rect.right + HIT_SLOP_PX &&
+      y >= rect.top - leading - HIT_SLOP_PX &&
+      y <= rect.bottom + leading + HIT_SLOP_PX
+    );
   }
 
   /**
@@ -1624,8 +1859,12 @@
    * those characters are in no node of the page — text fetched from somewhere
    * else, which is how a canvas-drawn Google Doc is read.
    */
-  function rangeFor(doc, start, end) {
-    if (!doc?.slices?.length) return null;
+  function anchorOf(slice) {
+    return slice?.box || slice?.node || null;
+  }
+
+  /** One range for [start, end), or null when those characters share no node. */
+  function buildRange(doc, start, end) {
     const { charNodes, charOffsets, slices } = doc;
     let from = start;
     while (from < end && charNodes[from] < 0) from += 1;
@@ -1648,10 +1887,64 @@
       if (endSlice.box) range.setEndAfter(endSlice.box);
       else range.setEnd(endSlice.node, charOffsets[to] + 1);
     } catch {
+      // A single Range cannot cross a shadow boundary. Callers that can
+      // paint several ranges use `rangesFor`.
       return null;
     }
     return range;
   }
 
-  ns.extract = { extract, rangeFor, findMainContent, isCodeBlock, charIndexAt, charIndexFromPoint };
+  /**
+   * DOM ranges covering global character indices [start, end).
+   *
+   * One range when the characters share a tree, which is every light-DOM
+   * article and a shadow article whose text lives in one root. A sentence
+   * that steps through a slot into another tree is several ranges, because
+   * a Range cannot cross that boundary.
+   */
+  function rangesFor(doc, start, end) {
+    if (!doc?.slices?.length) return [];
+    const { charNodes, slices } = doc;
+    const ranges = [];
+    let runFrom = -1;
+    let runRoot = null;
+    const flush = (until) => {
+      if (runFrom < 0) return;
+      const range = buildRange(doc, runFrom, until);
+      if (range) ranges.push(range);
+      runFrom = -1;
+      runRoot = null;
+    };
+    for (let i = start; i < end; i += 1) {
+      const sliceIndex = charNodes[i];
+      if (sliceIndex < 0) continue;
+      const root = anchorOf(slices[sliceIndex])?.getRootNode?.() ?? null;
+      if (runFrom < 0) {
+        runFrom = i;
+        runRoot = root;
+        continue;
+      }
+      if (root !== runRoot) {
+        flush(i);
+        runFrom = i;
+        runRoot = root;
+      }
+    }
+    flush(end);
+    return ranges;
+  }
+
+  function rangeFor(doc, start, end) {
+    return rangesFor(doc, start, end)[0] ?? null;
+  }
+
+  ns.extract = {
+    extract,
+    rangeFor,
+    rangesFor,
+    findMainContent,
+    isCodeBlock,
+    charIndexAt,
+    charIndexFromPoint,
+  };
 })(globalThis.__readAloud);

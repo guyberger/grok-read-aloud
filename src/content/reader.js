@@ -578,11 +578,12 @@
 
     lastPaintKey = paintKey;
     if (moved) rememberPosition();
-    const wordRange = wordIndex >= 0 ? rangeOf(timeline.words[wordIndex]) : null;
-    const sentenceRange = sentenceIndex >= 0 ? rangeOf(timeline.sentences[sentenceIndex]) : null;
+    const wordRanges = wordIndex >= 0 ? rangesOf(timeline.words[wordIndex]) : [];
+    const sentenceRanges = sentenceIndex >= 0 ? rangesOf(timeline.sentences[sentenceIndex]) : [];
+    const wordRange = wordRanges[0] ?? null;
 
-    if (sentenceIndex !== lastSentence || needsRepaint) highlight.setSentence(sentenceRange);
-    if (wordIndex !== lastWord || needsRepaint) highlight.setWord(wordRange);
+    if (sentenceIndex !== lastSentence || needsRepaint) highlight.setSentence(sentenceRanges);
+    if (wordIndex !== lastWord || needsRepaint) highlight.setWord(wordRanges);
 
     if (moved && wordIndex !== lastWord && settings.autoScroll && wordRange) {
       // Only while the view is the read's. A listener who has scrolled away
@@ -595,6 +596,12 @@
 
   function rangeOf(span) {
     return span ? extract.rangeFor(doc, span.start, span.end) : null;
+  }
+
+  /** Every range a span covers. A span that crosses a shadow root is more than one. */
+  function rangesOf(span) {
+    if (!span) return [];
+    return extract.rangesFor?.(doc, span.start, span.end) ?? [rangeOf(span)].filter(Boolean);
   }
 
   /**

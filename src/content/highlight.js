@@ -22,33 +22,90 @@
     return overlayRoot;
   }
 
-  function paintOverlay(key, range) {
+  function paintOverlay(key, ranges) {
     const root = ensureOverlayRoot();
     for (const node of root.querySelectorAll(`[data-key="${key}"]`)) node.remove();
-    if (!range) return;
-
     const scrollX = window.scrollX;
     const scrollY = window.scrollY;
-    for (const rect of range.getClientRects()) {
-      if (rect.width < 0.5 || rect.height < 0.5) continue;
-      const box = document.createElement("div");
-      box.className = `read-aloud-overlay-rect ${key === WORD_KEY ? "is-word" : "is-sentence"}`;
-      box.dataset.key = key;
-      box.style.left = `${rect.left + scrollX}px`;
-      box.style.top = `${rect.top + scrollY}px`;
-      box.style.width = `${rect.width}px`;
-      box.style.height = `${rect.height}px`;
-      root.appendChild(box);
+    for (const range of ranges) {
+      for (const rect of range.getClientRects()) {
+        if (rect.width < 0.5 || rect.height < 0.5) continue;
+        const box = document.createElement("div");
+        box.className = `read-aloud-overlay-rect ${key === WORD_KEY ? "is-word" : "is-sentence"}`;
+        box.dataset.key = key;
+        box.style.left = `${rect.left + scrollX}px`;
+        box.style.top = `${rect.top + scrollY}px`;
+        box.style.width = `${rect.width}px`;
+        box.style.height = `${rect.height}px`;
+        root.appendChild(box);
+      }
     }
   }
 
-  function setRange(key, range) {
-    if (supportsHighlightApi) {
-      if (range) CSS.highlights.set(key, new globalThis.Highlight(range));
-      else CSS.highlights.delete(key);
+  // Custom properties set on the document inherit into open shadow roots.
+  // `::highlight` does not, so a shadow root that holds a range needs the
+  // same two rules adopted into it or the spoken word never lights up.
+  const SHADOW_HIGHLIGHT_CSS = `
+    ::highlight(${SENTENCE_KEY}) { background-color: var(--read-aloud-sentence-bg, rgba(255, 211, 77, 0.22)); }
+    ::highlight(${WORD_KEY}) { background-color: var(--read-aloud-word-bg, #ffd34d); color: var(--read-aloud-word-fg, #141414); }
+  `;
+  let shadowSheet = null;
+  const shadowRegistries = new Set();
+
+  function highlightRules() {
+    if (shadowSheet) return shadowSheet;
+    try {
+      shadowSheet = new CSSStyleSheet();
+      shadowSheet.replaceSync(SHADOW_HIGHLIGHT_CSS);
+    } catch {
+      shadowSheet = null;
+    }
+    return shadowSheet;
+  }
+
+  function ensureShadowStyle(root) {
+    const sheet = highlightRules();
+    if (sheet && root.adoptedStyleSheets && !root.adoptedStyleSheets.includes(sheet)) {
+      root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
       return;
     }
-    paintOverlay(key, range);
+    if (root.querySelector?.("style[data-read-aloud-highlight]")) return;
+    const style = document.createElement("style");
+    style.dataset.readAloudHighlight = "";
+    style.textContent = SHADOW_HIGHLIGHT_CSS;
+    root.append(style);
+  }
+
+  function rangesOf(range) {
+    if (!range) return [];
+    return (Array.isArray(range) ? range : [range]).filter(Boolean);
+  }
+
+  function setRange(key, range) {
+    const ranges = rangesOf(range);
+    if (supportsHighlightApi) {
+      CSS.highlights.delete(key);
+      for (const registry of shadowRegistries) registry.delete(key);
+      if (!ranges.length) return;
+      // The document registry is what a probe reads back. Ranges that live
+      // in a shadow tree are also registered there, which is where they paint.
+      CSS.highlights.set(key, new globalThis.Highlight(...ranges));
+      const byRoot = new Map();
+      for (const item of ranges) {
+        const root = item.startContainer?.getRootNode?.();
+        if (!(root instanceof ShadowRoot) || !root.highlights) continue;
+        const group = byRoot.get(root) ?? [];
+        group.push(item);
+        byRoot.set(root, group);
+      }
+      for (const [root, group] of byRoot) {
+        ensureShadowStyle(root);
+        shadowRegistries.add(root.highlights);
+        root.highlights.set(key, new globalThis.Highlight(...group));
+      }
+      return;
+    }
+    paintOverlay(key, ranges);
   }
 
   function configure({ highlightColor, sentenceTint }) {
@@ -146,8 +203,8 @@
     setSentence: (range) => setRange(SENTENCE_KEY, range),
     repaint(wordRange, sentenceRange) {
       if (supportsHighlightApi) return;
-      paintOverlay(SENTENCE_KEY, sentenceRange);
-      paintOverlay(WORD_KEY, wordRange);
+      paintOverlay(SENTENCE_KEY, rangesOf(sentenceRange));
+      paintOverlay(WORD_KEY, rangesOf(wordRange));
     },
     clear,
     inBand,

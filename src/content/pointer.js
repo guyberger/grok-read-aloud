@@ -42,7 +42,17 @@
 
   let pressedAt = null;
 
-  function elementOf(target) {
+  function elementOf(event) {
+    // A listener on the document sees the host, not the element inside an
+    // open shadow root. The composed path still has that element, which is
+    // what a link or a field has to be tested against.
+    const path = typeof event?.composedPath === "function" ? event.composedPath() : null;
+    if (path) {
+      for (const node of path) {
+        if (node instanceof Element) return node;
+      }
+    }
+    const target = event?.target ?? event;
     if (target instanceof Element) return target;
     return target?.parentElement ?? null;
   }
@@ -59,7 +69,7 @@
     if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return false;
     if (event.defaultPrevented) return false;
 
-    const element = elementOf(event.target);
+    const element = elementOf(event);
     if (!element) return false;
     if (element.isContentEditable) return false;
     if (element.closest(INTERACTIVE)) return false;
