@@ -962,22 +962,24 @@ export function huntScenarios(ctx) {
     },
     {
       name: "teaser-article-read",
-      bug: "A sidebar teaser article is read instead of the story",
       async run(repeat) {
         await applySettings({ chunkChars: 2000 });
         await navigate("teaser.html");
         const chosen = await evaluate(`globalThis.__readAloud.extract.findMainContent()?.id || ""`);
         await control("start", { scope: "page", from: "start" });
-        const playing = await until((sample) => sample.status === "playing" || sample.status === "error", 12000);
+        const playing = await until(
+          (sample) => (sample.status === "playing" && sample.word) || sample.status === "error",
+          12000,
+        );
         const text = await spoken();
         const story = text.includes("STORYTOKEN");
         const teaser = text.includes("TEASERTOKEN");
-        const missedStory = chosen === "teaser" && teaser && !story && playing.status === "playing";
         const path = save(`bug-teaser-article-${repeat}.json`, {
           seed: SEED,
           chosen,
           story,
           teaser,
+          word: playing.word,
           status: playing.status,
           error: playing.error,
           text: text.slice(0, 400),
@@ -990,12 +992,12 @@ export function huntScenarios(ctx) {
           status: playing.status,
           text: text.slice(0, 400),
         });
-        if (missedStory) await screenshot(`bug-teaser-article-${repeat}.png`);
-        if (missedStory) await screenshot("bug-teaser-article.png");
+        const read = chosen === "story" && story && !teaser && playing.status === "playing" && Boolean(playing.word);
+        if (read && repeat === 1) await screenshot("teaser-story-reading.png");
         return {
-          ok: missedStory,
-          detail: missedStory
-            ? `root #${chosen} was spoken and STORYTOKEN never was`
+          ok: read,
+          detail: read
+            ? `root #${chosen} spoken, including STORYTOKEN ("${playing.word}")`
             : `root #${chosen || "none"} story ${story} teaser ${teaser} status ${playing.status} ${playing.error || ""}`,
           evidence: path,
         };

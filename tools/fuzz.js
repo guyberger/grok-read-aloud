@@ -734,26 +734,50 @@ async function main() {
     },
     {
       name: "shadow-article",
-      bug: "Article text inside an open shadow root is never read",
       async run() {
         await applySettings();
         await navigate("shadow.html");
-        const started = await control("start", { scope: "page", from: "start" });
-        await sleep(600);
-        const seen = await probe();
+        await control("start", { scope: "page", from: "start" });
+        const seen = await until((sample) => (sample.status === "playing" && sample.word) || sample.status === "error", 8000);
         const asked = await requests();
         const spoken = asked.map((entry) => entry.text).join("\n");
+        const mapped = await article.evaluate(`
+          (() => {
+            const doc = globalThis.__readAloud.extract.extract("page");
+            const at = doc?.text?.indexOf("elm") ?? -1;
+            const range = at < 0 ? null : globalThis.__readAloud.extract.rangeFor(doc, at, at + 3);
+            const paragraph = document.querySelector("article")?.shadowRoot?.querySelector("p");
+            const rect = paragraph?.getClientRects?.()[0];
+            const hit = rect
+              ? globalThis.__readAloud.extract.charIndexFromPoint(doc, rect.left + 12, rect.top + rect.height / 2)
+              : -1;
+            return {
+              highlighted: range ? range.toString() : "",
+              inShadow: range ? range.startContainer.getRootNode() instanceof ShadowRoot : false,
+              hit: hit >= 0,
+            };
+          })()
+        `, world);
         const path = save("bug-shadow-root.json", {
           status: seen.status,
           error: seen.error,
+          word: seen.word,
           spokenIncludesMarker: spoken.includes("elm bucket"),
+          mapped,
         });
-        const missed = !spoken.includes("elm bucket") && (seen.status === "error" || spoken.trim() === "");
+        const read =
+          spoken.includes("elm bucket") &&
+          seen.status === "playing" &&
+          Boolean(seen.word) &&
+          mapped.highlighted === "elm" &&
+          mapped.inShadow &&
+          mapped.hit;
+        if (read) await screenshot("shadow-article-reading.png");
         return {
-          ok: missed,
-          detail: missed
-            ? `shadow article was not read (${seen.error || seen.status})`
-            : `shadow text was requested (${spoken.slice(0, 80)})`,
+          ok: read,
+          detail: read
+            ? `shadow article spoken and highlighted ("${seen.word}")`
+            : `status ${seen.status} ${seen.error || ""} word ${seen.word || "none"} spoken ${spoken.slice(0, 80)} map ${JSON.stringify(mapped)}`,
           evidence: path,
         };
       },

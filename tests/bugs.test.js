@@ -524,7 +524,7 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
     }
   });
 
-  test(SHADOW_BUG, { skip, todo: SHADOW_BUG }, async () => {
+  test(SHADOW_BUG, { skip }, async () => {
     const marker = "the shadow article asks for a new elm bucket";
     const results = [];
     for (let run = 0; run < 2; run += 1) {
@@ -545,14 +545,31 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
             )};
             root.append(paragraph);
             document.body.append(host);
-            const doc = globalThis.__readAloud.extract.extract("page");
-            return { text: doc?.text ?? "", markerFound: Boolean(doc?.text?.includes(${JSON.stringify(marker)})) };
+            const { extract } = globalThis.__readAloud;
+            const doc = extract.extract("page");
+            const text = doc?.text ?? "";
+            const at = text.indexOf("elm");
+            const range = at < 0 ? null : extract.rangeFor(doc, at, at + 3);
+            const rect = paragraph.getClientRects()[0];
+            const hit = rect
+              ? extract.charIndexFromPoint(doc, rect.left + 12, rect.top + rect.height / 2)
+              : -1;
+            return {
+              text,
+              markerFound: text.includes(${JSON.stringify(marker)}),
+              highlighted: range ? range.toString() : "",
+              inShadow: range ? range.startContainer.getRootNode() instanceof ShadowRoot : false,
+              hit: hit >= 0 ? text.slice(hit, hit + 12) : "",
+            };
           })()
         `),
       );
     }
     for (const result of results) {
       assert.equal(result.markerFound, true, JSON.stringify(results));
+      assert.equal(result.highlighted, "elm", JSON.stringify(results));
+      assert.equal(result.inShadow, true, JSON.stringify(results));
+      assert.ok(result.text.includes(result.hit) && result.hit.length > 0, JSON.stringify(results));
     }
   });
 
@@ -730,7 +747,7 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
     assert.ok(text.includes("STORYTOKEN"), text.slice(0, 160));
   });
 
-  test(TEASER_BUG, { skip, todo: TEASER_BUG }, async () => {
+  test(TEASER_BUG, { skip }, async () => {
     const results = [];
     for (let run = 0; run < 2; run += 1) {
       const page = await browser.open(fixtureUrl("article.html"), contentBundle(["util.js", "extract.js"]));
@@ -747,8 +764,63 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
       );
     }
     for (const result of results) {
+      assert.equal(result.root, "story", JSON.stringify({ root: result.root, text: result.text.slice(0, 180) }));
       assert.ok(result.text.includes("STORYTOKEN"), JSON.stringify({ root: result.root, text: result.text.slice(0, 180) }));
+      assert.equal(result.text.includes("TEASERTOKEN"), false, JSON.stringify({ root: result.root, text: result.text.slice(0, 180) }));
     }
+  });
+
+  test("an article that is the only text is still read from an aside", { skip }, async () => {
+    const page = await browser.open(fixtureUrl("article.html"), contentBundle(["util.js", "extract.js"]));
+    pages.push(page);
+    const text = await page.evaluate(`
+      (() => {
+        const copy = ${JSON.stringify(
+          "The only article on the page sits in an aside, and it is still the thing to read because nothing else holds the story of the wheel, the pegs, and the pond.",
+        )};
+        document.body.innerHTML = \`<aside><article id="only"><h1>The wheel</h1><p>\${copy}</p><p>\${copy}</p><p>\${copy}</p></article></aside>\`;
+        return globalThis.__readAloud.extract.extract("page")?.text ?? "";
+      })()
+    `);
+    assert.ok(text.includes("still the thing to read"), text.slice(0, 180));
+  });
+
+  test("slotted text is read in slot order, once, and unassigned light text is not", { skip }, async () => {
+    const page = await browser.open(fixtureUrl("article.html"), contentBundle(["util.js", "extract.js"]));
+    pages.push(page);
+    const read = await page.evaluate(`
+      (() => {
+        document.body.replaceChildren();
+        const host = document.createElement("article");
+        const root = host.attachShadow({ mode: "open" });
+        root.innerHTML = "<div><slot name='second'></slot></div><slot name='first'></slot><slot name='spare'><p>FALLBACKSLOT the spare peg stays in the drawer.</p></slot>";
+        const second = document.createElement("p");
+        second.slot = "second";
+        second.textContent = "SECONDSLOT the wheel was pegged before the pond filled today.";
+        const first = document.createElement("p");
+        first.slot = "first";
+        first.textContent = "FIRSTSLOT the elm buckets were cut in the spring and kept wet.";
+        const loose = document.createElement("p");
+        loose.textContent = "UNASSIGNED this paragraph has no slot and is not on the page at all.";
+        host.append(second, first, loose);
+        document.body.append(host);
+        const doc = globalThis.__readAloud.extract.extract("page");
+        const text = doc?.text ?? "";
+        const at = text.indexOf("SECONDSLOT");
+        const range = at < 0 ? null : globalThis.__readAloud.extract.rangeFor(doc, at, at + "SECONDSLOT".length);
+        return {
+          text,
+          secondBeforeFirst: text.indexOf("SECONDSLOT") >= 0 && text.indexOf("SECONDSLOT") < text.indexOf("FIRSTSLOT"),
+          highlighted: range ? range.toString() : "",
+        };
+      })()
+    `);
+    assert.equal(read.secondBeforeFirst, true, read.text);
+    assert.ok(read.text.includes("FIRSTSLOT"), read.text);
+    assert.ok(read.text.includes("FALLBACKSLOT"), read.text);
+    assert.equal(read.text.includes("UNASSIGNED"), false, read.text);
+    assert.equal(read.text.split("SECONDSLOT").length - 1, 1, read.text);
+    assert.equal(read.highlighted, "SECONDSLOT");
   });
 
   test("a playing snapshot stays marked playing in the panel cache", () => {
