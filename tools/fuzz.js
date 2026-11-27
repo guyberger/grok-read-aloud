@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { huntPages, huntScenarios } from "./fuzz-hunt.js";
+import { nightPages, nightScenarios } from "./fuzz-night.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = new Map();
@@ -164,6 +165,7 @@ pages.set(
 const huge = Array.from({ length: 40 }, (_, index) => `<p>Paragraph ${index + 1}. The wheel turns, the pond empties, and the keeper writes one more line in the ledger about grease, pegs, and the state of the brake.</p>`).join("");
 pages.set("huge.html", pageShell("Long mill", `<article><h1>A long ledger</h1>${huge}</article>`));
 for (const [name, body] of huntPages) pages.set(name, body);
+for (const [name, body] of nightPages) pages.set(name, body);
 
 function mockRequest(path, { method = "GET", body } = {}) {
   return new Promise((resolve_, reject) => {
@@ -1109,6 +1111,38 @@ async function main() {
         if (!state?.ok) throw new Error(`reload did not reinject: ${JSON.stringify(state)}`);
         // A navigation can deliver the new isolated world before this session
         // is listening for it again. Asking twice makes Chrome replay it.
+        article.contexts.length = 0;
+        await article.send("Runtime.disable").catch(() => {});
+        await article.send("Runtime.enable");
+        world = await isolatedWorld();
+        await article.evaluate(AUDIO_PATCH, world);
+      },
+    }),
+    ...nightScenarios({
+      SEED,
+      applySettings,
+      navigate,
+      control,
+      probe,
+      until,
+      sleep,
+      setTiming,
+      setFault,
+      resetMock,
+      requests,
+      article,
+      save,
+      screenshot,
+      ui,
+      activate,
+      evaluate: (expression) => article.evaluate(expression, world),
+      mulberry32,
+      recentLogs: () => logs.slice(),
+      refreshWorld: async () => {
+        await waitFor("reload", () => article.evaluate(`document.readyState === "complete"`));
+        await activate();
+        const state = await command({ type: "getTabState" });
+        if (!state?.ok) throw new Error(`reload did not reinject: ${JSON.stringify(state)}`);
         article.contexts.length = 0;
         await article.send("Runtime.disable").catch(() => {});
         await article.send("Runtime.enable");
