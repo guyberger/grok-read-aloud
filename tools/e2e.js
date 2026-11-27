@@ -1959,6 +1959,7 @@ async function main() {
               status: status.textContent.trim(),
               source: status.dataset.source,
               action: document.getElementById("toggle-label")?.textContent?.trim(),
+              toggleDisabled: document.getElementById("toggle")?.disabled ?? null,
               stopDisabled: document.getElementById("stop")?.disabled,
             };
           };
@@ -2041,6 +2042,69 @@ async function main() {
     onABusyPage.settled?.status === "Playing" && onABusyPage.settled.source === "live",
     `${onABusyPage.settled?.status} from ${onABusyPage.settled?.source}`,
   );
+
+  // A chunk still being fetched used to be remembered as paused. The panel
+  // then offered Resume, and that press started the read over — two more
+  // requests, the opening again. The first render has to say Loading, with
+  // the main button held, while the request already in flight carries on.
+  const setSynthesisTiming = (timing) =>
+    ui.evaluate(
+      `fetch("https://api.x.ai/debug/timing", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(${JSON.stringify(timing)}) }).then(() => true)`,
+    );
+  await setSynthesisTiming({ base: 4500, perChar: 0, timestamps: 0 });
+  try {
+    await control("stop");
+    // A page already read has the audio in memory, and a second start plays
+    // it at once. Reloading drops that, so the delay above is a real wait
+    // and the panel opens onto a request that has not come back.
+    await page.send("Page.navigate", { url: `${PAGE_URL}?load=slow` });
+    await sleep(600);
+    await tabState();
+    world = await page.isolatedContextId();
+    const beforeSlow = (await synthesised()).length;
+    const slowStart = await control("start", { scope: "page", from: "start" });
+    check(
+      "a slow first chunk is still loading when the panel opens",
+      slowStart?.state?.status === "loading",
+      slowStart?.state?.status || slowStart?.error,
+    );
+    let inflight = await synthesised();
+    for (let i = 0; i < 20 && inflight.length < beforeSlow + 1; i += 1) {
+      await sleep(50);
+      inflight = await synthesised();
+    }
+    page.evaluate(`{ const end = Date.now() + 2500; while (Date.now() < end); }`).catch(() => {});
+    await sleep(80);
+    const duringLoad = await openPanel();
+    const shown = duringLoad.first;
+    check(
+      "while a chunk is loading the panel shows Loading with the main button held",
+      shown?.status === "Loading" &&
+        shown?.action === "Loading…" &&
+        shown?.toggleDisabled === true &&
+        shown?.source === "cache",
+      `"${shown?.status} / ${shown?.action}" disabled ${shown?.toggleDisabled} from ${shown?.source}`,
+    );
+    const opening = inflight[beforeSlow]?.head ?? "";
+    const afterOpen = await synthesised();
+    const replayedOnOpen = afterOpen.slice(inflight.length).filter((entry) => opening && entry.head === opening);
+    check(
+      "opening the panel during a load does not ask for the opening again",
+      replayedOnOpen.length === 0,
+      replayedOnOpen.length ? replayedOnOpen.map((entry) => entry.head).join(" | ") : `${inflight.length} → ${afterOpen.length}`,
+    );
+    const playedOn = await awaitStatus("playing", { timeoutMs: 15000 });
+    const afterPlay = await synthesised();
+    const replayedLater = afterPlay.slice(inflight.length).filter((entry) => opening && entry.head === opening);
+    check(
+      "the in-flight chunk goes on to play",
+      playedOn.status === "playing" && playedOn.chunkIndex === 0 && replayedLater.length === 0,
+      `${playedOn.status || playedOn.error} part ${(playedOn.chunkIndex ?? 0) + 1}, extra openings ${replayedLater.length}`,
+    );
+  } finally {
+    await setSynthesisTiming({ base: 0, perChar: 0, timestamps: 0 });
+    await control("stop").catch(() => {});
+  }
 
   // A tab that has gone somewhere else is a tab whose remembered read is a
   // lie, and a panel that painted it would be promising a read that is over.

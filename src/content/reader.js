@@ -67,6 +67,9 @@
   let resumePoint = null;
   let rememberedAt = 0;
   let everPlayed = false;
+  // Bumped on every announced change, so a slow message cannot paint an
+  // older status over a newer one. See `panel-cache.js`.
+  let revision = 0;
 
   /**
    * Whether the view still belongs to the read. A listener who scrolls away
@@ -135,6 +138,7 @@
   }
 
   function emit() {
+    revision += 1;
     const state = snapshot();
     // The browser's media controls are shown the same thing the popup is, on
     // the same transitions, so the two can never disagree about whether this
@@ -151,6 +155,7 @@
     const chunkProgress = progressWithinChunk();
     return {
       ...state,
+      revision,
       resume: resumePoint ? { percent: resumePoint.percent } : null,
       progress:
         state.chunkCount > 0
@@ -1104,6 +1109,10 @@
   async function toggle(args) {
     if (state.status === "playing") return pause();
     if (state.status === "paused") return resume();
+    // The popup's main button is held while a chunk is in flight. A press
+    // that arrives anyway — the panel painted a stale Resume before the page
+    // could answer — must not abandon that request and start the read over.
+    if (state.status === "loading") return snapshot();
     return start(args);
   }
 

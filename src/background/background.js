@@ -267,14 +267,16 @@ async function handleMessage(message, sender) {
       warmUp();
       const tabId = message.tabId ?? (await activeTabId());
       const state = await sendToTab(tabId, { type: "getState" });
-      rememberTabState(tabId, state);
+      await rememberTabState(tabId, state);
       return { ok: true, tabId, state };
     }
 
     case "control": {
       const tabId = message.tabId ?? (await activeTabId());
       const state = await sendToTab(tabId, { type: message.action, ...message.args });
-      rememberTabState(tabId, state);
+      // The answer and the cache are one state. A popup opened as soon as
+      // this returns has to paint this status, not whatever was true before.
+      await rememberTabState(tabId, state);
       return { ok: true, tabId, state };
     }
 
@@ -282,7 +284,7 @@ async function handleMessage(message, sender) {
     case "stateChanged":
       // And so the next popup to open has something to paint before it has
       // asked anyone anything. See `common/panel-cache.js`.
-      rememberTabState(sender?.tab?.id, message.state);
+      await rememberTabState(sender?.tab?.id, message.state);
       ext.runtime
         .sendMessage({ type: "tabStateChanged", tabId: sender?.tab?.id, state: message.state })
         .catch(() => {});

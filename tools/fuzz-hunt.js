@@ -1004,9 +1004,8 @@ export function huntScenarios(ctx) {
       },
     },
     {
-      name: "popup-resume-restarts-load",
-      bug: "Opening the popup while a chunk is loading offers Resume and restarts the read",
-      async run(repeat) {
+      name: "popup-during-load",
+      async run() {
         await setTiming({ base: 6000, perChar: 0, timestamps: 0 });
         await applySettings({ chunkChars: 2000 });
         await navigate("article.html?case=popup-load");
@@ -1025,6 +1024,14 @@ export function huntScenarios(ctx) {
         let shown = { state: "", label: "", disabled: null };
         try {
           await handle.popup.send("Page.enable").catch(() => {});
+          await handle.popup
+            .send("Emulation.setDeviceMetricsOverride", {
+              width: 360,
+              height: 640,
+              deviceScaleFactor: 2,
+              mobile: false,
+            })
+            .catch(() => {});
           const deadline = Date.now() + 600;
           while (Date.now() < deadline) {
             shown = await handle.popup.evaluate(`({
@@ -1036,22 +1043,25 @@ export function huntScenarios(ctx) {
             if (shown.state && shown.state !== "pending") break;
             await sleep(40);
           }
+          // Held means the press cannot happen. If it is offered anyway, take
+          // it: that is the press that used to start the read over.
           if (shown.disabled !== true) {
             await handle.popup.evaluate(`document.getElementById("toggle").click()`);
           }
-          await capture(handle.popup, `bug-false-resume-${repeat}.png`);
-          await capture(handle.popup, "bug-false-resume.png");
+          await capture(handle.popup, "popup-loading.png");
         } finally {
           await handle.close();
         }
         await sleep(3200);
         const after = await requests();
         const later = await probe();
-        const grew = after.length > before.length;
-        const replayed = after.slice(before.length).some((entry) => (entry.text || "").includes((before[0]?.text || "").slice(0, 40)));
-        const lied = shown.state !== "loading" && shown.disabled !== true;
-        const restarted = lied && grew && (replayed || later.status === "loading" || later.status === "playing");
-        const path = save(`bug-false-resume-${repeat}.json`, {
+        const openings = before.slice(-2).map((entry) => (entry.text || "").slice(0, 40)).filter(Boolean);
+        const replayed = after
+          .slice(before.length)
+          .some((entry) => openings.some((opening) => (entry.text || "").includes(opening)));
+        const held = shown.state === "loading" && shown.disabled === true;
+        const continued = (later.status === "loading" || later.status === "playing") && !replayed;
+        const path = save("popup-loading.json", {
           seed: SEED,
           shown,
           before: before.length,
@@ -1060,19 +1070,12 @@ export function huntScenarios(ctx) {
           later: { status: later.status, error: later.error, time: later.time },
           heads: after.map((entry) => entry.head),
         });
-        save("bug-false-resume.json", {
-          seed: SEED,
-          shown,
-          before: before.length,
-          after: after.length,
-          replayed,
-          later: { status: later.status, time: later.time },
-        });
         return {
-          ok: restarted,
-          detail: restarted
-            ? `popup showed ${shown.state || "pending"} "${shown.label}" (enabled) and the click issued ${after.length - before.length} more requests`
-            : `popup ${JSON.stringify(shown)} requests ${before.length}→${after.length} replayed ${replayed} later ${later.status}`,
+          ok: held && continued,
+          detail:
+            held && continued
+              ? `popup showed Loading "${shown.label}" held; requests ${before.length}→${after.length}; later ${later.status}`
+              : `popup ${JSON.stringify(shown)} requests ${before.length}→${after.length} replayed ${replayed} later ${later.status}`,
           evidence: path,
         };
       },

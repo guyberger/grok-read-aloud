@@ -83,11 +83,20 @@ test("nothing the panel does not paint is kept", async () => {
   assert.equal("aligned" in read, false);
 });
 
-test("a read still loading is remembered as the pause it will look like", async () => {
-  // `loading` is a moment, not a state to come back to: the request it refers
-  // to is gone by the time anyone reads this.
-  await cache.rememberTabState(7, snapshot({ status: "loading" }));
-  assert.equal((await cache.readTabState(7)).status, "paused");
+test("an older status cannot overwrite a newer one", async () => {
+  await cache.rememberTabState(7, snapshot({ status: "playing", revision: 2 }));
+  await cache.rememberTabState(7, snapshot({ status: "loading", revision: 4 }));
+  await cache.rememberTabState(7, snapshot({ status: "playing", revision: 2 }));
+  assert.equal((await cache.readTabState(7)).status, "loading");
+});
+
+test("a read still loading is remembered as loading", async () => {
+  // The panel paints this with the main button held. Remembering it as paused
+  // offers Resume for a request that is still in flight.
+  await cache.rememberTabState(7, snapshot({ status: "loading", progress: 0 }));
+  const read = await cache.readTabState(7);
+  assert.equal(read.status, "loading");
+  assert.equal(read.progress, 0);
 });
 
 test("the error from a request long over is not shown again", async () => {
