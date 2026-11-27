@@ -19,7 +19,7 @@ import { fakeTimestamps, loadContentNamespace } from "./load-content.js";
 
 const skip = findChrome() ? false : "no Chrome binary found (set CHROME_PATH to run these)";
 
-const { buildChunkTimeline, chunkRanges, leadingContext, withoutContext } = loadContentNamespace().align;
+const { buildChunkTimeline, chunkRanges, leadingContext, sentences, withoutContext } = loadContentNamespace().align;
 
 const READER_FILES = [
   "util.js",
@@ -303,6 +303,16 @@ const PAUSE_BUG = "Pause during loading is ignored and the audio starts anyway";
 const TEASER_BUG = "A sidebar teaser article is read instead of the story";
 const POPUP_LOAD_BUG = "Opening the popup while a chunk is loading offers Resume and restarts the read";
 const DUPLICATE_RESUME_BUG = "Continuing after new text is inserted above resumes at an earlier duplicate";
+const SENTENCE_BACK_BUG = "Stepping back just after a chunk join leaves the sentence still being spoken";
+const TABLE_ORDER_BUG = "Table headers and footers are read in source order, not the order on the page";
+
+const SENTENCE_OPENER = "TOKENOPEN The sluice was shut at dawn.";
+const SENTENCE_HEAD = "TOKENLONG The keeper walked the whole length of the dam";
+const SENTENCE_FILL = " and looked at another peg in the frame";
+const SENTENCE_TAIL = " until CHUNKTWOTOKEN showed up in this same sentence and the brake still held firm.";
+let sentenceBody = SENTENCE_HEAD;
+while (SENTENCE_OPENER.length + 1 + sentenceBody.length < 560) sentenceBody += SENTENCE_FILL;
+sentenceBody += SENTENCE_TAIL;
 
 const TEASER_CARD = "TEASERTOKEN This recommended card describes a different creek and a newsletter the keeper never asked to hear. ";
 const STORY_OPENING = "STORYTOKEN The mill at Blackwater has run on the tide for four hundred years, and every part of it that still moves is made of wood.";
@@ -884,6 +894,133 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
     });
     for (const run of runs) {
       assert.equal(run.found, run.secondNext, JSON.stringify(runs));
+    }
+  });
+
+  test("a long sentence stays one sentence when the first chunk cuts it", () => {
+    const text = `${SENTENCE_OPENER}\n${sentenceBody}`;
+    const ranges = chunkRanges(text, 2000, { firstChars: 240 });
+    const spans = sentences(text);
+    assert.equal(spans.length, 2);
+    assert.ok(ranges.length > 1, String(ranges.length));
+    assert.ok(spans[1].start < ranges[1].start && spans[1].end > ranges[1].start);
+    assert.ok(text.slice(ranges[1].start, ranges[1].end).includes("CHUNKTWOTOKEN"));
+  });
+
+  test(SENTENCE_BACK_BUG, { skip, todo: SENTENCE_BACK_BUG }, async () => {
+    const results = [];
+    for (let run = 0; run < 2; run += 1) {
+      const page = await openReader();
+      const landed = await page.evaluate(`
+        (async () => {
+          globalThis.__chunkChars = 2000;
+          globalThis.__audioSeconds = 12;
+          document.querySelector("#story").outerHTML = ${JSON.stringify(
+            `<article id="story"><p id="open">${SENTENCE_OPENER}</p><p id="long">${sentenceBody}</p></article>`,
+          )};
+          await globalThis.__send({ type: "start", scope: "page", from: "start" });
+          const spoken = () => {
+            const audio = globalThis.__audios.at(-1);
+            const lead = globalThis.__readAloud.reader.playback()?.lead || 0;
+            const rate = globalThis.__readAloud.reader.playback()?.stretchedRate || 1;
+            const time = audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+            return time * rate - lead;
+          };
+          const paragraph = () => {
+            const highlight = CSS.highlights?.get?.("read-aloud-word");
+            let id = "";
+            if (highlight) {
+              for (const range of highlight) {
+                const node = range.startContainer;
+                const el = node && node.nodeType === 1 ? node : node?.parentElement;
+                id = el?.closest?.("p")?.id || "";
+              }
+            }
+            return id;
+          };
+          const deadline = Date.now() + 20000;
+          let snap = null;
+          while (Date.now() < deadline) {
+            snap = globalThis.__readAloud.reader.snapshot();
+            if (snap.status === "playing" && snap.chunkIndex >= 1 && paragraph() === "long" && spoken() > 0.02 && spoken() < 1.2) break;
+            await new Promise((resolve) => setTimeout(resolve, 30));
+          }
+          const before = { status: snap?.status, chunk: snap?.chunkIndex, id: paragraph(), spoken: spoken() };
+          await globalThis.__send({ type: "skipSentence", delta: -1 });
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          const afterSnap = globalThis.__readAloud.reader.snapshot();
+          return { before, after: { status: afterSnap.status, chunk: afterSnap.chunkIndex, id: paragraph() }, errors: globalThis.__errors.slice() };
+        })()
+      `);
+      results.push(landed);
+    }
+    for (const result of results) {
+      assert.equal(result.errors.length, 0, result.errors.join(" | "));
+      assert.equal(result.before.id, "long", JSON.stringify(results));
+      assert.ok(result.before.chunk >= 1, JSON.stringify(results));
+      assert.equal(result.after.id, "long", JSON.stringify(results));
+    }
+  });
+
+  test("a table written in display order is read in that order", { skip }, async () => {
+    const page = await browser.open(fixtureUrl("article.html"), contentBundle(["util.js", "extract.js"]));
+    pages.push(page);
+    const order = await page.evaluate(`
+      (() => {
+        document.body.innerHTML = ${JSON.stringify(`<article><table>
+          <thead><tr><th id="head">HEADTOKEN</th></tr></thead>
+          <tbody><tr><td id="body">BODYTOKEN</td></tr></tbody>
+          <tfoot><tr><td id="foot">FOOTTOKEN</td></tr></tfoot>
+        </table></article>`)};
+        const text = globalThis.__readAloud.extract.extract("page").text;
+        const top = (id) => document.getElementById(id).getBoundingClientRect().top;
+        return { text, head: top("head"), body: top("body"), foot: top("foot") };
+      })()
+    `);
+    assert.ok(order.head < order.body && order.body < order.foot, JSON.stringify(order));
+    assert.ok(order.text.indexOf("HEADTOKEN") < order.text.indexOf("BODYTOKEN"));
+    assert.ok(order.text.indexOf("BODYTOKEN") < order.text.indexOf("FOOTTOKEN"));
+  });
+
+  test(TABLE_ORDER_BUG, { skip, todo: TABLE_ORDER_BUG }, async () => {
+    const results = [];
+    for (let run = 0; run < 2; run += 1) {
+      const page = await browser.open(fixtureUrl("article.html"), contentBundle(["util.js", "extract.js"]));
+      pages.push(page);
+      results.push(
+        await page.evaluate(`
+          (() => {
+            document.body.innerHTML = ${JSON.stringify(`<article>
+              <table>
+                <thead><tr><th id="head">HEADTOKEN</th></tr></thead>
+                <tfoot><tr><td id="foot">FOOTTOKEN</td></tr></tfoot>
+                <tbody><tr><td id="body">BODYTOKEN</td></tr></tbody>
+              </table>
+              <table>
+                <tbody><tr><td id="late-body">LATEBODY</td></tr></tbody>
+                <thead><tr><th id="late-head">LATEHEAD</th></tr></thead>
+              </table>
+            </article>`)};
+            const text = globalThis.__readAloud.extract.extract("page").text;
+            const top = (id) => Math.round(document.getElementById(id).getBoundingClientRect().top);
+            return {
+              text,
+              foot: top("foot"),
+              body: top("body"),
+              lateHead: top("late-head"),
+              lateBody: top("late-body"),
+            };
+          })()
+        `),
+      );
+    }
+    for (const result of results) {
+      const footDrawnLast = result.foot > result.body;
+      const headDrawnFirst = result.lateHead < result.lateBody;
+      assert.equal(footDrawnLast, true, JSON.stringify(results));
+      assert.equal(headDrawnFirst, true, JSON.stringify(results));
+      assert.ok(result.text.indexOf("BODYTOKEN") < result.text.indexOf("FOOTTOKEN"), result.text);
+      assert.ok(result.text.indexOf("LATEHEAD") < result.text.indexOf("LATEBODY"), result.text);
     }
   });
 

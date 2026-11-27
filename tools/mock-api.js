@@ -756,6 +756,21 @@ async function handle(request, response) {
         });
         return;
       }
+      if (mode === "nan-timestamps") {
+        console.log("tts: injected non-finite timestamps");
+        const duration = Number((text.length * SECONDS_PER_CHAR).toFixed(3));
+        const graphChars = graphCharsFor(text);
+        send(response, 200, {
+          audio: renderWav(text, duration).toString("base64"),
+          content_type: "audio/wav",
+          duration,
+          audio_timestamps: {
+            graph_chars: graphChars,
+            graph_times: graphChars.map(() => [Number.NaN, Number.NaN]),
+          },
+        });
+        return;
+      }
     }
     const duration = Number((text.length * SECONDS_PER_CHAR).toFixed(3));
     const format = body.output_format ?? {};
