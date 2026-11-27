@@ -67,10 +67,14 @@ const PAINTED = [
 /**
  * What is worth remembering about a reader.
  *
- * A read in flight is remembered as the pause it will look like by the time
- * anyone sees this: `loading` is a moment, not a state to come back to, and a
- * panel that opens claiming to be loading would be claiming a request that no
- * longer exists.
+ * A chunk still being fetched is remembered as `loading`. That wait is often
+ * several seconds — the request itself, or a page whose main thread has not
+ * yet answered — and the panel paints it with the main button held. Writing
+ * it down as paused instead offers Resume for a request that is still in
+ * flight, and that press starts the read over.
+ *
+ * An error is about one request at one moment. Coming back to it hours later
+ * and being told it again, before anything has even been tried, is noise.
  */
 export function panelState(state) {
   if (!state?.status) return null;
@@ -78,9 +82,6 @@ export function panelState(state) {
   for (const field of PAINTED) {
     if (state[field] !== undefined) kept[field] = state[field];
   }
-  if (kept.status === "loading") kept.status = "paused";
-  // An error is about one request at one moment. Coming back to it hours later
-  // and being told it again, before anything has even been tried, is noise.
   if (kept.status === "error") kept.error = "";
   return kept;
 }
@@ -91,11 +92,40 @@ export function fresh(entry, now = Date.now()) {
   return now - (entry.at ?? 0) < STALE_AFTER_MS;
 }
 
-export async function rememberTabState(tabId, state) {
+/**
+ * Writes for one tab, one at a time, in the order they were asked for.
+ *
+ * The check against `revision` has to see the write before it, or two
+ * messages in flight both read an empty shelf and the slower one sticks.
+ */
+const tails = new Map();
+
+function enqueue(tabId, task) {
+  const previous = tails.get(tabId) ?? Promise.resolve();
+  const job = previous.catch(() => {}).then(task);
+  tails.set(tabId, job.catch(() => {}));
+  return job;
+}
+
+export function rememberTabState(tabId, state) {
   const store = shelf();
   const kept = panelState(state);
-  if (!store || !tabId || !kept) return;
-  await store.set({ [tabKey(tabId)]: { state: kept, at: Date.now() } }).catch(() => {});
+  if (!store || !tabId || !kept) return Promise.resolve();
+  // `revision` is the reader's own count of state changes. A message that
+  // was in flight across a newer one is dropped, even when its write was
+  // the one that ran last.
+  const revision = Number.isFinite(state.revision) ? state.revision : 0;
+  const key = tabKey(tabId);
+  return enqueue(tabId, async () => {
+    try {
+      const stored = await store.get(key);
+      const entry = stored?.[key];
+      if ((entry?.revision ?? -1) > revision) return;
+      await store.set({ [key]: { state: kept, at: Date.now(), revision } });
+    } catch {
+      // Nowhere to keep it. The panel falls back to the markup's default.
+    }
+  });
 }
 
 export async function readTabState(tabId) {
@@ -111,10 +141,11 @@ export async function readTabState(tabId) {
   }
 }
 
-export async function forgetTabState(tabId) {
+export function forgetTabState(tabId) {
   const store = shelf();
-  if (!store || !tabId) return;
-  await store.remove(tabKey(tabId)).catch(() => {});
+  if (!store || !tabId) return Promise.resolve();
+  const key = tabKey(tabId);
+  return enqueue(tabId, () => store.remove(key).catch(() => {}));
 }
 
 /**

@@ -1191,9 +1191,10 @@ however late. The shelf is the right one for it — `storage.session` is cleared
 when the browser closes, which is also when every remembered read stops being
 true — and within a session the worker drops a tab's entry as soon as that tab
 navigates, which is the other way a remembered read becomes a lie. Nothing
-remembered is older than half a day, a read still `loading` is remembered as the
-pause it will look like, and the text of an error is not remembered at all: it
-was about one request at one moment.
+remembered is older than half a day. A read still `loading` is remembered as
+loading, so the panel shows Loading with the main button held instead of a
+Resume that would start the request over. The text of an error is not
+remembered at all: it was about one request at one moment.
 
 **The panel is the size it will be.** A popup that grows after the browser has
 sized its window appears and then moves. The credential row and the page title
@@ -1866,7 +1867,10 @@ the article is being read and assert on its *first* render rather than on what
 it settles down to, with a watcher installed at document-start to catch it. One
 of them ties the article's main thread up in a busy loop first, so the reader
 cannot answer and the first render can only have come from what the worker
-remembered — the panel says which, and the check asserts that too. The rest are
+remembered — the panel says which, and the check asserts that too. Another
+does that while the first chunk is still being fetched: the first render has
+to say Loading with the main button held, and the request already in flight
+has to be the one that plays. The rest are
 about the ways a remembered read stops being true: a tab that navigates is
 forgotten, and a panel with nothing to go on renders at once and claims no read.
 

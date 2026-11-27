@@ -838,7 +838,7 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
     assert.equal(shown.status, "playing");
   });
 
-  test(POPUP_LOAD_BUG, { todo: POPUP_LOAD_BUG }, async () => {
+  test(POPUP_LOAD_BUG, async () => {
     const problems = [];
     const shown = panelState({ status: "loading", chunkIndex: 0, chunkCount: 2, progress: 0 });
     if (shown?.status !== "loading") problems.push(`cache shows ${shown?.status} for an in-flight load`);
@@ -855,12 +855,20 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
           problems.push(`run ${run} left loading before the popup could open (${mid.status})`);
           continue;
         }
-        const synth = await page.evaluate(
-          `globalThis.__send({ type: "toggle", scope: "page" }).then(() => globalThis.__synthCount || 0)`,
-        );
+        const after = await page.evaluate(`
+          globalThis.__send({ type: "toggle", scope: "page" }).then((state) => ({
+            synth: globalThis.__synthCount || 0,
+            status: state && state.status
+          }))
+        `);
         // The mislabeled Resume button sends toggle. An in-flight load already
-        // asked for its chunks; toggle must not start the read over.
-        if (synth > mid.synth) problems.push(`run ${run} toggle during load grew requests ${mid.synth} → ${synth}`);
+        // asked for its chunks; toggle must leave that request running.
+        if (after.synth > mid.synth) {
+          problems.push(`run ${run} toggle during load grew requests ${mid.synth} → ${after.synth}`);
+        }
+        if (after.status !== "loading") {
+          problems.push(`run ${run} toggle during load reported ${after.status}`);
+        }
       }
     }
     assert.equal(problems.length, 0, problems.join("\n"));

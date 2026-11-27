@@ -314,7 +314,12 @@ async function loadVoices(selected) {
   );
 }
 
-el.toggle.addEventListener("click", () => control("toggle", { scope }));
+el.toggle.addEventListener("click", () => {
+  // Held while a chunk is in flight. A click that still arrives must not be
+  // forwarded: toggle on that chunk is what starts the read over.
+  if (current.status === "loading") return;
+  control("toggle", { scope });
+});
 // The one way to ask for the top of a page that was left part-read.
 el.startOver.addEventListener("click", () => control("start", { scope: "page", from: "start" }));
 el.previous.addEventListener("click", () => control("skipSentence", { delta: -1 }));
