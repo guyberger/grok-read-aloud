@@ -24,6 +24,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { huntPages, huntScenarios } from "./fuzz-hunt.js";
 import { nightPages, nightScenarios } from "./fuzz-night.js";
+import { todayPages, todayScenarios } from "./fuzz-today.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = new Map();
@@ -166,6 +167,7 @@ const huge = Array.from({ length: 40 }, (_, index) => `<p>Paragraph ${index + 1}
 pages.set("huge.html", pageShell("Long mill", `<article><h1>A long ledger</h1>${huge}</article>`));
 for (const [name, body] of huntPages) pages.set(name, body);
 for (const [name, body] of nightPages) pages.set(name, body);
+for (const [name, body] of todayPages) pages.set(name, body);
 
 function mockRequest(path, { method = "GET", body } = {}) {
   return new Promise((resolve_, reject) => {
@@ -1149,6 +1151,20 @@ async function main() {
         world = await isolatedWorld();
         await article.evaluate(AUDIO_PATCH, world);
       },
+    }),
+    ...todayScenarios({
+      SEED,
+      applySettings,
+      navigate,
+      control,
+      probe,
+      until,
+      sleep,
+      resetMock,
+      requests,
+      save,
+      screenshot,
+      evaluate: (expression) => article.evaluate(expression, world),
     }),
   ];
 

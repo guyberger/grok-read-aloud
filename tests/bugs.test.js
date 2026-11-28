@@ -305,6 +305,14 @@ const POPUP_LOAD_BUG = "Opening the popup while a chunk is loading offers Resume
 const DUPLICATE_RESUME_BUG = "Continuing after new text is inserted above resumes at an earlier duplicate";
 const SENTENCE_BACK_BUG = "Stepping back just after a chunk join leaves the sentence still being spoken";
 const TABLE_ORDER_BUG = "Table headers and footers are read in source order, not the order on the page";
+const LONGER_ARTICLE_BUG = "A longer article outside main is read and the story in main is skipped";
+const FLEX_ORDER_BUG = "Flex and grid order is read in source order, not the order on the page";
+const CAPTION_ORDER_BUG = "A table caption is read after the rows it sits above";
+const DIALOG_EMPTY_BUG = "An open dialog that holds the page is read as empty";
+const SECTION_NUMBER_BUG = "A same-page link that is only a number is dropped from the sentence";
+const SCALED_TEXT_BUG = "Text scaled to nothing is still read aloud";
+const CLOSED_SHADOW_BUG = "A closed shadow host reads hidden light text instead of the words on screen";
+const PRESERVED_BREAK_BUG = "A preserved line break is spoken as a space";
 
 const SENTENCE_OPENER = "TOKENOPEN The sluice was shut at dawn.";
 const SENTENCE_HEAD = "TOKENLONG The keeper walked the whole length of the dam";
@@ -1050,5 +1058,227 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
     const article = await page.evaluate(`document.querySelector("#story").innerText`);
     assert.ok(word.length > 1, "no highlight");
     assert.ok(article.includes(word), `${word} is not in the article`);
+  });
+
+  async function laidOut(html, after = "") {
+    const page = await browser.open(fixtureUrl("article.html"), contentBundle(["util.js", "extract.js", "align.js"]));
+    pages.push(page);
+    return page.evaluate(`
+      (() => {
+        document.body.innerHTML = ${JSON.stringify(html)};
+        ${after}
+        const doc = globalThis.__readAloud.extract.extract("page");
+        const root = globalThis.__readAloud.extract.findMainContent();
+        const text = doc?.text || "";
+        const sentences = globalThis.__readAloud.align.sentences(text).map((span) => text.slice(span.start, span.end));
+        return { text, root: root?.id || root?.tagName || "", sentences };
+      })()
+    `);
+  }
+
+  test("the only article on the page is the one that is read", { skip }, async () => {
+    const story = "STORYTOKEN The mill pond fills through the sluice and the keeper writes the hour. ".repeat(6);
+    const result = await laidOut(`<main id="story"><h1>Tide mill</h1><p>${story}</p></main>`);
+    assert.equal(result.root, "story");
+    assert.ok(result.text.includes("STORYTOKEN"));
+  });
+
+  test(LONGER_ARTICLE_BUG, { skip, todo: LONGER_ARTICLE_BUG }, async () => {
+    const story = "STORYTOKEN The mill pond fills through the sluice and the keeper writes the hour. ".repeat(6);
+    const other = "OTHERTKEN The feature keeps going with another creek and another wheel. ".repeat(14);
+    const html = `<main id="story"><h1>Tide mill</h1><p>${story}</p></main><article id="other"><h1>Feature</h1><p>${other}</p></article>`;
+    for (let run = 0; run < 2; run += 1) {
+      const result = await laidOut(html);
+      const tops = await pages.at(-1).evaluate(`
+        (() => ({
+          story: Math.round(document.getElementById("story").getBoundingClientRect().top),
+          other: Math.round(document.getElementById("other").getBoundingClientRect().top),
+        }))()
+      `);
+      assert.ok(tops.story < tops.other, JSON.stringify(tops));
+      assert.equal(result.root, "story", result.text.slice(0, 80));
+      assert.ok(result.text.includes("STORYTOKEN"), result.text.slice(0, 80));
+    }
+  });
+
+  test("paragraphs in normal flow are read from top to bottom", { skip }, async () => {
+    const result = await laidOut(`<article><p id="a">ALPHATOKEN the first paragraph.</p><p id="b">BRAVOTOKEN the second paragraph.</p></article>`);
+    assert.ok(result.text.indexOf("ALPHATOKEN") < result.text.indexOf("BRAVOTOKEN"), result.text);
+  });
+
+  test(FLEX_ORDER_BUG, { skip, todo: FLEX_ORDER_BUG }, async () => {
+    const html = `<article>
+      <div style="display:flex;flex-direction:column-reverse;width:480px">
+        <p id="newest">NEWESTTOKEN painted at the bottom.</p>
+        <p id="oldest">OLDESTTOKEN painted at the top.</p>
+      </div>
+      <div style="display:grid;width:480px">
+        <p id="grid2" style="order:2">GRID2TOKEN painted second.</p>
+        <p id="grid1" style="order:1">GRID1TOKEN painted first.</p>
+      </div>
+    </article>`;
+    for (let run = 0; run < 2; run += 1) {
+      const result = await laidOut(html);
+      const tops = await pages.at(-1).evaluate(`
+        (() => {
+          const top = (id) => Math.round(document.getElementById(id).getBoundingClientRect().top);
+          return { oldest: top("oldest"), newest: top("newest"), grid1: top("grid1"), grid2: top("grid2") };
+        })()
+      `);
+      assert.ok(tops.oldest < tops.newest, JSON.stringify(tops));
+      assert.ok(tops.grid1 < tops.grid2, JSON.stringify(tops));
+      assert.ok(result.text.indexOf("OLDESTTOKEN") < result.text.indexOf("NEWESTTOKEN"), result.text);
+      assert.ok(result.text.indexOf("GRID1TOKEN") < result.text.indexOf("GRID2TOKEN"), result.text);
+    }
+  });
+
+  test("a caption written before its rows is read before them", { skip }, async () => {
+    const result = await laidOut(`<article><table><caption>CAPTIONTOKEN above</caption><tbody><tr><td>BODYTOKEN below</td></tr></tbody></table></article>`);
+    assert.ok(result.text.indexOf("CAPTIONTOKEN") < result.text.indexOf("BODYTOKEN"), result.text);
+  });
+
+  test(CAPTION_ORDER_BUG, { skip, todo: CAPTION_ORDER_BUG }, async () => {
+    const html = `<article><table><tbody><tr><td id="body">BODYTOKEN the row</td></tr></tbody><caption id="cap">CAPTIONTOKEN the caption</caption></table></article>`;
+    for (let run = 0; run < 2; run += 1) {
+      const result = await laidOut(html);
+      const tops = await pages.at(-1).evaluate(`
+        (() => ({
+          cap: Math.round(document.getElementById("cap").getBoundingClientRect().top),
+          body: Math.round(document.getElementById("body").getBoundingClientRect().top),
+        }))()
+      `);
+      assert.ok(tops.cap < tops.body, JSON.stringify(tops));
+      assert.ok(result.text.indexOf("CAPTIONTOKEN") < result.text.indexOf("BODYTOKEN"), result.text);
+    }
+  });
+
+  test("a long article inside an open dialog is still read", { skip }, async () => {
+    const sentence = "DIALOGTOKEN The keeper walks the dam and writes the hour in the ledger. ".repeat(12);
+    const result = await laidOut(`<dialog open><article id="story"><h1>Notice</h1><p>${sentence}</p></article></dialog>`);
+    assert.equal(result.root, "story");
+    assert.ok(result.text.includes("DIALOGTOKEN"), result.text.slice(0, 80));
+  });
+
+  test(DIALOG_EMPTY_BUG, { skip, todo: DIALOG_EMPTY_BUG }, async () => {
+    const sentence = "DIALOGTOKEN the notice is the prose the window is showing about the sluice and the wheel. ";
+    const html = `<dialog open id="notice"><h1>The notice</h1><p>${sentence}</p><p>${sentence}</p><p>${sentence}</p></dialog>`;
+    for (let run = 0; run < 2; run += 1) {
+      const result = await laidOut(html);
+      const box = await pages.at(-1).evaluate(`
+        (() => {
+          const rect = document.getElementById("notice").getBoundingClientRect();
+          return { height: Math.round(rect.height), width: Math.round(rect.width) };
+        })()
+      `);
+      assert.ok(box.height > 40 && box.width > 40, JSON.stringify(box));
+      assert.ok(result.text.includes("DIALOGTOKEN"), result.text);
+    }
+  });
+
+  test("a sentence keeps a number that is not a link", { skip }, async () => {
+    const result = await laidOut(`<article><p>See section 2 for the brake, and the pond still empties through the wheel.</p></article>`);
+    assert.match(result.text, /section 2/);
+  });
+
+  test(SECTION_NUMBER_BUG, { skip, todo: SECTION_NUMBER_BUG }, async () => {
+    const html = `<article><p>See section <a href="#brake">2</a> for the brake, and the pond still empties through the wheel twice a day.</p><h2 id="brake">The brake</h2><p>The brake is checked before the pond fills.</p></article>`;
+    for (let run = 0; run < 2; run += 1) {
+      const result = await laidOut(html);
+      const link = await pages.at(-1).evaluate(`document.querySelector("a").textContent`);
+      assert.equal(link, "2");
+      assert.match(result.text, /section 2/);
+    }
+  });
+
+  test("opacity zero text is left unread", { skip }, async () => {
+    const result = await laidOut(`<article><p>SEENTOKEN the visible sentence about the sluice is long enough to read.</p><p style="opacity:0">HIDDENTOKEN invisible</p></article>`);
+    assert.ok(result.text.includes("SEENTOKEN"), result.text);
+    assert.ok(!result.text.includes("HIDDENTOKEN"), result.text);
+  });
+
+  test(SCALED_TEXT_BUG, { skip, todo: SCALED_TEXT_BUG }, async () => {
+    const html = `<article><p>VISIBLETOKEN the paragraph on screen names the sluice and the wheel.</p><p id="gone" style="display:block;transform:scale(0);transform-origin:top left">SCALEDTOKEN scaled away</p></article>`;
+    for (let run = 0; run < 2; run += 1) {
+      const result = await laidOut(html);
+      const box = await pages.at(-1).evaluate(`
+        (() => {
+          const rect = document.getElementById("gone").getBoundingClientRect();
+          return { height: Math.round(rect.height), width: Math.round(rect.width) };
+        })()
+      `);
+      assert.equal(box.height, 0, JSON.stringify(box));
+      assert.equal(box.width, 0, JSON.stringify(box));
+      assert.ok(result.text.includes("VISIBLETOKEN"), result.text);
+      assert.ok(!result.text.includes("SCALEDTOKEN"), result.text);
+    }
+  });
+
+  test("an open shadow article is read and unslotted light text is not", { skip }, async () => {
+    const after = `
+      const host = document.createElement("article");
+      host.id = "host";
+      document.body.append(host);
+      const shadow = host.attachShadow({ mode: "open" });
+      shadow.innerHTML = "<p>SHADOWTOKEN the painted shadow paragraph about the sluice and the wheel and the brake.</p>";
+      const light = document.createElement("p");
+      light.textContent = "LIGHTTOKEN not slotted";
+      host.append(light);
+    `;
+    const result = await laidOut("", after);
+    assert.ok(result.text.includes("SHADOWTOKEN"), result.text);
+    assert.ok(!result.text.includes("LIGHTTOKEN"), result.text);
+  });
+
+  test(CLOSED_SHADOW_BUG, { skip, todo: CLOSED_SHADOW_BUG }, async () => {
+    const after = `
+      const host = document.createElement("article");
+      host.id = "host";
+      document.body.append(host);
+      const shadow = host.attachShadow({ mode: "closed" });
+      shadow.innerHTML = "<h1>Painted</h1><p>SHADOWTOKEN the words on screen describe the sluice, the wheel, and the brake the keeper checks at dawn before the pond fills.</p>";
+      const light = document.createElement("p");
+      light.id = "light";
+      light.textContent = "LIGHTTOKEN these words are not painted because the closed shadow does not slot them.";
+      host.append(light);
+    `;
+    for (let run = 0; run < 2; run += 1) {
+      const result = await laidOut("<p>placeholder</p>", after);
+      const box = await pages.at(-1).evaluate(`
+        (() => {
+          const host = document.getElementById("host").getBoundingClientRect();
+          const light = document.getElementById("light").getBoundingClientRect();
+          return { host: Math.round(host.height), light: Math.round(light.height) };
+        })()
+      `);
+      assert.ok(box.host > 10, JSON.stringify(box));
+      assert.equal(box.light, 0, JSON.stringify(box));
+      assert.ok(result.text.includes("SHADOWTOKEN"), result.text.slice(0, 120));
+      assert.ok(!result.text.includes("LIGHTTOKEN"), result.text.slice(0, 120));
+    }
+  });
+
+  test("a break element keeps the two lines apart", { skip }, async () => {
+    const result = await laidOut(`<article><p>LINEONE the sluice was shut<br>LINETWO the brake was checked</p></article>`);
+    assert.match(result.text, /LINEONE the sluice was shut\nLINETWO the brake was checked/);
+  });
+
+  test(PRESERVED_BREAK_BUG, { skip, todo: PRESERVED_BREAK_BUG }, async () => {
+    const html = `<article><div id="poem" style="white-space:pre-wrap;width:520px">LINEONE the sluice was shut\nLINETWO the brake was checked</div></article>`;
+    for (let run = 0; run < 2; run += 1) {
+      const result = await laidOut(html);
+      const lines = await pages.at(-1).evaluate(`
+        (() => {
+          const node = document.getElementById("poem").firstChild;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          const tops = [...range.getClientRects()].filter((rect) => rect.height > 2).map((rect) => Math.round(rect.top));
+          return { tops, whiteSpace: getComputedStyle(document.getElementById("poem")).whiteSpace };
+        })()
+      `);
+      assert.equal(lines.whiteSpace, "pre-wrap");
+      assert.ok(new Set(lines.tops).size >= 2, JSON.stringify(lines));
+      assert.match(result.text, /LINEONE the sluice was shut\nLINETWO the brake was checked/);
+      assert.ok(result.sentences.some((sentence) => sentence.includes("LINEONE") && !sentence.includes("LINETWO")), result.sentences);
+    }
   });
 });
