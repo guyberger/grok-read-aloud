@@ -354,6 +354,67 @@
     return spans[target].start;
   }
 
+  /**
+   * Seconds already heard of the sentence that contains `charIndex`.
+   *
+   * A chunk join is not a sentence boundary. The sentence being spoken may
+   * have begun in an earlier chunk, and the clock of the chunk just started
+   * is then near zero — how far into this chunk the voice is, not how far
+   * into the sentence. Earlier chunks add the audio of this sentence they
+   * already played. A chunk whose audio is no longer in hand adds
+   * `secondsPerChar` for the characters of the sentence it held, because the
+   * join was only reached by finishing that chunk.
+   *
+   * `pieces` are the chunks in order. `current` is the piece the playhead is
+   * in, and `playhead` is that piece's media time, past any unspoken lead-in.
+   */
+  function spokenIntoSentence({ spans, charIndex, pieces, current, playhead = 0 } = {}) {
+    if (!pieces?.length || current < 0 || current >= pieces.length) return 0;
+    const start = sentenceStartFrom(spans, charIndex, 0);
+    if (start < 0) return 0;
+    const here = pieces[current];
+    if (start >= here.start) return Math.max(0, playhead - timeForCharIndex(here.timeline, start));
+
+    let elapsed = Math.max(0, playhead);
+    for (let index = current - 1; index >= 0; index -= 1) {
+      const piece = pieces[index];
+      if (piece.end <= start) break;
+      elapsed += heardFrom(piece, Math.max(start, piece.start));
+      if (piece.start <= start) break;
+    }
+    return elapsed;
+  }
+
+  /** Audio of `piece` from `from` through the end of that chunk. */
+  function heardFrom(piece, from) {
+    const duration = piece.timeline?.duration;
+    if (Number.isFinite(duration) && duration > 0) {
+      return Math.max(0, duration - timeForCharIndex(piece.timeline, from));
+    }
+    if (piece.timeline) return 0;
+    const rate = piece.secondsPerChar;
+    if (!(rate > 0)) return 0;
+    return Math.max(0, piece.end - from) * rate;
+  }
+
+  /**
+   * First character a step of `delta` lands on, or -1 past the end of the text.
+   *
+   * Back replays the sentence being spoken once `elapsed` seconds of it have
+   * been heard, and steps to the one before when that sentence has barely
+   * begun. `elapsed` is what `spokenIntoSentence` reports, so a sentence that
+   * crosses a chunk join counts the audio from the chunk where it started.
+   * Forward always leaves the sentence being spoken, whether or not a join
+   * falls inside it. Back from the first sentence restarts it.
+   */
+  function sentenceStepTarget(spans, charIndex, delta, { elapsed = 0, replayAfter = 1.5 } = {}) {
+    const heard = Number.isFinite(elapsed) ? elapsed : 0;
+    const offset = delta < 0 ? (heard > replayAfter ? 0 : -1) : 1;
+    let target = sentenceStartFrom(spans, charIndex, offset);
+    if (target < 0 && offset < 0) target = sentenceStartFrom(spans, charIndex, 0);
+    return target;
+  }
+
   /** Media time at which a chunk's timeline starts speaking `charIndex`. */
   function timeForCharIndex(timeline, charIndex) {
     const spans = timeline?.words;
@@ -694,6 +755,8 @@
     spanIndexFor,
     chunkIndexFor,
     sentenceStartFrom,
+    spokenIntoSentence,
+    sentenceStepTarget,
     timeForCharIndex,
     leadingContext,
     withoutContext,

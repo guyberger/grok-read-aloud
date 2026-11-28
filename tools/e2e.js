@@ -1025,6 +1025,127 @@ async function main() {
   await control("setRate", { rate: 1 });
   await control("stop");
 
+  // 10b. A sentence that crosses a chunk join.
+  //
+  // The opening request is capped, so a sentence longer than that is spoken
+  // across two chunks. Just after the join the chunk clock has barely started,
+  // but the sentence has been going since the previous chunk. Back replays
+  // that sentence; forward leaves the whole of it for the one after.
+  await ui.evaluate(`chrome.storage.local.set({ chunkChars: 2000, autoScroll: false }).then(() => true)`);
+  const longSentenceUrl = new URL("long-sentence.html", PAGE_URL).href;
+  await page.send("Page.navigate", { url: longSentenceUrl });
+  await sleep(1500);
+  await tabState();
+  world = await page.isolatedContextId();
+  await page.evaluate(
+    `
+    (() => {
+      const Real = window.Audio;
+      globalThis.__audios = [];
+      window.Audio = function PatchedAudio(...args) {
+        const element = new Real(...args);
+        globalThis.__audios.push(element);
+        return element;
+      };
+    })()
+  `,
+    world,
+  );
+  await control("start", { scope: "page", from: "start" });
+  await control("setRate", { rate: 1 });
+
+  const joinSample = async () =>
+    page.evaluate(
+      `
+      (() => {
+        const highlight = CSS.highlights.get("read-aloud-word");
+        let word = "";
+        let id = "";
+        if (highlight) {
+          for (const range of highlight) {
+            word = range.toString().trim();
+            const node = range.startContainer;
+            const el = node && node.nodeType === 1 ? node : node?.parentElement;
+            id = el?.closest?.("p")?.id || "";
+          }
+        }
+        const snap = globalThis.__readAloud.reader.snapshot();
+        const playback = globalThis.__readAloud.reader.playback() || {};
+        const audio = globalThis.__audios.at(-1);
+        const time = audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+        const spoken = time * (playback.stretchedRate || 1) - (playback.lead || 0);
+        return {
+          status: snap.status,
+          chunk: snap.chunkIndex,
+          error: snap.error || "",
+          id,
+          word,
+          spoken,
+        };
+      })()
+    `,
+      world,
+    );
+
+  let caughtJoin = null;
+  const joinDeadline = Date.now() + 30000;
+  while (Date.now() < joinDeadline) {
+    const sample = await joinSample();
+    if (sample.error) break;
+    if (sample.status === "playing" && sample.chunk >= 1 && sample.id === "long" && sample.spoken > 0.02 && sample.spoken < 1.2) {
+      caughtJoin = sample;
+      break;
+    }
+    await sleep(30);
+  }
+  check(
+    "the long sentence is still being read just after the chunk join",
+    Boolean(caughtJoin),
+    caughtJoin
+      ? `chunk ${caughtJoin.chunk} #${caughtJoin.id} "${caughtJoin.word}" at ${caughtJoin.spoken.toFixed(2)}s`
+      : "never caught the opening of the second chunk inside the long sentence",
+  );
+
+  if (caughtJoin) {
+    const longOpening = new Set("TOKENLONG The keeper walked the whole length of".split(" "));
+    await control("skipSentence", { delta: -1 });
+    let replayed = null;
+    for (let i = 0; i < 40; i += 1) {
+      replayed = await joinSample();
+      if (replayed.status === "playing" && replayed.chunk === 0 && replayed.id === "long" && longOpening.has(replayed.word)) {
+        break;
+      }
+      await sleep(100);
+    }
+    check(
+      "stepping back just after the join replays the sentence that crossed it",
+      replayed?.status === "playing" && replayed?.chunk === 0 && replayed?.id === "long" && longOpening.has(replayed.word),
+      JSON.stringify(replayed),
+    );
+
+    const afterOpening = new Set(["TOKENAFTER", "The", "brake", "was", "logged"]);
+    await control("skipSentence", { delta: 1 });
+    let forwarded = null;
+    for (let i = 0; i < 40; i += 1) {
+      forwarded = await joinSample();
+      if (forwarded.status === "playing" && forwarded.id === "after" && afterOpening.has(forwarded.word)) break;
+      await sleep(100);
+    }
+    check(
+      "stepping forward from that sentence clears the part that sits past the join",
+      forwarded?.status === "playing" && forwarded?.id === "after" && afterOpening.has(forwarded.word),
+      JSON.stringify(forwarded),
+    );
+  }
+
+  await control("stop");
+  await control("setRate", { rate: 1 });
+  await ui.evaluate(`chrome.storage.local.set({ chunkChars: 400, autoScroll: true }).then(() => true)`);
+  await page.send("Page.navigate", { url: PAGE_URL });
+  await sleep(1500);
+  await tabState();
+  world = await page.isolatedContextId();
+
   // 11. Picking up where you left off.
   //
   // The page is reloaded between the two reads, so the content scripts, the

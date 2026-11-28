@@ -491,6 +491,8 @@ checks cannot do
 - [ ] ▶ moves to the first word of the next sentence without a gap.
 - [ ] ◀ part-way through a sentence starts that sentence again.
 - [ ] ◀ at the start of a sentence goes back to the one before it.
+- [ ] ◀ just after a part boundary, while the same sentence is still being
+      read, starts that sentence again rather than the one before it.
 - [ ] Both work while paused, and start playing again from the new position.
 - [ ] Both buttons are greyed out with nothing being read.
 - [ ] ▶ on the last sentence of the page does nothing rather than erroring.
@@ -1505,17 +1507,21 @@ Two details are worth stating:
 - **The sentences come from the whole extracted text, not from the chunk being
   played**, and they end where [a sentence
   ends](#where-a-sentence-ends) rather than at every full stop. A chunk's
-  timeline only knows the sentences inside it, and a
-  sentence that straddles a chunk join is cut in two there. Stepping over
-  document-wide sentence ranges means a join is invisible to it, which is the
-  point: the chunk boundaries are a billing and latency decision, and the
-  listener should never meet them.
+  timeline only knows the part of a sentence inside it, so a sentence that
+  straddles a join is cut in two there. Stepping uses the document-wide
+  ranges, which makes the join invisible: forward leaves that whole sentence
+  for the next one, and back returns to where the sentence began, in whichever
+  chunk that was. The chunk boundaries are a billing and latency decision, and
+  the listener should never meet them.
 - **Back from the middle of a sentence re-reads that sentence.** Pressing back
   is how someone recovers a few words they missed, and those words are almost
   always in the sentence still being spoken — so only a sentence that has barely
   begun (under 1.5 s of audio, which is playback position rather than wall
-  clock, so it holds at any speed) steps to the one before it. Pressing back
-  twice therefore always reaches the previous sentence.
+  clock, so it holds at any speed) steps to the one before it. That 1.5 s is
+  time already heard of the sentence, including what an earlier chunk spoke
+  when the sentence crosses a join. The clock of the chunk just begun is not
+  the sentence starting over. Pressing back twice therefore always reaches the
+  previous sentence.
 
 Stepping within a chunk — which is most steps, since a chunk is several
 sentences — costs nothing at all, and nor does stepping back over a chunk join

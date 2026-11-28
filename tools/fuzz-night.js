@@ -205,7 +205,6 @@ export function nightScenarios(ctx) {
   return [
     {
       name: "sentence-back-across-chunk",
-      bug: "Stepping back just after a chunk join leaves the sentence still being spoken",
       async run(repeat) {
         await applySettings({ chunkChars: 2000, rate: 1, autoScroll: false, clickToJump: false });
         await navigate(`long-sentence.html?seed=${SEED}&r=${repeat}`);
@@ -267,8 +266,13 @@ export function nightScenarios(ctx) {
         const after = await probe();
         const afterId = await paragraphId();
         const text = await spoken();
-        const leftTheSentence = afterId === "open" || /\bTOKENOPEN\b/.test(after.word || "");
-        const path = save(`bug-sentence-back-chunk-${repeat}.json`, {
+        const opening = new Set("TOKENLONG The keeper walked the whole length of".split(" "));
+        const replayed =
+          after.status === "playing" &&
+          after.chunkIndex === 0 &&
+          afterId === "long" &&
+          opening.has(after.word || "");
+        const path = save(`sentence-back-chunk-${repeat}.json`, {
           seed: SEED,
           shape,
           caught: {
@@ -281,13 +285,12 @@ export function nightScenarios(ctx) {
           },
           after: { status: after.status, chunkIndex: after.chunkIndex, time: after.time, word: after.word, id: afterId },
           landed: { status: landed.status, word: landed.word, chunkIndex: landed.chunkIndex },
-          leftTheSentence,
+          replayed,
           text: text.slice(0, 240),
         });
-        if (leftTheSentence) {
-          await screenshot(`bug-sentence-back-chunk-${repeat}.png`);
-          await screenshot("bug-sentence-back-chunk.png");
-          save("bug-sentence-back-chunk.json", {
+        if (!replayed) {
+          await screenshot(`sentence-back-chunk-${repeat}.png`);
+          save("sentence-back-chunk.json", {
             seed: SEED,
             spoken: caught.spoken,
             word: caught.word,
@@ -297,10 +300,10 @@ export function nightScenarios(ctx) {
           });
         }
         return {
-          ok: leftTheSentence && after.status === "playing",
-          detail: leftTheSentence
-            ? `at spoken ${caught.spoken.toFixed(2)}s of chunk 2 ("${caught.word}" #${beforeId}) back landed on #${afterId} "${after.word}"`
-            : `back stayed on #${afterId || "none"} "${after.word}" (status ${after.status})`,
+          ok: replayed,
+          detail: replayed
+            ? `at spoken ${caught.spoken.toFixed(2)}s of chunk 2 back replayed #${afterId} "${after.word}"`
+            : `at spoken ${caught.spoken.toFixed(2)}s of chunk 2 ("${caught.word}" #${beforeId}) back landed on #${afterId} "${after.word}"`,
           evidence: path,
         };
       },
