@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>One long sentence — Test Article</title>
+    <!--
+      A short sentence, then one sentence long enough to cross the 240-character
+      opening chunk, then a sentence after it. Stepping back just after the
+      join has to replay the long sentence, and stepping forward has to leave
+      it for the sentence after, rather than treating the join as a boundary.
+    -->
+    <style>
+      body {
+        margin: 0;
+        font: 17px/1.7 ui-serif, Georgia, serif;
+        color: #1d1d1f;
+        background: #fdfdfb;
+      }
+      article {
+        max-width: 660px;
+        margin: 0 auto;
+        padding: 36px 20px 120px;
+      }
+    </style>
+  </head>
+  <body>
+    <article>
+      <h1>One long sentence</h1>
+      <p id="open">TOKENOPEN The sluice was shut at dawn.</p>
+      <p id="long">
+        TOKENLONG The keeper walked the whole length of the dam and looked at another peg in the frame and
+        looked at another peg in the frame and looked at another peg in the frame and looked at another peg
+        in the frame and looked at another peg in the frame and looked at another peg in the frame and looked
+        at another peg in the frame and looked at another peg in the frame and looked at another peg in the
+        frame and looked at another peg in the frame and looked at another peg in the frame and looked at
+        another peg in the frame until CHUNKTWOTOKEN showed up in this same sentence and the brake still held
+        firm.
+      </p>
+      <p id="after">TOKENAFTER The brake was logged and the gate left shut.</p>
+    </article>
+  </body>
+</html>

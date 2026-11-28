@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadContentNamespace } from "./load-content.js";
+import { fakeTimestamps, loadContentNamespace } from "./load-content.js";
 
 const ns = loadContentNamespace();
-const { sentences, sentenceStartFrom, spanIndexFor, wordStartAt } = ns.align;
+const {
+  buildChunkTimeline,
+  chunkRanges,
+  sentences,
+  sentenceStartFrom,
+  sentenceStepTarget,
+  spanIndexFor,
+  spokenIntoSentence,
+  wordStartAt,
+} = ns.align;
 
 /** The sentences of `text`, trimmed, so a failure prints what was cut where. */
 const split = (text) =>
@@ -24,6 +33,28 @@ function at(text, needle) {
 
 /** The word the step lands on, so a failure says where it went. */
 const landedOn = (text, start) => (start < 0 ? null : text.slice(start).split(/\s/)[0]);
+
+/** A chunk timeline for `text.slice(start, end)`, in document coordinates. */
+function timelinePiece(text, start, end) {
+  const slice = text.slice(start, end);
+  const fake = fakeTimestamps(slice, 0.05);
+  return {
+    start,
+    end,
+    timeline: buildChunkTimeline({
+      text: slice,
+      graphChars: fake.graphChars,
+      graphTimes: fake.graphTimes,
+      duration: fake.duration,
+      globalStart: start,
+    }),
+  };
+}
+
+/** Media time at which `piece` starts speaking `charIndex`. */
+function timeAt(piece, charIndex) {
+  return ns.align.timeForCharIndex(piece.timeline, charIndex);
+}
 
 // ---------------------------------------------------------------------------
 // Which span a character belongs to.
@@ -250,6 +281,134 @@ test("text with no sentence punctuation at all is one step", () => {
   assert.equal(sentenceStartFrom(spans, 10, 0), 0);
   assert.equal(sentenceStartFrom(spans, 10, 1), -1);
   assert.equal(sentenceStartFrom(spans, 10, -1), -1);
+});
+
+test("a sentence that crosses a chunk join is still that sentence just after the join", () => {
+  // The opening request is capped, so a long sentence is cut in two. The
+  // clock of the chunk just begun is not the sentence starting over.
+  const opener = "TOKENOPEN The sluice was shut at dawn.";
+  const head = "TOKENLONG The keeper walked the whole length of the dam";
+  const fill = " and looked at another peg in the frame";
+  const tail = " until CHUNKTWOTOKEN showed up in this same sentence and the brake still held firm.";
+  const after = "TOKENAFTER The brake was logged and the gate left shut.";
+  let body = head;
+  while (opener.length + 1 + body.length < 560) body += fill;
+  body += tail;
+  const text = `${opener}\n${body}\n${after}`;
+  const spans = sentences(text);
+  const ranges = chunkRanges(text, 2000, { firstChars: 240 });
+  assert.equal(spans.length, 3);
+  assert.ok(ranges.length > 1, "the long sentence should cross the opening chunk");
+  const long = spans[1];
+  const join = ranges[1].start;
+  assert.ok(long.start < join && long.end > join, "the second sentence runs through the join");
+
+  const pieces = ranges.map((range) => {
+    const slice = text.slice(range.start, range.end);
+    const fake = fakeTimestamps(slice, 0.05);
+    return {
+      start: range.start,
+      end: range.end,
+      timeline: buildChunkTimeline({
+        text: slice,
+        graphChars: fake.graphChars,
+        graphTimes: fake.graphTimes,
+        duration: fake.duration,
+        globalStart: range.start,
+      }),
+    };
+  });
+  const atTail = text.indexOf("CHUNKTWOTOKEN");
+  const playhead = 0.04;
+  const elapsed = spokenIntoSentence({
+    spans,
+    charIndex: atTail,
+    pieces,
+    current: 1,
+    playhead,
+  });
+  const prior = pieces[0].timeline.duration - ns.align.timeForCharIndex(pieces[0].timeline, long.start);
+  assert.ok(prior > 1.5, `the sentence already ran ${prior}s before the join`);
+  assert.ok(Math.abs(elapsed - (prior + playhead)) < 1e-6, `elapsed ${elapsed}, expected ${prior + playhead}`);
+
+  assert.equal(
+    sentenceStepTarget(spans, atTail, -1, { elapsed, replayAfter: 1.5 }),
+    long.start,
+    "back replays the sentence still being spoken",
+  );
+  assert.equal(text.slice(long.start, long.start + 9), "TOKENLONG");
+  assert.equal(
+    sentenceStepTarget(spans, atTail, 1, { elapsed, replayAfter: 1.5 }),
+    spans[2].start,
+    "forward leaves the whole sentence, not the chunk the join opened",
+  );
+  assert.equal(text.slice(spans[2].start, spans[2].start + 10), "TOKENAFTER");
+  assert.notEqual(
+    sentenceStepTarget(spans, atTail, 1, { elapsed: 0, replayAfter: 1.5 }),
+    join,
+    "the join is not a sentence start",
+  );
+});
+
+test("back still reaches the previous sentence when the crossed part has barely begun", () => {
+  const text = "Alpha sentence ends here. Beta goes on past the join and finishes later. Gamma is next.";
+  const spans = sentences(text);
+  const beta = spans[1].start;
+  const cut = beta + 8;
+  const pieces = [timelinePiece(text, 0, cut), timelinePiece(text, cut, text.length)];
+  const playhead = 0.04;
+  const elapsed = spokenIntoSentence({ spans, charIndex: cut + 2, pieces, current: 1, playhead });
+  assert.ok(elapsed < 1.5, `a few characters across the join is ${elapsed}s, not a sentence already heard`);
+  assert.equal(sentenceStepTarget(spans, cut + 2, -1, { elapsed, replayAfter: 1.5 }), spans[0].start);
+  assert.equal(sentenceStepTarget(spans, cut + 2, 1, { elapsed, replayAfter: 1.5 }), spans[2].start);
+});
+
+test("a sentence that starts on the chunk boundary has barely begun at the boundary", () => {
+  const text = "Alpha sentence ends here. Beta starts the next chunk cleanly. Gamma follows it.";
+  const spans = sentences(text);
+  const beta = spans[1].start;
+  const pieces = [
+    timelinePiece(text, 0, beta),
+    timelinePiece(text, beta, text.length),
+  ];
+  const elapsed = spokenIntoSentence({ spans, charIndex: beta + 3, pieces, current: 1, playhead: 0.04 });
+  assert.ok(elapsed < 1.5, elapsed);
+  assert.equal(sentenceStepTarget(spans, beta + 3, -1, { elapsed, replayAfter: 1.5 }), spans[0].start);
+});
+
+test("audio no longer in hand still counts the sentence heard before the join", () => {
+  const text = `Alpha sentence ends here. ${"Beta keeps going ".repeat(8)}and then stops. Gamma.`;
+  const spans = sentences(text);
+  const beta = spans[1].start;
+  const cut = beta + 80;
+  const pieces = [
+    { start: 0, end: cut, secondsPerChar: 0.05 },
+    timelinePiece(text, cut, text.length),
+  ];
+  const elapsed = spokenIntoSentence({ spans, charIndex: cut + 4, pieces, current: 1, playhead: 0.04 });
+  const priorChars = cut - beta;
+  assert.ok(Math.abs(elapsed - (priorChars * 0.05 + 0.04)) < 1e-9, elapsed);
+  assert.equal(sentenceStepTarget(spans, cut + 4, -1, { elapsed, replayAfter: 1.5 }), beta);
+});
+
+test("inside one chunk, back still replays only once the sentence is under way", () => {
+  const text = "Alpha sentence ends here. Beta is the sentence being read right now. Gamma follows.";
+  const spans = sentences(text);
+  const beta = spans[1].start;
+  const pieces = [timelinePiece(text, 0, text.length)];
+  const start = timeAt(pieces[0], beta);
+  const early = spokenIntoSentence({ spans, charIndex: beta + 5, pieces, current: 0, playhead: start + 0.2 });
+  const later = spokenIntoSentence({
+    spans,
+    charIndex: beta + 5,
+    pieces,
+    current: 0,
+    playhead: start + 2,
+  });
+  assert.ok(early < 1.5 && later > 1.5, `early ${early}, later ${later}`);
+  assert.equal(sentenceStepTarget(spans, beta + 5, -1, { elapsed: early, replayAfter: 1.5 }), 0);
+  assert.equal(sentenceStepTarget(spans, beta + 5, -1, { elapsed: later, replayAfter: 1.5 }), beta);
+  assert.equal(sentenceStepTarget(spans, beta + 5, 1, { elapsed: later, replayAfter: 1.5 }), spans[2].start);
 });
 
 test("stepping is stable across the chunk joins it has to cross", () => {

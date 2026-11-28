@@ -923,7 +923,7 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
     assert.ok(text.slice(ranges[1].start, ranges[1].end).includes("CHUNKTWOTOKEN"));
   });
 
-  test(SENTENCE_BACK_BUG, { skip, todo: SENTENCE_BACK_BUG }, async () => {
+  test(SENTENCE_BACK_BUG, { skip }, async () => {
     const results = [];
     for (let run = 0; run < 2; run += 1) {
       const page = await openReader();
@@ -961,11 +961,21 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
             if (snap.status === "playing" && snap.chunkIndex >= 1 && paragraph() === "long" && spoken() > 0.02 && spoken() < 1.2) break;
             await new Promise((resolve) => setTimeout(resolve, 30));
           }
-          const before = { status: snap?.status, chunk: snap?.chunkIndex, id: paragraph(), spoken: spoken() };
+          const word = () => {
+            const highlight = CSS.highlights?.get?.("read-aloud-word");
+            let text = "";
+            if (highlight) for (const range of highlight) text = range.toString();
+            return text.trim();
+          };
+          const before = { status: snap?.status, chunk: snap?.chunkIndex, id: paragraph(), spoken: spoken(), word: word() };
           await globalThis.__send({ type: "skipSentence", delta: -1 });
           await new Promise((resolve) => setTimeout(resolve, 400));
           const afterSnap = globalThis.__readAloud.reader.snapshot();
-          return { before, after: { status: afterSnap.status, chunk: afterSnap.chunkIndex, id: paragraph() }, errors: globalThis.__errors.slice() };
+          return {
+            before,
+            after: { status: afterSnap.status, chunk: afterSnap.chunkIndex, id: paragraph(), word: word() },
+            errors: globalThis.__errors.slice(),
+          };
         })()
       `);
       results.push(landed);
@@ -975,6 +985,14 @@ describe("reproduced bugs", { concurrency: 1 }, () => {
       assert.equal(result.before.id, "long", JSON.stringify(results));
       assert.ok(result.before.chunk >= 1, JSON.stringify(results));
       assert.equal(result.after.id, "long", JSON.stringify(results));
+      assert.equal(result.after.chunk, 0, JSON.stringify(results));
+      // The replay starts at TOKENLONG. A few tenths of a second later the
+      // highlight has moved into the words that follow it, still the opening
+      // of that sentence rather than the join it was speaking.
+      assert.ok(
+        "TOKENLONG The keeper walked the whole length of".split(" ").includes(result.after.word),
+        JSON.stringify(results),
+      );
     }
   });
 

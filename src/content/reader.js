@@ -99,9 +99,10 @@
   let doc = null;
   let chunks = [];
   // Sentence ranges over the whole extracted text, built on first use. A
-  // chunk's own timeline only knows the sentences inside that chunk, and
-  // stepping between sentences has to cross both chunk boundaries and the
-  // joins where a sentence was cut in two.
+  // chunk's own timeline only knows the part of a sentence inside that chunk,
+  // so a sentence cut at a join has its start in an earlier one. Stepping uses
+  // these ranges, and how far into the sentence the voice has got is the
+  // audio of every chunk that sentence runs through.
   let sentences = null;
   let timeline = null;
   // Keyed by character range rather than chunk index, because clicking into
@@ -961,26 +962,61 @@
   }
 
   /**
-   * Whether stepping back should re-read the sentence being spoken instead of
-   * the one before it. A sentence that began in an earlier chunk has no start
-   * time in this chunk's timeline, which reads as zero — correctly, since the
-   * playhead is by definition well past it.
+   * Chunks already heard, oldest first, through the one the playhead is in.
+   *
+   * The chunk being played contributes its live timeline. Each earlier one
+   * contributes audio already fetched for it, or the pace of this read when
+   * that audio has been dropped, so a sentence that began before the join is
+   * not timed as if it began at the join.
    */
-  function wellIntoSentence(from) {
-    if (!timeline || !player) return false;
-    const start = align.sentenceStartFrom(sentences, from, 0);
-    if (start < 0) return false;
-    return player.getTime() - align.timeForCharIndex(timeline, start) > REPLAY_AFTER_SECONDS;
+  function heardPieces() {
+    const rate = pacing.secondsPerChar;
+    const playing = state.status !== "loading";
+    const through = Math.max(0, state.chunkIndex);
+    const pieces = [];
+    for (let index = 0; index <= through && index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      let line = null;
+      if (playing && index === state.chunkIndex) {
+        line = timeline;
+      } else {
+        const request = audioRequest(index);
+        line = request ? (cache.get(request)?.timeline ?? null) : null;
+      }
+      pieces.push({
+        start: chunk.start,
+        end: chunk.end,
+        timeline: line,
+        secondsPerChar: line ? 0 : rate,
+      });
+    }
+    return pieces;
+  }
+
+  /** Seconds already heard of the sentence that contains `from`. */
+  function sentenceElapsed(from) {
+    sentences ??= align.sentences(doc.text);
+    const pieces = heardPieces();
+    const playing = state.status !== "loading" && timeline && player;
+    const current = playing ? state.chunkIndex : align.chunkIndexFor(chunks, from);
+    return align.spokenIntoSentence({
+      spans: sentences,
+      charIndex: from,
+      pieces,
+      current: Math.min(current, pieces.length - 1),
+      playhead: playing ? player.getTime() : 0,
+    });
   }
 
   /**
    * Step a sentence back (`delta` < 0) or forward, and keep reading.
    *
-   * The destination is a character index, so this is the same move as clicking
-   * a word: a seek when the sentence is in the audio already in hand, and a
-   * chunk that begins at the sentence when it is not. Stepping forward off the
-   * end of the text does nothing; stepping back from the first sentence
-   * restarts it.
+   * The destination is a character index in the sentence list of the whole
+   * text, so a join that falls inside a sentence is not a place a step can
+   * land. From there it is the same move as clicking a word: a seek when the
+   * sentence is in the audio already in hand, and a chunk that begins at the
+   * sentence when it is not. Stepping forward off the end of the text does
+   * nothing; stepping back from the first sentence restarts it.
    */
   async function skipSentence(delta) {
     if (!doc || !chunks.length) return snapshot();
@@ -988,10 +1024,11 @@
 
     sentences ??= align.sentences(doc.text);
     const from = playheadCharIndex();
-    const offset = delta < 0 ? (wellIntoSentence(from) ? 0 : -1) : 1;
-
-    let target = align.sentenceStartFrom(sentences, from, offset);
-    if (target < 0 && offset < 0) target = align.sentenceStartFrom(sentences, from, 0);
+    const elapsed = delta < 0 ? sentenceElapsed(from) : 0;
+    const target = align.sentenceStepTarget(sentences, from, delta, {
+      elapsed,
+      replayAfter: REPLAY_AFTER_SECONDS,
+    });
     if (target < 0) return snapshot();
 
     return jumpToCharIndex(target);
