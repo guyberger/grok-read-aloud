@@ -1145,6 +1145,8 @@ async function main() {
   await sleep(1500);
   await tabState();
   world = await page.isolatedContextId();
+  // Navigation drops the page helpers the click and step checks installed.
+  await installPointHelpers();
 
   // 11. Picking up where you left off.
   //
